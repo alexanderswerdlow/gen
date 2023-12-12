@@ -1,0 +1,18 @@
+# @package _global_
+
+# python launch_slurm.py +slurm=grogu 'slurm.cmd=""'
+# gpu_ref_gb = {'A5500': 24, 'A100': 40, 'volta': 32, '6000ADA': 48, '2080Ti': 11, 'titanx': 12}
+
+slurm:
+  job_name: diff_tta
+  partition: kate_reserved # kate_reserved, deepaklong
+  time: "24:00:00"
+  gpus: 1
+  mem_gb: 48GB
+  cpus_per_task: 8
+  n_processes: 1
+  n_nodes: 1
+  max_num_timeout: 100
+  use_deepspeed: False
+  exclude: null
+  constraint: A100|6000ADA|A5500

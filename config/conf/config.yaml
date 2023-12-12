@@ -1,0 +1,9 @@
+defaults:
+  - base_config
+  - _self_
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+hydra:
+  run:
+    dir: ${top_level_output_path}/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}

@@ -1,0 +1,20 @@
+# @package _global_
+
+log_gradients: False
+
+tta:
+  gradient_descent:
+    accum_iter: 9
+
+model:
+  class_arch: vit_b_16
+  use_checkpointing: True
+
+input:
+  batch_size: 20
+  dataset_name: ImageNetCDataset
+  imagenet_c_mode: fog # input.imagenet_c_mode='[fog,gaussian_noise,pixelate,contrast]'
+  disc_img_crop: 256
+  disc_img_resize: 256
+  gen_dit: True
+  use_default_transform: True

@@ -1,0 +1,9 @@
+slurm:
+  cmd: ???
+
+program: train_dit.py
+use_accelerate: true
+hydra:
+  output_subdir: null
+  run:
+    dir: ./outputs/slurm/${now:%Y-%m-%d}/${now:%H-%M-%S.%f}

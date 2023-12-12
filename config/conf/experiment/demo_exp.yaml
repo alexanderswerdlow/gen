@@ -1,0 +1,4 @@
+# @package _global_
+
+trainer:
+  seed: 0
