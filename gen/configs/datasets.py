@@ -8,9 +8,13 @@ from typing import List, Optional, Iterable, Union
 class DatasetConfig:
     dataloader_num_workers: int = 0
     train_batch_size: int = 4
+    resolution: Optional[int] = 512
+    _target_: str = "gen.datasets.base_dataset"
 
 @dataclass
 class HuggingFaceControlNetConfig(DatasetConfig):
+    _target_: str = "gen.datasets.controlnet_dataset"
+    dataset_class: str = 'controlnet_dataset'
     dataset_name: Optional[str] = "fusing/fill50k"
     dataset_config_name: Optional[str] = None
     dataset_split: Optional[tuple[str]] = None
@@ -23,8 +27,16 @@ class HuggingFaceControlNetConfig(DatasetConfig):
     validation_image: Optional[tuple[str]] = None
     num_validation_images: int = 4
     cache_dir: Optional[str] = None
-    resolution: Optional[int] = 512
+
+@dataclass
+class CocoCaptions(DatasetConfig):
+    _target_: str = "gen.datasets.coco_captions.CocoCaptions"
     
 cs = ConfigStore.instance()
 cs.store(group="dataset", name="base", node=DatasetConfig)
 cs.store(group="dataset", name="huggingface", node=HuggingFaceControlNetConfig)
+cs.store(group="dataset", name="coco_captions", node=CocoCaptions)
+
+# from hydra_zen import builds, load_from_yaml, make_config, store, zen
+# from gen.datasets.coco_captions import CocoCaptions
+# cs.store(group="dataset", name="coco", node=CocoCaptions)

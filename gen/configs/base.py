@@ -2,9 +2,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Any, Dict, Optional
 from omegaconf import DictConfig, MISSING
-from config.datasets import DatasetConfig
-from config.models import ModelConfig
-from config.trainer import TrainerConfig
+from gen.configs.datasets import DatasetConfig
+from gen.configs.models import ModelConfig
+from gen.configs.trainer import TrainerConfig
 
 def _locate(path: str) -> Any:
     """
@@ -68,7 +68,7 @@ def instantiate_with_cfg(cfg: DictConfig, **kwargs):
 defaults = [
     {"trainer": "base"},
     {"dataset": "huggingface"},
-    {"model": "controlnet"},
+    {"model": "basemapper"},
 ]
 
 @dataclass

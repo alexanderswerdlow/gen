@@ -28,4 +28,5 @@ torchinfo
 accelerate
 submitit
 diffusers
+segment-anything-hq
 git+https://github.com/alexanderswerdlow/image_utils.git

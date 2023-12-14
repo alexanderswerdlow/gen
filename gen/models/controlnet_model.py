@@ -6,6 +6,7 @@ from accelerate.logging import get_logger
 from packaging import version
 from PIL import Image
 from transformers import AutoTokenizer, PretrainedConfig
+from accelerate import Accelerator
 
 from diffusers import (
     AutoencoderKL,
@@ -16,10 +17,8 @@ from diffusers import (
     UniPCMultistepScheduler,
 )
 from diffusers.utils.import_utils import is_xformers_available
-from config.configs.configs import BaseConfig
+from gen.configs import BaseConfig
 import wandb
-
-from config.datasets import HuggingFaceControlNetConfig
 
 logger = get_logger(__name__)
 
@@ -48,7 +47,7 @@ def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: st
     else:
         raise ValueError(f"{model_class} is not supported.")
     
-def get_model(cfg: BaseConfig, accelerator) -> tuple[AutoTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel, ControlNetModel]:
+def get_controlnet_model(cfg: BaseConfig, accelerator: Accelerator) -> tuple[AutoTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel, ControlNetModel]:
     # Load the tokenizer
     if cfg.model.tokenizer_name:
         tokenizer = AutoTokenizer.from_pretrained(cfg.model.tokenizer_name, revision=cfg.model.revision, use_fast=False)
@@ -117,22 +116,60 @@ def get_model(cfg: BaseConfig, accelerator) -> tuple[AutoTokenizer, DDPMSchedule
     controlnet.train()
 
     if cfg.trainer.enable_xformers_memory_efficient_attention:
-        if is_xformers_available():
-            import xformers
-
-            xformers_version = version.parse(xformers.__version__)
-            if xformers_version == version.parse("0.0.16"):
-                logger.warn(
-                    "xFormers 0.0.16 cannot be used for training in some GPUs. If you observe problems during training, please update xFormers to at least 0.0.17. See https://huggingface.co/docs/diffusers/main/en/optimization/xformers for more details."
-                )
-            unet.enable_xformers_memory_efficient_attention()
-            controlnet.enable_xformers_memory_efficient_attention()
-        else:
-            raise ValueError("xformers is not available. Make sure it is installed correctly")
+        import xformers
+        unet.enable_xformers_memory_efficient_attention()
+        controlnet.enable_xformers_memory_efficient_attention()
 
     return tokenizer, noise_scheduler, text_encoder, vae, unet, controlnet
 
+def pre_train_setup_controlnet(weight_dtype: torch.dtype, cfg: BaseConfig, accelerator: Accelerator, vae, unet, text_encoder, controlnet):
+    controlnet = accelerator.prepare(controlnet)
 
+    if cfg.trainer.gradient_checkpointing:
+        controlnet.enable_gradient_checkpointing()
+
+    if accelerator.unwrap_model(controlnet).dtype != torch.float32:
+        raise ValueError(f"Controlnet loaded as datatype {accelerator.unwrap_model(controlnet).dtype}.")
+
+    # Move vae, unet and text_encoder to device and cast to weight_dtype
+    vae.to(accelerator.device, dtype=weight_dtype)
+    unet.to(accelerator.device, dtype=weight_dtype)
+    text_encoder.to(accelerator.device, dtype=weight_dtype)
+
+    if cfg.trainer.compile:
+        unet.to(memory_format=torch.channels_last)
+        unet = torch.compile(unet, mode="reduce-overhead", fullgraph=True)
+
+        controlnet.to(memory_format=torch.channels_last)
+        controlnet = torch.compile(controlnet, mode="reduce-overhead", fullgraph=True)
+
+    return vae, unet, text_encoder, controlnet
+
+def controlnet_forward(batch, noisy_latents, timesteps, weight_dtype, unet, text_encoder, controlnet):
+    # Get the text embedding for conditioning
+    encoder_hidden_states = text_encoder(batch["input_ids"])[0]
+
+    controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
+    down_block_res_samples, mid_block_res_sample = controlnet(
+        noisy_latents,
+        timesteps,
+        encoder_hidden_states=encoder_hidden_states,
+        controlnet_cond=controlnet_image,
+        return_dict=False,
+    )
+
+    # Predict the noise residual
+    model_pred = unet(
+        noisy_latents,
+        timesteps,
+        encoder_hidden_states=encoder_hidden_states,
+        down_block_additional_residuals=[
+            sample.to(dtype=weight_dtype) for sample in down_block_res_samples
+        ],
+        mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+    ).sample
+
+    return model_pred
 
 def log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg: BaseConfig, accelerator, weight_dtype, step):
     logger.info("Running validation... ")

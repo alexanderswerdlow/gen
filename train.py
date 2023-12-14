@@ -1,9 +1,10 @@
+load_time = __import__('time').time()
+
 import logging
 import math
 import os
 import random
 import shutil
-import time
 from pathlib import Path
 
 import diffusers
@@ -21,13 +22,13 @@ from omegaconf import OmegaConf
 from PIL import Image
 from tqdm.auto import tqdm
 import glob
+from diffusers.utils.import_utils import is_xformers_available
 
-from config.configs.configs import BaseConfig
+from gen.configs import BaseConfig, ModelType
+from gen.datasets.base_dataset import AbstractDataset, Split
+from gen.models.base_mapper_model import BaseMapper
 from gen.utils.decoupled_utils import check_gpu_memory_usage
-from gen.datasets.controlnet_dataset import collate_fn, make_train_dataset
-from gen.models.controlnet_model import get_model, log_validation
-
-load_time = time.time()
+from gen.models.controlnet_model import controlnet_forward, get_controlnet_model, log_validation, pre_train_setup_controlnet
 
 import builtins
 import os
@@ -77,32 +78,35 @@ def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step:
     logger.info(f"Saved state to {save_path}")
 
 def run(cfg: BaseConfig, accelerator: Accelerator):
-    tokenizer, noise_scheduler, text_encoder, vae, unet, controlnet = get_model(cfg, accelerator)
+    # TODO: Define a better interface for different models once we get a better idea of the requires inputs/outputs
+    # Right now we just conditionally call methods in the respective files based on the model_type enum
+    assert is_xformers_available()
+
+    match cfg.model.model_type:
+        case ModelType.CONTROLNET:
+            tokenizer, noise_scheduler, text_encoder, vae, unet, controlnet = get_controlnet_model(cfg, accelerator)
+            params_to_optimize = controlnet.parameters
+        case ModelType.BASE_MAPPER:
+            assert cfg.model.model_type == ModelType.BASE_MAPPER
+            model = BaseMapper(cfg)
+            params_to_optimize = model.text_encoder.text_model.embeddings.mapper.parameters
+            tokenizer = model.tokenizer
+            summary(model)
 
     if accelerator.is_local_main_process:
-        summary(vae)
-        summary(unet)
-        summary(controlnet)
+        if cfg.model.model_type == ModelType.CONTROLNET: summary(controlnet)
 
     optimizer_class = torch.optim.AdamW
-    params_to_optimize = controlnet.parameters()
     optimizer = optimizer_class(
-        params_to_optimize,
+        params_to_optimize(),
         lr=cfg.trainer.learning_rate,
         betas=(cfg.trainer.adam_beta1, cfg.trainer.adam_beta2),
         weight_decay=cfg.trainer.adam_weight_decay,
         eps=cfg.trainer.adam_epsilon,
     )
 
-    train_dataset = make_train_dataset(cfg, tokenizer, accelerator)
-
-    train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        shuffle=True,
-        collate_fn=collate_fn,
-        batch_size=cfg.dataset.train_batch_size,
-        num_workers=cfg.dataset.dataloader_num_workers,
-    )
+    dataloader: AbstractDataset = hydra.utils.instantiate(cfg.dataset, cfg=cfg, tokenizer=tokenizer, accelerator=accelerator, _recursive_=False)
+    train_dataloader = dataloader.get_dataloader(Split.TRAIN)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -121,15 +125,9 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
     )
 
     # Prepare everything with our `accelerator`.
-    controlnet, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controlnet, optimizer, train_dataloader, lr_scheduler
+    optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        optimizer, train_dataloader, lr_scheduler
     )
-
-    if cfg.trainer.gradient_checkpointing:
-        controlnet.enable_gradient_checkpointing()
-
-    if accelerator.unwrap_model(controlnet).dtype != torch.float32:
-        raise ValueError(f"Controlnet loaded as datatype {accelerator.unwrap_model(controlnet).dtype}.")
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
     # as these models are only used for inference, keeping weights in full precision is not required.
@@ -139,17 +137,12 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
 
-    # Move vae, unet and text_encoder to device and cast to weight_dtype
-    vae.to(accelerator.device, dtype=weight_dtype)
-    unet.to(accelerator.device, dtype=weight_dtype)
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
-
-    if cfg.trainer.compile:
-        unet.to(memory_format=torch.channels_last)
-        unet = torch.compile(unet, mode="reduce-overhead", fullgraph=True)
-
-        controlnet.to(memory_format=torch.channels_last)
-        controlnet = torch.compile(controlnet, mode="reduce-overhead", fullgraph=True)
+    match cfg.model.model_type:
+        case ModelType.CONTROLNET:
+            vae, unet, text_encoder, controlnet = pre_train_setup_controlnet(weight_dtype, cfg, accelerator, vae, unet, text_encoder, controlnet)
+        case ModelType.BASE_MAPPER:
+            model.pre_train_setup_base_mapper(weight_dtype, accelerator)
+            noise_scheduler, vae, unet, text_encoder = model.noise_scheduler, model.vae, model.unet, model.text_encoder
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / cfg.trainer.gradient_accumulation_steps)
@@ -162,7 +155,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
     total_batch_size = cfg.dataset.train_batch_size * accelerator.num_processes * cfg.trainer.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
+    logger.info(f"  Num examples = {len(train_dataloader.dataset)}")
     logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
     logger.info(f"  Num Epochs = {cfg.trainer.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {cfg.dataset.train_batch_size}")
@@ -217,11 +210,12 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
         profiler.start()
 
     progress_bar = tqdm(range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not accelerator.is_local_main_process)
+    print(f'load_time: {__import__("time").time() - load_time} seconds')
 
     image_logs = None
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate(controlnet):
+            with accelerator.accumulate(controlnet if cfg.model.model_type == ModelType.CONTROLNET else text_encoder):
                 # Convert images to latent space
                 latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
@@ -237,29 +231,11 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                 # (this is the forward diffusion process)
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-                # Get the text embedding for conditioning
-                encoder_hidden_states = text_encoder(batch["input_ids"])[0]
-
-                controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
-
-                down_block_res_samples, mid_block_res_sample = controlnet(
-                    noisy_latents,
-                    timesteps,
-                    encoder_hidden_states=encoder_hidden_states,
-                    controlnet_cond=controlnet_image,
-                    return_dict=False,
-                )
-
-                # Predict the noise residual
-                model_pred = unet(
-                    noisy_latents,
-                    timesteps,
-                    encoder_hidden_states=encoder_hidden_states,
-                    down_block_additional_residuals=[
-                        sample.to(dtype=weight_dtype) for sample in down_block_res_samples
-                    ],
-                    mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
-                ).sample
+                match cfg.model.model_type:
+                    case ModelType.CONTROLNET:
+                        model_pred = controlnet_forward(batch, noisy_latents, timesteps, weight_dtype, unet, text_encoder, controlnet)
+                    case ModelType.BASE_MAPPER:
+                        model_pred = model(batch, noisy_latents, timesteps, weight_dtype)
 
                 # Get the target for loss depending on the prediction type
                 if noise_scheduler.config.prediction_type == "epsilon":
@@ -272,8 +248,11 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = controlnet.parameters()
+                    # TODO: WARNING: THIS MAY NOT WORK! IF THERE ARE ISSUES WITH OPTIMIZATION, THIS MAY BE THE CAUSE
+                    # params_to_optimize should be a function pointer
+                    params_to_clip = params_to_optimize()
                     accelerator.clip_grad_norm_(params_to_clip, cfg.trainer.max_grad_norm)
+
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=cfg.trainer.set_grads_to_none)
@@ -316,7 +295,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
 
     accelerator.end_training()
 
-@hydra.main(version_base=None, config_path="config/conf", config_name="config")
+@hydra.main(version_base=None, config_path="gen/configs/conf", config_name="config")
 def main(cfg: BaseConfig):
     with open_dict(cfg):
         cfg.cwd = str(get_original_cwd())
@@ -345,7 +324,6 @@ def main(cfg: BaseConfig):
 
     original_output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / '.hydra'
     if original_output_dir.exists():
-        # move to new location
         shutil.move(original_output_dir, cfg.output_dir)
 
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
@@ -384,14 +362,13 @@ def main(cfg: BaseConfig):
             cfg.tracker_project_name,
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
             init_kwargs=dict(
-                wandb=
-                dict(
+                wandb=dict(
                     name=cfg.run_name,
                     tags=cfg.tags,
+                    dir=cfg.top_level_output_path
                 )
             )
         )
-        wandb_tracker = accelerator.get_tracker("wandb")
         wandb.run.log_code(include_fn=lambda path: any(path.endswith(f) for f in (
             '.py', '.yaml', '.yml', '.txt', '.md'
         )))
@@ -426,7 +403,21 @@ def main(cfg: BaseConfig):
             cfg.trainer.learning_rate * cfg.trainer.gradient_accumulation_steps * cfg.dataset.train_batch_size * accelerator.num_processes
         )
 
-    run(cfg, accelerator)
-
+    try:
+            run(cfg, accelerator)
+    except Exception as e:
+        logger.error(e)
+        if accelerator.is_main_process:
+            print('Exception...')
+            import traceback
+            import ipdb
+            import sys
+            import lovely_tensors
+            traceback.print_exc()
+            ipdb.post_mortem(e.__traceback__)
+            sys.exit(1)
+        raise
+    finally:
+        pass
 if __name__ == '__main__':
     main()

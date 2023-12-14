@@ -6,10 +6,28 @@ import torch.utils.checkpoint
 from accelerate.logging import get_logger
 from datasets import load_dataset
 from torchvision import transforms
-
-from config.configs.configs import BaseConfig
+from abc import ABC, abstractmethod
+from torch.utils.data import DataLoader
+from gen.configs import BaseConfig
+from enum import Enum
+from gen.datasets.base_dataset import AbstractDataset, Split
 
 logger = get_logger(__name__)
+
+def collate_fn(examples):
+    pixel_values = torch.stack([example["pixel_values"] for example in examples])
+    pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+
+    conditioning_pixel_values = torch.stack([example["conditioning_pixel_values"] for example in examples])
+    conditioning_pixel_values = conditioning_pixel_values.to(memory_format=torch.contiguous_format).float()
+
+    input_ids = torch.stack([example["input_ids"] for example in examples])
+
+    return {
+        "pixel_values": pixel_values,
+        "conditioning_pixel_values": conditioning_pixel_values,
+        "input_ids": input_ids,
+    }
 
 def make_train_dataset(cfg: BaseConfig, tokenizer, accelerator):
     # Get the datasets: you can either provide your own training and evaluation files (see below)
@@ -127,18 +145,17 @@ def make_train_dataset(cfg: BaseConfig, tokenizer, accelerator):
 
     return train_dataset
 
+class TrainDataLoader(AbstractDataset):
+    def __init__(self, cfg: BaseConfig, tokenizer, accelerator):
+        super().__init__(cfg)
+        self.tokenizer = tokenizer
+        self.accelerator = accelerator
 
-def collate_fn(examples):
-    pixel_values = torch.stack([example["pixel_values"] for example in examples])
-    pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
+    def get_dataset(self, split: Split):
+        if split == Split.TRAIN:
+            return make_train_dataset(self.cfg, self.tokenizer, self.accelerator)
+        else:
+            raise NotImplementedError(f"Dataset split {split} not implemented.")
 
-    conditioning_pixel_values = torch.stack([example["conditioning_pixel_values"] for example in examples])
-    conditioning_pixel_values = conditioning_pixel_values.to(memory_format=torch.contiguous_format).float()
-
-    input_ids = torch.stack([example["input_ids"] for example in examples])
-
-    return {
-        "pixel_values": pixel_values,
-        "conditioning_pixel_values": conditioning_pixel_values,
-        "input_ids": input_ids,
-    }
+    def collate_fn(self, batch):
+        return collate_fn(batch)

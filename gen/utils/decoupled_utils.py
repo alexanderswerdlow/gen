@@ -1,4 +1,6 @@
 from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -207,3 +209,19 @@ def check_gpu_memory_usage():
 
     assert allocated_percent <= 25
     assert reserved_percent <= 25
+
+def load_checkpoint_from_url(url: str, file_path: Optional[str] = None) -> Path:
+    if file_path is None:
+        parts = urlparse(url)
+        filename = os.path.basename(parts.path)
+        if file_path is not None:
+            filename = file_path
+
+        file_path = Path.home() / '.cache' / 'pretrained_weights' / filename
+
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    if not os.path.exists(file_path):
+        print(f'Downloading: "{url}" to {file_path}\n')
+        torch.hub.download_url_to_file(url, file_path, progress=True)
+    
+    return file_path
