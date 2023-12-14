@@ -23,6 +23,7 @@ import wandb
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
+from gen.models.neti.xti_attention_processor import XTIAttenProc
 
 logger = get_logger(__name__)
 
@@ -59,7 +60,7 @@ class BaseMapper(nn.Module):
         self.text_encoder = NeTICLIPTextModel.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="text_encoder", revision=self.cfg.model.revision)
 
         self.vae = AutoencoderKL.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="vae", revision=self.cfg.model.revision, variant=self.cfg.model.variant)
-        self.unet = UNet2DConditionModel.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant)
+        self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant)
 
         self.token_embeds, self.placeholder_token_id = self._add_concept_token_to_tokenizer()
         neti_mapper, self.loaded_iteration = self._init_neti_mapper()
@@ -69,19 +70,21 @@ class BaseMapper(nn.Module):
         from PIL import Image
         import open_clip
 
-        self.clip = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')
-        # tokenizer = open_clip.get_tokenizer('ViT-L-14') # 
+        return_nodes = {
+            'transformer.resblocks.0': 'stage0',
+            'transformer.resblocks.5': 'stage5',
+            'transformer.resblocks.11': 'stage1',
+            'transformer.resblocks.17': 'stage17',
+            'transformer.resblocks.23': 'stage23',
+            'ln_post': 'ln_post',
+        }
+        from torchvision.models.feature_extraction import get_graph_node_names, create_feature_extractor
+        # train_nodes, eval_nodes = get_graph_node_names(self.clip.visual)
         
-        with torch.no_grad(), torch.cuda.amp.autocast():
-            image_features = model.encode_image(image)
-            text_features = model.encode_text(text)
-            image_features /= image_features.norm(dim=-1, keepdim=True)
-            text_features /= text_features.norm(dim=-1, keepdim=True)
-
-            text_probs = (100.0 * image_features @ text_features.T).softmax(dim=-1)
-
-        print("Label probs:", text_probs)  # prints: [[1., 0., 0.]]
-
+        self.clip = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[0]
+        self.clip = create_feature_extractor(self.clip.visual, return_nodes=return_nodes)
+        # tokenizer = open_clip.get_tokenizer('ViT-L-14') # 
+        # self.clip(batch['disc_pixel_values'])
 
         self.vae.requires_grad_(False)
         self.unet.requires_grad_(False)
@@ -96,8 +99,11 @@ class BaseMapper(nn.Module):
             import xformers
             self.unet.enable_xformers_memory_efficient_attention()
 
+        self.unet.set_attn_processor(XTIAttenProc())
+
 
     def pre_train_setup_base_mapper(self, weight_dtype: torch.dtype, accelerator: Accelerator):
+        self.weight_dtype = weight_dtype
         self.text_encoder = accelerator.prepare(self.text_encoder)
 
         if self.cfg.trainer.gradient_checkpointing:
@@ -113,7 +119,7 @@ class BaseMapper(nn.Module):
 
         if self.cfg.trainer.compile:
             self.unet.to(memory_format=torch.channels_last)
-            self.unet = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
+            self.unet: UNet2DConditionModel = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
 
     def get_text_conditioning(self, input_ids: torch.Tensor, timesteps: torch.Tensor, device: torch.device) -> Dict:
         """ Compute the text conditioning for the current batch of images using our text encoder over-ride. """
@@ -185,6 +191,8 @@ class BaseMapper(nn.Module):
 
     def forward(self, batch, noisy_latents, timesteps, weight_dtype):
         # Get the text embedding for conditioning
+
+        batch['input_ids'][:, 0] = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token) # TODO: HACK!!!
         _hs = self.get_text_conditioning(input_ids=batch['input_ids'], timesteps=timesteps, device=noisy_latents.device)
 
         # Predict the noise residual
