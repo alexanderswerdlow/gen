@@ -173,10 +173,10 @@ def test_params():
         # from segment_anything_fast import tools
         # tools.apply_eval_dtype_predictor(predictor, use_half)
 
-def find_true_indices_batched(original, downscaled):
+def find_true_indices_batched(original, dh, dw):
     # Get dimensions
     batch_size, h, w = original.shape
-    dh, dw, d = downscaled.shape
+    # dh, dw, d = downscaled.shape
     
     # Reshape and unfold to align with the downscaled dimensions
     reshaped = original.unfold(1, h // dh, h // dh).unfold(2, w // dw, w // dw)
@@ -200,7 +200,7 @@ def mask_max_pool(embeddings, mask):
     Outputs:
     ------------------
     max pooled embeddings: [B, R, E], the max pooled embeddings according to the membership in mask
-    max pooled index： [B, R, E], the max pooled index
+    max pooled index: [B, R, E], the max pooled index
     '''
     B, D, E = embeddings.shape
     _, R, _ = mask.shape
@@ -272,8 +272,8 @@ if __name__ == '__main__':
 
     bs = len(masks)
     original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(bs)]))
-    downscaled = torch.randn((16, 16, 768))
-    output, result = find_true_indices_batched(original, downscaled)
+    # downscaled = torch.randn((16, 16, 768))
+    output, result = find_true_indices_batched(original, 16, 16)
 
     from ipdb import set_trace; set_trace()
 

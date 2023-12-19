@@ -1,29 +1,35 @@
-import os
 from typing import Dict, Optional, Tuple
-import numpy as np
+from einops import rearrange
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate.logging import get_logger
-from packaging import version
 from PIL import Image
-from transformers import AutoTokenizer, PretrainedConfig
+from transformers import AutoTokenizer
 from accelerate import Accelerator
 from diffusers import (
     AutoencoderKL,
-    ControlNetModel,
     DDPMScheduler,
-    StableDiffusionControlNetPipeline,
     UNet2DConditionModel,
-    UniPCMultistepScheduler,
 )
 from diffusers.utils.import_utils import is_xformers_available
 from gen.configs import BaseConfig
-import wandb
+from gen.models.attention_utils import CrossAttention
 
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.xti_attention_processor import XTIAttenProc
+
+from PIL import Image
+import numpy as np
+import open_clip
+
+from flash_attn.modules.mha import MHA
+
+from gen.models.sam import find_true_indices_batched
+from gen.models.sam import HQSam
 
 logger = get_logger(__name__)
 
@@ -37,13 +43,6 @@ def image_grid(imgs, rows, cols):
     for i, img in enumerate(imgs):
         grid.paste(img, box=(i % cols * w, i // cols * h))
     return grid
-    
-
-
-
-
-import torch
-import torch.nn as nn
 
 class BaseMapper(nn.Module):
     def __init__(self, cfg: BaseConfig):
@@ -66,10 +65,6 @@ class BaseMapper(nn.Module):
         neti_mapper, self.loaded_iteration = self._init_neti_mapper()
         self.text_encoder.text_model.embeddings.set_mapper(neti_mapper)
 
-        import torch
-        from PIL import Image
-        import open_clip
-
         return_nodes = {
             'transformer.resblocks.0': 'stage0',
             'transformer.resblocks.5': 'stage5',
@@ -83,8 +78,19 @@ class BaseMapper(nn.Module):
         
         self.clip = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[0]
         self.clip = create_feature_extractor(self.clip.visual, return_nodes=return_nodes)
-        # tokenizer = open_clip.get_tokenizer('ViT-L-14') # 
-        # self.clip(batch['disc_pixel_values'])
+
+        self.cross_attn = MHA(
+            embed_dim=1024,
+            num_heads=8,
+            use_flash_attn=True,
+            cross_attn=True,
+            fused_bias_fc=False,
+        )
+
+        self.hqsam = HQSam(model_type='vit_b')
+
+        # self.eval()
+        # self.clip.requires_grad_(False)
 
         self.vae.requires_grad_(False)
         self.unet.requires_grad_(False)
@@ -120,6 +126,10 @@ class BaseMapper(nn.Module):
         if self.cfg.trainer.compile:
             self.unet.to(memory_format=torch.channels_last)
             self.unet: UNet2DConditionModel = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
+
+        self.clip.to(accelerator.device, dtype=weight_dtype)
+        self.cross_attn.to(accelerator.device, dtype=weight_dtype)
+        self.hqsam.to(accelerator.device, dtype=weight_dtype)
 
     def get_text_conditioning(self, input_ids: torch.Tensor, timesteps: torch.Tensor, device: torch.device) -> Dict:
         """ Compute the text conditioning for the current batch of images using our text encoder over-ride. """
@@ -191,9 +201,52 @@ class BaseMapper(nn.Module):
 
     def forward(self, batch, noisy_latents, timesteps, weight_dtype):
         # Get the text embedding for conditioning
+        bs: int = batch['disc_pixel_values'].shape[0]
 
         batch['input_ids'][:, 0] = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token) # TODO: HACK!!!
         _hs = self.get_text_conditioning(input_ids=batch['input_ids'], timesteps=timesteps, device=noisy_latents.device)
+
+        clip_feature_map = self.clip(batch['disc_pixel_values'].to(noisy_latents))['stage23']
+        clip_feature_map = rearrange(clip_feature_map, 'l b d -> b l d')
+        clip_feature_cls_token = clip_feature_map[:, 0, :] # TODO: Verify that the first token is cls and not the last
+        clip_feature_map = clip_feature_map[:, None, 1:, :] # We remove the cls token
+
+        # TODO: For now we assume BS=1
+        sam_input = rearrange((((batch['pixel_values'] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')[0]
+        masks = self.hqsam.forward(sam_input)
+
+        num_masks = len(masks)
+        original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(num_masks)]))
+
+        assert batch['disc_pixel_values'].shape[-1] == batch['disc_pixel_values'].shape[-2]
+        latent_dim = batch['disc_pixel_values'].shape[-1] // 14
+        _, feature_map_mask = find_true_indices_batched(original=original, dh=latent_dim, dw=latent_dim)
+
+        # feature_map_mask is a boolean mask of (masks, h, w)
+        feature_map_mask = rearrange(feature_map_mask, 'masks h w -> masks (h w)').to(noisy_latents.device)
+
+        # TODO: Right now we assume bs=1. We need to fix this.
+        feature_map_masks = [feature_map_mask for _ in range(bs)]
+
+        seqlens_k = torch.cat([feature_map_mask_.sum(dim=-1) for feature_map_mask_ in feature_map_masks])
+        max_seqlen_k = seqlens_k.max().item()
+        cu_seqlens_k = F.pad(torch.cumsum(seqlens_k, dim=0, dtype=torch.torch.int32), (1, 0))
+
+        _, _, N, D = clip_feature_map.shape
+        k_features = []
+        for i in range(num_masks):
+            valid_entries = clip_feature_map[i].masked_select(feature_map_masks[i].unsqueeze(-1)).view(-1, D)
+            k_features.append(valid_entries)
+        k_features = torch.cat(k_features) # (total, hidden_dim)
+
+        # TODO: Replace query features with output of NeTI mapper (e.g., timestep + layer encoding)
+        query_features = batch['disc_pixel_values'].new_zeros((seqlens_k.shape[0], 1024)).to(noisy_latents.dtype)
+        cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(noisy_latents.device)
+        max_seqlen_q = 1
+
+
+        output = self.cross_attn(x=query_features, x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
+        output = query_features + output # (total, hidden_dim)
 
         # Predict the noise residual
         model_pred = self.unet(noisy_latents, timesteps, _hs).sample

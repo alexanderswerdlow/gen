@@ -8,18 +8,20 @@ from torchvision import transforms
 import torch
 from torch.utils.data import DataLoader
 import open_clip
+
 # model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='laion2b_s34b_b79k')
+
 class CocoCaptions(AbstractDataset):
     def __init__(self, cfg: BaseConfig, tokenizer, **kwargs):
         super().__init__(cfg)
         self.tokenizer = tokenizer
-        self.disc_image_transforms = transforms.Compose([
+        self.gen_image_transforms = transforms.Compose([
             transforms.Resize(self.cfg.dataset.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(self.cfg.dataset.resolution),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
         ])
-        self.gen_image_transforms = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[-1]
+        self.disc_image_transforms = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[-1]
 
     def get_dataset(self, split: Split):
         pass
@@ -33,7 +35,6 @@ class CocoCaptions(AbstractDataset):
         return {"pixel_values": pixel_values, "input_ids": input_ids, "disc_pixel_values": disc_pixel_values}
 
     def make_sample(self, sample, val=False):
-
         inputs = self.tokenizer(sample['txt'], max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt")
         return self.gen_image_transforms(sample["jpg"]), self.disc_image_transforms(sample["jpg"]), inputs.input_ids
     

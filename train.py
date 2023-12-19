@@ -28,6 +28,7 @@ from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
 from gen.utils.decoupled_utils import check_gpu_memory_usage
+from gen.utils.trainer_utils import handle_checkpointing
 from gen.models.controlnet_model import controlnet_forward, get_controlnet_model, log_validation, pre_train_setup_controlnet
 
 import builtins
@@ -53,29 +54,6 @@ check_min_version("0.24.0")
 builtins.st = set_trace # We import st everywhere
 
 logger = get_logger(__name__)
-
-def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step: int):
-    # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-    if cfg.trainer.checkpoints_total_limit is not None:
-        checkpoints = os.listdir(cfg.output_dir)
-        checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-        checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
-
-        # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-        if len(checkpoints) >= cfg.trainer.checkpoints_total_limit:
-            num_to_remove = len(checkpoints) - cfg.trainer.checkpoints_total_limit + 1
-            removing_checkpoints = checkpoints[0:num_to_remove]
-
-            logger.info(f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints")
-            logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
-
-            for removing_checkpoint in removing_checkpoints:
-                removing_checkpoint = os.path.join(cfg.output_dir, removing_checkpoint)
-                shutil.rmtree(removing_checkpoint)
-
-    save_path = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
-    accelerator.save_state(save_path)
-    logger.info(f"Saved state to {save_path}")
 
 def run(cfg: BaseConfig, accelerator: Accelerator):
     # TODO: Define a better interface for different models once we get a better idea of the requires inputs/outputs
@@ -265,9 +243,15 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                 if accelerator.is_main_process:
                     if global_step % cfg.trainer.checkpointing_steps == 0:
                         handle_checkpointing(cfg, accelerator, global_step)
+                    
+                    if global_step % cfg.trainer.validation_steps == 0:
+                        match cfg.model.model_type:
+                            case ModelType.CONTROLNET:
+                                if cfg.dataset.validation_prompt:
+                                    image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
+                            case ModelType.BASE_MAPPER:
+                                print("TODO: Validation for base mapper")
 
-                    if cfg.dataset.validation_prompt is not None and global_step % cfg.trainer.validation_steps == 0:
-                        image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -290,8 +274,13 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                 print(f'Adding {trace}')
                 wandb.save(trace, base_path=profile_dir)
                 exit()
-        controlnet = accelerator.unwrap_model(controlnet)
-        controlnet.save_pretrained(cfg.output_dir)
+
+        match cfg.model.model_type:
+            case ModelType.CONTROLNET:
+                controlnet = accelerator.unwrap_model(controlnet)
+                controlnet.save_pretrained(cfg.output_dir)
+            case ModelType.BASE_MAPPER:
+                print("TODO: Saving for base mapper")
 
     accelerator.end_training()
 
