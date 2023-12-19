@@ -203,47 +203,46 @@ class BaseMapper(nn.Module):
         # Get the text embedding for conditioning
         bs: int = batch['disc_pixel_values'].shape[0]
 
-        batch['input_ids'][:, 0] = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token) # TODO: HACK!!!
+        # TODO: HACK!!! We need to create a proper input string. The current implementation will not work
+        batch['input_ids'][:, 0] = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
         _hs = self.get_text_conditioning(input_ids=batch['input_ids'], timesteps=timesteps, device=noisy_latents.device)
 
         clip_feature_map = self.clip(batch['disc_pixel_values'].to(noisy_latents))['stage23']
         clip_feature_map = rearrange(clip_feature_map, 'l b d -> b l d')
         clip_feature_cls_token = clip_feature_map[:, 0, :] # TODO: Verify that the first token is cls and not the last
-        clip_feature_map = clip_feature_map[:, None, 1:, :] # We remove the cls token
+        clip_feature_map = clip_feature_map[:, 1:, :] # We remove the cls token
 
-        # TODO: For now we assume BS=1
-        sam_input = rearrange((((batch['pixel_values'] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')[0]
-        masks = self.hqsam.forward(sam_input)
-
-        num_masks = len(masks)
-        original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(num_masks)]))
-
-        assert batch['disc_pixel_values'].shape[-1] == batch['disc_pixel_values'].shape[-2]
+        sam_input = rearrange((((batch['pixel_values'] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')
         latent_dim = batch['disc_pixel_values'].shape[-1] // 14
-        _, feature_map_mask = find_true_indices_batched(original=original, dh=latent_dim, dw=latent_dim)
+        feature_map_masks = []
+        feature_map_batch_idxs = []
+        for i in range(bs):
+            masks = self.hqsam.forward(sam_input[i])
+            num_masks = len(masks)
+            original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(num_masks)]))
+            assert batch['disc_pixel_values'].shape[-1] == batch['disc_pixel_values'].shape[-2]
+            feature_map_mask_ = find_true_indices_batched(original=original, dh=latent_dim, dw=latent_dim)
+            feature_map_masks.append(feature_map_mask_)
+            feature_map_batch_idxs.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
 
-        # feature_map_mask is a boolean mask of (masks, h, w)
-        feature_map_mask = rearrange(feature_map_mask, 'masks h w -> masks (h w)').to(noisy_latents.device)
+        # If the 1st image has 5 masks and the 2nd has 3 masks, we will have an integer tensor of shape (total == 8,) for 8 different cross-attns. The sequence length for each is thus the number of valid "pixels" (KVs)
+        feature_map_masks = torch.cat(feature_map_masks, dim=0) # feature_map_mask is a boolean mask of (total, h, w)
+        feature_map_masks = rearrange(feature_map_masks, 'total h w -> total (h w)').to(noisy_latents.device)
+        feature_map_batch_idxs = torch.cat(feature_map_batch_idxs, dim=0).to(noisy_latents.device)
 
-        # TODO: Right now we assume bs=1. We need to fix this.
-        feature_map_masks = [feature_map_mask for _ in range(bs)]
-
-        seqlens_k = torch.cat([feature_map_mask_.sum(dim=-1) for feature_map_mask_ in feature_map_masks])
+        # We sum the number of valid "pixels" in each mask
+        seqlens_k = feature_map_masks.sum(dim=-1) # (total,)
         max_seqlen_k = seqlens_k.max().item()
         cu_seqlens_k = F.pad(torch.cumsum(seqlens_k, dim=0, dtype=torch.torch.int32), (1, 0))
 
-        _, _, N, D = clip_feature_map.shape
-        k_features = []
-        for i in range(num_masks):
-            valid_entries = clip_feature_map[i].masked_select(feature_map_masks[i].unsqueeze(-1)).view(-1, D)
-            k_features.append(valid_entries)
-        k_features = torch.cat(k_features) # (total, hidden_dim)
-
-        # TODO: Replace query features with output of NeTI mapper (e.g., timestep + layer encoding)
+        flat_features = rearrange(clip_feature_map[feature_map_batch_idxs], 'total (h w) d -> (total h w) d', h=latent_dim, w=latent_dim)
+        flat_mask = rearrange(feature_map_masks, 'total (h w) -> (total h w)', h=latent_dim, w=latent_dim)
+        k_features = flat_features[flat_mask]
+            
+        # TODO: Replace dummy query features with output of NeTI mapper (e.g., timestep + layer encoding)
         query_features = batch['disc_pixel_values'].new_zeros((seqlens_k.shape[0], 1024)).to(noisy_latents.dtype)
         cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(noisy_latents.device)
-        max_seqlen_q = 1
-
+        max_seqlen_q = 1 # We are doing attention pooling so we have one query per mask
 
         output = self.cross_attn(x=query_features, x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
         output = query_features + output # (total, hidden_dim)

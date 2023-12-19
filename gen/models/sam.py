@@ -175,20 +175,20 @@ def test_params():
 
 def find_true_indices_batched(original, dh, dw):
     # Get dimensions
-    batch_size, h, w = original.shape
+    masks, h, w = original.shape
     # dh, dw, d = downscaled.shape
     
     # Reshape and unfold to align with the downscaled dimensions
     reshaped = original.unfold(1, h // dh, h // dh).unfold(2, w // dw, w // dw)
-    reshaped = reshaped.reshape(batch_size, dh, dw, -1)
+    reshaped = reshaped.reshape(masks, dh, dw, -1)
 
     # Check for any True values in the corresponding blocks
     result = reshaped.any(dim=3)
 
     # Get indices where result is True
-    indices = [torch.nonzero(r, as_tuple=False) for r in result]
+    # indices = [torch.nonzero(r, as_tuple=False) for r in result]
 
-    return indices, result
+    return result
 
 def mask_max_pool(embeddings, mask):
     '''
