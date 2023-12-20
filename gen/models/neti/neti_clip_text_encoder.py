@@ -106,17 +106,22 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         if True: # TODO: Add real config
             feature_map_batch_idxs = kwargs.get('feature_map_batch_idxs')
             kwargs['attn_dict']['x'] = mapper_outputs[feature_map_batch_idxs] # Copy the NeTI output to the right masks based on batch idx
+
+            # TODO: We should find a better place to put the cross-attn but this is the most convinient for now
             output = self.embeddings.mapper.forward_cross_attn(**kwargs)
 
-        # TODO: Vectorize
-        bs = hidden_states.shape[0]
-        for i in range(bs):
-            # Everything after 1st pad token should also be a pad token
-            token_is_padding = (batch.input_ids[0] == kwargs.get('pad_token')).nonzero()
-            assert (token_is_padding.shape[0] == (batch.input_ids.shape[1] - token_is_padding[0])).item()
-            mask_part_of_batch = (feature_map_batch_idxs == i).nonzero().squeeze(1)
-            assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0] # We need at least as many pad tokens as we have masks
-            hidden_states[i, token_is_padding[0]:token_is_padding[0]+mask_part_of_batch.shape[0]] = output[mask_part_of_batch]
+            # TODO: Vectorize
+            bs = hidden_states.shape[0]
+            for b in range(bs):
+                # Everything after 1st pad token should also be a pad token
+                token_is_padding = (batch.input_ids[0] == kwargs.get('pad_token')).nonzero()
+                assert (token_is_padding.shape[0] == (batch.input_ids.shape[1] - token_is_padding[0])).item()
+                mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
+                assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0] # We need at least as many pad tokens as we have masks
+
+                # We replace the first n null tokens with the cross-attn outputs for our n masks
+                # E.g., A photo of [1st mask cross-attn output] and [2nd mask cross-attn output] and ...
+                hidden_states[b, token_is_padding[0]:token_is_padding[0]+mask_part_of_batch.shape[0]] = output[mask_part_of_batch, :768]
 
         bsz, seq_len = input_shape
         # CLIP's text model uses causal mask, prepare it here.
@@ -139,6 +144,18 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+
+        # TODO: Vectorize and avoid duplicating this loop from above
+        bs = hidden_states.shape[0]
+        for b in range(bs):
+            # Everything after 1st pad token should also be a pad token
+            token_is_padding = (batch.input_ids[0] == kwargs.get('pad_token')).nonzero()
+            assert (token_is_padding.shape[0] == (batch.input_ids.shape[1] - token_is_padding[0])).item()
+            mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
+            assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0] # We need at least as many pad tokens as we have masks
+
+            # We replace the first n null tokens with the cross-attn outputs for our n masks
+            encoder_outputs.last_hidden_state[b, token_is_padding[0]:token_is_padding[0]+mask_part_of_batch.shape[0]] = output[mask_part_of_batch, 768:]
 
         last_hidden_state = encoder_outputs[0]
         last_hidden_state_with_bypass = last_hidden_state.clone()

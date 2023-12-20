@@ -53,6 +53,7 @@ class NeTIMapper(nn.Module):
                      num_time_anchors=num_pe_time_anchors,
                      output_dim=output_dim)
         
+        # Newly added layers for cross-attn
         self.neti_up_proj = nn.Sequential(
             nn.Linear(self.orig_output_dim, 1024),
             nn.LayerNorm(1024)
@@ -63,6 +64,10 @@ class NeTIMapper(nn.Module):
             use_flash_attn=True,
             cross_attn=True,
             fused_bias_fc=False,
+        )
+        self.cross_attn_proj = nn.Sequential(
+            nn.Linear(1024, 768 * 2),
+            nn.LayerNorm(768 * 2)
         )
 
 
@@ -91,7 +96,7 @@ class NeTIMapper(nn.Module):
     def forward_cross_attn(self, **kwargs):
         attn_dict = kwargs.get('attn_dict')
         attn_dict['x'] = self.neti_up_proj(attn_dict['x'])
-        return self.cross_attn(**attn_dict)
+        return self.cross_attn_proj(self.cross_attn(**attn_dict))
 
     def get_encoded_input(self, timestep: torch.Tensor, unet_layer: torch.Tensor) -> torch.Tensor:
         return self.encoder.encode(timestep, unet_layer)
