@@ -15,8 +15,8 @@ pip install -r requirements.txt
 ## Nightly Install
 
 ```
-pip install https://download.pytorch.org/whl/nightly/cu121/torch-2.2.0.dev20231204%2Bcu121-cp310-cp310-linux_x86_64.whl
-pip install https://download.pytorch.org/whl/nightly/cu121/torchvision-0.17.0.dev20231204%2Bcu121-cp310-cp310-linux_x86_64.whl
+pip install https://download.pytorch.org/whl/nightly/cu121/torch-2.3.0.dev20231219%2Bcu121-cp310-cp310-linux_x86_64.whl
+pip install https://download.pytorch.org/whl/nightly/cu121/torchvision-0.18.0.dev20231219%2Bcu121-cp310-cp310-linux_x86_64.whl
 pip install ninja
 pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
 pip install -r requirements.txt

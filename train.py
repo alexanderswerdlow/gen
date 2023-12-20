@@ -1,16 +1,19 @@
 load_time = __import__('time').time()
 
+import builtins
 import logging
 import math
 import os
 import random
 import shutil
+import warnings
 from pathlib import Path
 
 import diffusers
 import hydra
 import numpy as np
 import torch
+import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 import transformers
@@ -18,37 +21,24 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from diffusers.optimization import get_scheduler
-from omegaconf import OmegaConf
-from tqdm.auto import tqdm
-import glob
+from diffusers.utils import check_min_version
 from diffusers.utils.import_utils import is_xformers_available
+from hydra.utils import get_original_cwd
+from image_utils import library_ops  # This overrides repr() for tensors
+from ipdb import set_trace
+from omegaconf import OmegaConf, open_dict
+from torchinfo import summary
+from tqdm.auto import tqdm
 
+import wandb
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
+from gen.models.controlnet_model import (controlnet_forward,
+                                         get_controlnet_model, log_validation,
+                                         pre_train_setup_controlnet)
 from gen.utils.decoupled_utils import Profiler, check_gpu_memory_usage
 from gen.utils.trainer_utils import handle_checkpointing
-from gen.models.controlnet_model import controlnet_forward, get_controlnet_model, log_validation, pre_train_setup_controlnet
-
-import builtins
-import os
-import random
-import warnings
-from pathlib import Path
-import subprocess
-import os
-
-import hydra
-import numpy as np
-import torch
-import torch.backends.cudnn as cudnn
-import wandb
-from hydra.utils import get_original_cwd
-from image_utils import library_ops # This overrides repr() for tensors
-from ipdb import set_trace
-from omegaconf import OmegaConf, open_dict
-from diffusers.utils import check_min_version
-from torchinfo import summary
 
 check_min_version("0.24.0")
 
@@ -276,9 +266,10 @@ def main(cfg: BaseConfig):
     os.chdir(cfg.cwd)
 
     if cfg.attach:
-        from image_utils import library_ops
-        import debugpy
         import subprocess
+
+        import debugpy
+        from image_utils import library_ops
         subprocess.run("kill -9 $(lsof -i :5678 | grep $(whoami) | awk '{print $2}')", shell=True)
         debugpy.listen(5678)
         print("Waiting for debugger attach")
@@ -385,9 +376,10 @@ def main(cfg: BaseConfig):
         logger.error(e)
         if accelerator.is_main_process:
             print('Exception...')
-            import traceback
-            import ipdb
             import sys
+            import traceback
+
+            import ipdb
             import lovely_tensors
             traceback.print_exc()
             ipdb.post_mortem(e.__traceback__)

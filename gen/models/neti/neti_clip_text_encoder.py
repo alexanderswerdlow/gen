@@ -123,18 +123,12 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
                 # E.g., A photo of [1st mask cross-attn output] and [2nd mask cross-attn output] and ...
                 hidden_states[b, token_is_padding[0]:token_is_padding[0]+mask_part_of_batch.shape[0]] = output[mask_part_of_batch, :768]
 
-        bsz, seq_len = input_shape
-        # CLIP's text model uses causal mask, prepare it here.
-        # https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
-        # causal_attention_mask = self._build_causal_attention_mask(bsz, seq_len, hidden_states.dtype).to(
-        #     hidden_states.device
-        # )
+        # CLIP's causal mask, prepare it here: https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
         causal_attention_mask = _make_causal_mask(input_shape, hidden_states.dtype, device=hidden_states.device)
 
         # expand attention_mask
         if attention_mask is not None:
-            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-            attention_mask = _expand_mask(attention_mask, hidden_states.dtype)
+            attention_mask = _expand_mask(attention_mask, hidden_states.dtype) # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
 
         encoder_outputs = self.encoder(
             inputs_embeds=hidden_states,
@@ -179,19 +173,11 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         # take features from the eot embedding (eot_token is the highest number in each sequence)
         # casting to torch.int for onnx compatibility: argmax doesn't support int64 inputs with opset 14
         if input_ids is not None:
-            pooled_output = last_hidden_state[
-                torch.arange(last_hidden_state.shape[0]), input_ids.to(torch.int).argmax(dim=-1)
-            ]
-            pooled_output_with_bypass = last_hidden_state_with_bypass[
-                torch.arange(last_hidden_state_with_bypass.shape[0]), input_ids.to(torch.int).argmax(dim=-1)
-            ]
+            pooled_output = last_hidden_state[torch.arange(last_hidden_state.shape[0]), input_ids.to(torch.int).argmax(dim=-1)]
+            pooled_output_with_bypass = last_hidden_state_with_bypass[torch.arange(last_hidden_state_with_bypass.shape[0]), input_ids.to(torch.int).argmax(dim=-1)]
         elif batch is not None:
-            pooled_output = last_hidden_state[
-                torch.arange(last_hidden_state.shape[0]), batch.input_ids.to(torch.int).argmax(dim=-1)
-            ]
-            pooled_output_with_bypass = last_hidden_state_with_bypass[
-                torch.arange(last_hidden_state_with_bypass.shape[0]), batch.input_ids.to(torch.int).argmax(dim=-1)
-            ]
+            pooled_output = last_hidden_state[torch.arange(last_hidden_state.shape[0]), batch.input_ids.to(torch.int).argmax(dim=-1)]
+            pooled_output_with_bypass = last_hidden_state_with_bypass[torch.arange(last_hidden_state_with_bypass.shape[0]), batch.input_ids.to(torch.int).argmax(dim=-1)]
         else:
             raise ValueError("You have to specify either batch or input_ids!")
 

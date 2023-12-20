@@ -1,22 +1,24 @@
 import autoroot
-from einops import rearrange
-import torch
 import os
+
+import torch
+from einops import rearrange
 
 device_name = torch.cuda.get_device_name()
 if not device_name.startswith('NVIDIA A100'):
     print("Warning: Custom flash attention kernels were written specifically for A100. Setting SEGMENT_ANYTHING_FAST_USE_FLASH_4=0")
     os.environ['SEGMENT_ANYTHING_FAST_USE_FLASH_4'] = '0'
 
+import time
 from pathlib import Path
-from gen.utils.decoupled_utils import load_checkpoint_from_url
-from image_utils import Im
+
 import numpy as np
 import torch.nn as nn
-import time
+from image_utils import Im
+from segment_anything_fast import SamAutomaticMaskGenerator, SamPredictor
+from segment_anything_fast import sam_model_fast_registry as sam_model_registry
 
-from segment_anything_fast import SamAutomaticMaskGenerator, SamPredictor, sam_model_fast_registry as sam_model_registry
-# from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
+from gen.utils.decoupled_utils import load_checkpoint_from_url
 
 model_urls = {
     "vit_b": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",

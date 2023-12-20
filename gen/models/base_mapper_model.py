@@ -1,32 +1,25 @@
 from typing import Dict, Optional, Tuple
-from einops import rearrange
+
+import numpy as np
+import open_clip
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
+from accelerate import Accelerator
 from accelerate.logging import get_logger
+from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
+from diffusers.utils.import_utils import is_xformers_available
+from einops import rearrange
 from PIL import Image
 from transformers import AutoTokenizer
-from accelerate import Accelerator
-from diffusers import (
-    AutoencoderKL,
-    DDPMScheduler,
-    UNet2DConditionModel,
-)
-from diffusers.utils.import_utils import is_xformers_available
-from gen.configs import BaseConfig
 
+from gen.configs import BaseConfig
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.xti_attention_processor import XTIAttenProc
-
-from PIL import Image
-import numpy as np
-import open_clip
-
-from gen.models.sam import find_true_indices_batched
-from gen.models.sam import HQSam
+from gen.models.sam import HQSam, find_true_indices_batched
 
 logger = get_logger(__name__)
 
@@ -70,7 +63,9 @@ class BaseMapper(nn.Module):
             'transformer.resblocks.23': 'stage23',
             'ln_post': 'ln_post',
         }
-        from torchvision.models.feature_extraction import get_graph_node_names, create_feature_extractor
+        from torchvision.models.feature_extraction import (
+            create_feature_extractor, get_graph_node_names)
+
         # train_nodes, eval_nodes = get_graph_node_names(self.clip.visual)
         
         self.clip = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[0]

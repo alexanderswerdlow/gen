@@ -1,17 +1,16 @@
 import random
-from typing import Optional, List
+from dataclasses import dataclass
+from typing import List, Optional
 
 import torch
 import torch.nn.functional as F
+from flash_attn.modules.mha import MHA
 from torch import nn
 
-from gen.models.neti.positional_encoding import NeTIPositionalEncoding, BasicEncoder
-from flash_attn.modules.mha import MHA
+from gen.models.neti.positional_encoding import (BasicEncoder,
+                                                 NeTIPositionalEncoding)
 
-from dataclasses import dataclass
-from typing import Optional
 
-import torch
 @dataclass
 class PESigmas:
     sigma_t: float
@@ -54,6 +53,7 @@ class NeTIMapper(nn.Module):
                      output_dim=output_dim)
         
         # Newly added layers for cross-attn
+        # TODO: Avoid hardcoding dims
         self.neti_up_proj = nn.Sequential(
             nn.Linear(self.orig_output_dim, 1024),
             nn.LayerNorm(1024)
