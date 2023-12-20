@@ -1,3 +1,4 @@
+from collections import namedtuple
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Any, Dict, Optional
@@ -64,7 +65,6 @@ def instantiate_with_cfg(cfg: DictConfig, **kwargs):
     target = _locate(cfg._target_)
     return target(cfg, **kwargs)
 
-
 defaults = [
     {"trainer": "base"},
     {"dataset": "huggingface"},
@@ -73,10 +73,10 @@ defaults = [
 
 @dataclass
 class BaseConfig:
-    defaults: List[Any] = field(default_factory=lambda: defaults)
     trainer: TrainerConfig = MISSING
     dataset: DatasetConfig = MISSING
     model: ModelConfig = MISSING
+
     top_level_output_path: Optional[Path] = Path("outputs")
     logging_dir: Optional[Path] = Path("logs") # Folder inside the experiment folder
     exp: Optional[str] = None
@@ -91,3 +91,6 @@ class BaseConfig:
     output_dir: Optional[Path] = None
     run_name: Optional[str] = None
     cwd: Optional[Path] = None
+
+    defaults: List[Any] = field(default_factory=lambda: defaults)
+    

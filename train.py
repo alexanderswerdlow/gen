@@ -37,12 +37,15 @@ from gen.models.base_mapper_model import BaseMapper
 from gen.models.controlnet_model import (controlnet_forward,
                                          get_controlnet_model, log_validation,
                                          pre_train_setup_controlnet)
+from gen.models.neti.checkpoint_handler import CheckpointHandler
+from gen.models.neti.validator import ValidationHandler
 from gen.utils.decoupled_utils import Profiler, check_gpu_memory_usage
 from gen.utils.trainer_utils import handle_checkpointing
 
 check_min_version("0.24.0")
 
 builtins.st = set_trace # We import st everywhere
+os.environ["HYDRA_FULL_ERROR"] = "1"
 
 logger = get_logger(__name__)
 
@@ -50,6 +53,14 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
     # TODO: Define a better interface for different models once we get a better idea of the requires inputs/outputs
     # Right now we just conditionally call methods in the respective files based on the model_type enum
     assert is_xformers_available()
+
+    # For mixed precision training we cast the text_encoder and vae weights to half-precision
+    # as these models are only used for inference, keeping weights in full precision is not required.
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
 
     match cfg.model.model_type:
         case ModelType.CONTROLNET:
@@ -61,6 +72,14 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
             params_to_optimize = model.text_encoder.text_model.embeddings.mapper.parameters
             tokenizer = model.tokenizer
             summary(model)
+            checkpoint_handler = CheckpointHandler(
+                cfg=cfg, 
+                save_root=cfg.output_dir,
+            )
+            validator = ValidationHandler(
+                cfg=cfg,
+                weights_dtype=weight_dtype,
+            )
 
     if accelerator.is_local_main_process:
         if cfg.model.model_type == ModelType.CONTROLNET: summary(controlnet)
@@ -97,14 +116,6 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
     optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
         optimizer, train_dataloader, lr_scheduler
     )
-
-    # For mixed precision training we cast the text_encoder and vae weights to half-precision
-    # as these models are only used for inference, keeping weights in full precision is not required.
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
 
     match cfg.model.model_type:
         case ModelType.CONTROLNET:
@@ -253,10 +264,11 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                 controlnet = accelerator.unwrap_model(controlnet)
                 controlnet.save_pretrained(cfg.output_dir)
             case ModelType.BASE_MAPPER:
-                print("TODO: Saving for base mapper")
+                checkpoint_handler.save_model(text_encoder=text_encoder, accelerator=accelerator, save_name='last')
 
     accelerator.end_training()
 
+# @hydra.main(config_path=None, config_name="config", version_base=None)
 @hydra.main(version_base=None, config_path="gen/configs/conf", config_name="config")
 def main(cfg: BaseConfig):
     with open_dict(cfg):

@@ -15,11 +15,13 @@ from PIL import Image
 from transformers import AutoTokenizer
 
 from gen.configs import BaseConfig
+from gen.configs.models import BaseMapperConfig
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.models.sam import HQSam, find_true_indices_batched
+from gen.utils.encoder_utils import ClipFeatureExtractor
 
 logger = get_logger(__name__)
 
@@ -35,9 +37,9 @@ def image_grid(imgs, rows, cols):
     return grid
 
 class BaseMapper(nn.Module):
-    def __init__(self, cfg: BaseConfig):
+    def __init__(self, cfg: BaseMapperConfig):
         super(BaseMapper, self).__init__()
-        self.cfg = cfg
+        self.cfg: BaseMapperConfig = cfg
         self.get_base_mapper_model()
 
     def get_base_mapper_model(self) -> tuple[AutoTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
@@ -54,24 +56,10 @@ class BaseMapper(nn.Module):
         self.token_embeds, self.placeholder_token_id = self._add_concept_token_to_tokenizer()
         neti_mapper, self.loaded_iteration = self._init_neti_mapper()
         self.text_encoder.text_model.embeddings.set_mapper(neti_mapper)
-
-        return_nodes = {
-            'transformer.resblocks.0': 'stage0',
-            'transformer.resblocks.5': 'stage5',
-            'transformer.resblocks.11': 'stage1',
-            'transformer.resblocks.17': 'stage17',
-            'transformer.resblocks.23': 'stage23',
-            'ln_post': 'ln_post',
-        }
-        from torchvision.models.feature_extraction import (
-            create_feature_extractor, get_graph_node_names)
-
-        # train_nodes, eval_nodes = get_graph_node_names(self.clip.visual)
         
-        self.clip = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[0]
-        self.clip = create_feature_extractor(self.clip.visual, return_nodes=return_nodes)
-        # self.eval()
-        # self.clip.requires_grad_(False)
+        self.clip = ClipFeatureExtractor()
+        self.clip.train()
+        self.clip.requires_grad_(True)
 
         self.hqsam = HQSam(model_type='vit_b')
         self.hqsam.eval()
@@ -111,6 +99,8 @@ class BaseMapper(nn.Module):
         if self.cfg.trainer.compile:
             self.unet.to(memory_format=torch.channels_last)
             self.unet: UNet2DConditionModel = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
+
+            self.clip: ClipFeatureExtractor = torch.compile(self.clip, mode="reduce-overhead", fullgraph=True)
 
         self.clip.to(accelerator.device, dtype=weight_dtype)
         self.hqsam.to(accelerator.device, dtype=weight_dtype)
@@ -154,6 +144,7 @@ class BaseMapper(nn.Module):
 
         super_category_token_id = token_ids[0]
         placeholder_token_id = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
+        self.cfg.model.placeholder_token_id = placeholder_token_id
 
         # Resize the token embeddings as we are adding new special tokens to the tokenizer
         self.text_encoder.resize_token_embeddings(len(self.tokenizer))

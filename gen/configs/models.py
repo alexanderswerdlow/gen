@@ -42,6 +42,7 @@ class ControlNetConfig(ModelConfig):
 class BaseMapperConfig(ModelConfig):
     model_type: ModelType = ModelType.BASE_MAPPER
     placeholder_token: str = 'placeholder'
+    placeholder_token_id: Optional[int] = None
     super_category_token: str = 'object'
 
 cs = ConfigStore.instance()

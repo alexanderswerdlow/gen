@@ -258,10 +258,8 @@ def pca(embeddings, num_components=3, principal_components=None):
     return embeddings
 
 if __name__ == '__main__':
-
-    # from image_utils import library_ops
-    test_params()
-    exit()
+    # test_params()
+    # exit()
     hqsam = HQSam(model_type='vit_b')
     hqsam = hqsam.to('cuda')
     image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').pil
@@ -270,7 +268,6 @@ if __name__ == '__main__':
 
     bs = len(masks)
     original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(bs)]))
-    # downscaled = torch.randn((16, 16, 768))
     output, result = find_true_indices_batched(original, 16, 16)
 
     from ipdb import set_trace; set_trace()

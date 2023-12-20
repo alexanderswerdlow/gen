@@ -37,7 +37,3 @@ cs = ConfigStore.instance()
 cs.store(group="dataset", name="base", node=DatasetConfig)
 cs.store(group="dataset", name="huggingface", node=HuggingFaceControlNetConfig)
 cs.store(group="dataset", name="coco_captions", node=CocoCaptions)
-
-# from hydra_zen import builds, load_from_yaml, make_config, store, zen
-# from gen.datasets.coco_captions import CocoCaptions
-# cs.store(group="dataset", name="coco", node=CocoCaptions)
