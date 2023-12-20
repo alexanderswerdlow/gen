@@ -19,7 +19,6 @@ from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from diffusers.optimization import get_scheduler
 from omegaconf import OmegaConf
-from PIL import Image
 from tqdm.auto import tqdm
 import glob
 from diffusers.utils.import_utils import is_xformers_available
@@ -27,7 +26,7 @@ from diffusers.utils.import_utils import is_xformers_available
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
-from gen.utils.decoupled_utils import check_gpu_memory_usage
+from gen.utils.decoupled_utils import Profiler, check_gpu_memory_usage
 from gen.utils.trainer_utils import handle_checkpointing
 from gen.models.controlnet_model import controlnet_forward, get_controlnet_model, log_validation, pre_train_setup_controlnet
 
@@ -36,6 +35,8 @@ import os
 import random
 import warnings
 from pathlib import Path
+import subprocess
+import os
 
 import hydra
 import numpy as np
@@ -171,21 +172,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
         initial_global_step = 0
 
     if cfg.profile:
-        profile_dir = Path(cfg.output_dir) / 'profile'
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        wait, warmup, active, repeat = 0, 1, 1, 0
-        total_steps = (wait + warmup + active) * (1 + repeat)
-        schedule = torch.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat)
-        profiler = torch.profiler.profile(
-            schedule=schedule,  # see the profiler docs for details on scheduling
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_dir),
-            record_shapes=True,
-            with_modules=True,
-            with_flops=True,
-            profile_memory=True,
-            with_stack=True
-        )
-        profiler.start()
+        profiler = Profiler(output_dir=cfg.output_dir, active_steps=cfg.trainer.profiler_active_steps)
 
     progress_bar = tqdm(range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not accelerator.is_local_main_process)
     print(f'load_time: {__import__("time").time() - load_time} seconds')
@@ -235,6 +222,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=cfg.trainer.set_grads_to_none)
 
+            # Important Note: Right now a single "global_step" is a single gradient update step (same if we don't have grad accum)
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 progress_bar.update(1)
@@ -253,26 +241,21 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                                 print("TODO: Validation for base mapper")
 
 
-            logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
-            accelerator.log(logs, step=global_step)
+                logs = {"loss": loss.detach().item() / cfg.trainer.gradient_accumulation_steps, "lr": lr_scheduler.get_last_lr()[0]}
+                progress_bar.set_postfix(**logs)
+                accelerator.log(logs, step=global_step)
 
             if global_step >= cfg.trainer.max_train_steps:
                 break
-            elif cfg.profile:
-                profiler.step()
-                if global_step > total_steps:
-                    break
+            elif cfg.profile and profiler.step(global_step):
+                print(f"Profiling finished at step: {global_step}")
+                break
 
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         if cfg.profile:
-            profiler.stop()
-            traces = glob.glob(f"{profile_dir}/*.pt.trace.json")
-            for trace in traces:
-                print(f'Adding {trace}')
-                wandb.save(trace, base_path=profile_dir)
+                profiler.finish()
                 exit()
 
         match cfg.model.model_type:
@@ -354,7 +337,8 @@ def main(cfg: BaseConfig):
                 wandb=dict(
                     name=cfg.run_name,
                     tags=cfg.tags,
-                    dir=cfg.top_level_output_path
+                    dir=cfg.top_level_output_path,
+                    sync_tensorboard=cfg.profile
                 )
             )
         )
@@ -392,8 +376,11 @@ def main(cfg: BaseConfig):
             cfg.trainer.learning_rate * cfg.trainer.gradient_accumulation_steps * cfg.dataset.train_batch_size * accelerator.num_processes
         )
 
+    if cfg.profile:
+        torch.cuda.memory._record_memory_history()
+
     try:
-            run(cfg, accelerator)
+        run(cfg, accelerator)
     except Exception as e:
         logger.error(e)
         if accelerator.is_main_process:

@@ -29,4 +29,6 @@ accelerate
 submitit
 diffusers
 segment-anything-hq
+tensorboardX
+torch-tb-profiler
 git+https://github.com/alexanderswerdlow/image_utils.git

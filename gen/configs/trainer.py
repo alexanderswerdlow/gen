@@ -36,11 +36,12 @@ class TrainerConfig:
     adam_weight_decay: float = 1e-2
     adam_epsilon: float = 1e-08
     max_grad_norm: float = 1.0
-    set_grads_to_none: bool = False
+    set_grads_to_none: bool = True
     max_train_samples: Optional[int] = None
     validation_steps: int = 100
     enable_xformers_memory_efficient_attention: bool = True
     compile: bool = False
+    profiler_active_steps: int = 2
 
 cs = ConfigStore.instance()
 cs.store(group="trainer", name="base", node=TrainerConfig)

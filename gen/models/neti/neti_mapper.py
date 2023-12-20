@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from gen.models.neti.positional_encoding import NeTIPositionalEncoding, BasicEncoder
+from flash_attn.modules.mha import MHA
 
 from dataclasses import dataclass
 from typing import Optional
@@ -32,6 +33,7 @@ class NeTIMapper(nn.Module):
                  pe_sigmas: PESigmas = PESigmas(sigma_t=0.03, sigma_l=2.0),
                  output_bypass: bool = True):
         super().__init__()
+        self.orig_output_dim = output_dim
         self.use_nested_dropout = use_nested_dropout
         self.nested_dropout_prob = nested_dropout_prob
         self.norm_scale = norm_scale
@@ -50,6 +52,19 @@ class NeTIMapper(nn.Module):
         self.set_net(num_unet_layers=len(unet_layers),
                      num_time_anchors=num_pe_time_anchors,
                      output_dim=output_dim)
+        
+        self.neti_up_proj = nn.Sequential(
+            nn.Linear(self.orig_output_dim, 1024),
+            nn.LayerNorm(1024)
+        )
+        self.cross_attn = MHA(
+            embed_dim=1024,
+            num_heads=8,
+            use_flash_attn=True,
+            cross_attn=True,
+            fused_bias_fc=False,
+        )
+
 
     def set_net(self, num_unet_layers: int, num_time_anchors: int, output_dim: int = 768):
         self.input_layer = self.set_input_layer(num_unet_layers, num_time_anchors)
@@ -72,6 +87,11 @@ class NeTIMapper(nn.Module):
             embedding = self.apply_nested_dropout(embedding, truncation_idx=truncation_idx)
         embedding = self.get_output(embedding)
         return embedding
+    
+    def forward_cross_attn(self, **kwargs):
+        attn_dict = kwargs.get('attn_dict')
+        attn_dict['x'] = self.neti_up_proj(attn_dict['x'])
+        return self.cross_attn(**attn_dict)
 
     def get_encoded_input(self, timestep: torch.Tensor, unet_layer: torch.Tensor) -> torch.Tensor:
         return self.encoder.encode(timestep, unet_layer)

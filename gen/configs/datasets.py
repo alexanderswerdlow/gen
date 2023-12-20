@@ -6,8 +6,8 @@ from typing import List, Optional, Iterable, Union
 
 @dataclass
 class DatasetConfig:
-    dataloader_num_workers: int = 0
-    train_batch_size: int = 4
+    dataloader_num_workers: int = 1
+    train_batch_size: int = 2
     resolution: Optional[int] = 512
     _target_: str = "gen.datasets.base_dataset"
 
@@ -31,6 +31,7 @@ class HuggingFaceControlNetConfig(DatasetConfig):
 @dataclass
 class CocoCaptions(DatasetConfig):
     _target_: str = "gen.datasets.coco_captions.CocoCaptions"
+    override_text: bool = True
     
 cs = ConfigStore.instance()
 cs.store(group="dataset", name="base", node=DatasetConfig)

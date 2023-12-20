@@ -18,13 +18,17 @@ class NeTICLIPTextModel(CLIPTextModel):
         self.text_model = NeTICLIPTextTransformer(config)
         self.post_init()
 
-    def forward(self, input_ids: Optional[torch.Tensor] = None,
-                attention_mask: Optional[torch.Tensor] = None,
-                position_ids: Optional[torch.Tensor] = None,
-                output_attentions: Optional[bool] = None,
-                output_hidden_states: Optional[bool] = None,
-                return_dict: Optional[bool] = None,
-                batch: Optional[NeTIBatch] = None) -> Union[Tuple, BaseModelOutputWithPooling]:
+    def forward(
+        self, 
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        batch: Optional[NeTIBatch] = None,
+        **kwargs
+    ) -> Union[Tuple, BaseModelOutputWithPooling]:
         return self.text_model.forward(
             batch=batch,
             input_ids=input_ids,
@@ -33,6 +37,7 @@ class NeTICLIPTextModel(CLIPTextModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            **kwargs
         )
 
 def _make_causal_mask(
@@ -62,13 +67,17 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         self.encoder = CLIPEncoder(config)
         self.final_layer_norm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
 
-    def forward(self, input_ids: Optional[torch.Tensor] = None,
-                attention_mask: Optional[torch.Tensor] = None,
-                position_ids: Optional[torch.Tensor] = None,
-                output_attentions: Optional[bool] = None,
-                output_hidden_states: Optional[bool] = None,
-                return_dict: Optional[bool] = None,
-                batch: Optional[NeTIBatch] = None) -> Union[Tuple, BaseModelOutputWithPooling]:
+    def forward(
+        self, 
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        batch: Optional[NeTIBatch] = None,
+        **kwargs
+    ) -> Union[Tuple, BaseModelOutputWithPooling]:
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -81,7 +90,7 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         if input_ids is not None:  # Regular embedding logic
             input_shape = input_ids.size()
             input_ids = input_ids.view(-1, input_shape[-1])
-            hidden_states, _ = self.embeddings(input_ids=input_ids, position_ids=position_ids)
+            hidden_states, _, mapper_outputs = self.embeddings(input_ids=input_ids, position_ids=position_ids)
 
         ###########################
         # NeTI logic
@@ -89,10 +98,25 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         elif batch is not None:
             input_shape = batch.input_ids.size()
             batch.input_ids = batch.input_ids.view(-1, input_shape[-1])
-            hidden_states, bypass_output = self.embeddings(batch=batch, position_ids=position_ids)
+            hidden_states, bypass_output, mapper_outputs = self.embeddings(batch=batch, position_ids=position_ids)
 
         else:
             raise ValueError("You have to specify either batch or input_ids!")
+        
+        if True: # TODO: Add real config
+            feature_map_batch_idxs = kwargs.get('feature_map_batch_idxs')
+            kwargs['attn_dict']['x'] = mapper_outputs[feature_map_batch_idxs] # Copy the NeTI output to the right masks based on batch idx
+            output = self.embeddings.mapper.forward_cross_attn(**kwargs)
+
+        # TODO: Vectorize
+        bs = hidden_states.shape[0]
+        for i in range(bs):
+            # Everything after 1st pad token should also be a pad token
+            token_is_padding = (batch.input_ids[0] == kwargs.get('pad_token')).nonzero()
+            assert (token_is_padding.shape[0] == (batch.input_ids.shape[1] - token_is_padding[0])).item()
+            mask_part_of_batch = (feature_map_batch_idxs == i).nonzero().squeeze(1)
+            assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0] # We need at least as many pad tokens as we have masks
+            hidden_states[i, token_is_padding[0]:token_is_padding[0]+mask_part_of_batch.shape[0]] = output[mask_part_of_batch]
 
         bsz, seq_len = input_shape
         # CLIP's text model uses causal mask, prepare it here.

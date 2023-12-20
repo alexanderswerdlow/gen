@@ -1,3 +1,4 @@
+from functools import partial
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -9,6 +10,8 @@ from collections import defaultdict
 import hashlib
 import os
 import subprocess
+import glob
+import wandb
 from accelerate.logging import get_logger
 
 logger = get_logger(__name__)
@@ -225,3 +228,74 @@ def load_checkpoint_from_url(url: str, file_path: Optional[str] = None) -> Path:
         torch.hub.download_url_to_file(url, file_path, progress=True)
     
     return file_path
+
+# Copied from torch.profiler.profiler
+def tensorboard_trace_handler(
+    dir_name: str, worker_name: Optional[str] = None, use_gzip: bool = True
+):
+    """
+    Outputs tracing files to directory of ``dir_name``, then that directory can be
+    directly delivered to tensorboard as logdir.
+    ``worker_name`` should be unique for each worker in distributed scenario,
+    it will be set to '[hostname]_[pid]' by default.
+    """
+    import os
+    import socket
+    import time
+
+    def handler_fn(prof: torch.profiler.profile) -> None:
+        nonlocal worker_name
+        if not os.path.isdir(dir_name):
+            try:
+                os.makedirs(dir_name, exist_ok=True)
+            except Exception as e:
+                raise RuntimeError("Can't create directory: " + dir_name) from e
+        if not worker_name:
+            worker_name = f"{socket.gethostname()}_{os.getpid()}"
+        # Use nanosecond here to avoid naming clash when exporting the trace
+        file_name = f"{worker_name}.{time.time_ns()}.pt.trace.json"
+        if use_gzip:
+            file_name = file_name + ".gz"
+
+        prof.export_chrome_trace(os.path.join(dir_name, file_name))
+        prof.export_memory_timeline(os.path.join(dir_name, "memory_timeline.html"))
+        prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=100)
+
+    return handler_fn
+
+class Profiler():
+    def __init__(self, output_dir, active_steps: int = 2, record_separate_memory=True):
+        self.profile_dir = Path(output_dir) / 'profile'
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        wait, warmup, active, repeat = 0, 1, active_steps, 0
+        self.total_steps = (wait + warmup + active) * (1 + repeat)
+        schedule = torch.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat)
+        self.profiler = torch.profiler.profile(
+            schedule=schedule,
+            on_trace_ready=tensorboard_trace_handler(self.profile_dir),
+            record_shapes=True,
+            with_modules=True,
+            with_flops=True,
+            profile_memory=True,
+            with_stack=True
+        )
+        self.profiler.start()
+
+    def step(self, global_step: int):
+        self.profiler.step()
+        return global_step >= (self.total_steps - 1)
+
+    def finish(self):
+        self.profiler.stop()
+
+        torch.cuda.memory._dump_snapshot(f"{self.profile_dir}/memory_snapshot.pickle")
+        torch.cuda.memory._record_memory_history(enabled=None)
+        os.system(f'python -m torch.cuda._memory_viz trace_plot {self.profile_dir}/memory_snapshot.pickle -o {self.profile_dir}/memory_snapshot.html')
+
+        print(f'Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle')
+        print(f'Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008')
+
+        traces = glob.glob(f"{self.profile_dir}/*.pt.trace.json*")
+        for trace in traces:
+            print(f'Adding {trace}')
+            wandb.save(trace, base_path=self.profile_dir, policy='now')

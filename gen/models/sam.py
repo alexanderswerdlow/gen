@@ -28,20 +28,14 @@ class HQSam(nn.Module):
     def __init__(
             self,
             model_type = "vit_b",
-            device="cuda",
-            dtype=torch.float32,
+            **kwargs
         ):
         super().__init__()
         self.sam = sam_model_registry[model_type](checkpoint=load_checkpoint_from_url(model_urls[model_type]))
-        self.sam = self.sam.to(device=device, dtype=dtype)
         self.mask_generator = SamAutomaticMaskGenerator(
             model=self.sam,
             points_per_side=8,
-            pred_iou_thresh=0.8,
-            stability_score_thresh=0.9,
-            crop_n_layers=1,
-            crop_n_points_downscale_factor=2,
-            min_mask_region_area=100,
+            process_batch_size=128
         )
 
     def forward(self, image):
@@ -123,7 +117,7 @@ def test_params():
 
     sam = sam.to(device=device)
 
-    image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').scale(0.5).np
+    image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').scale(0.5).np[0]
     num_iters = 5
     
     params = (
@@ -262,8 +256,10 @@ def pca(embeddings, num_components=3, principal_components=None):
     return embeddings
 
 if __name__ == '__main__':
+
     # from image_utils import library_ops
-    # test_params()
+    test_params()
+    exit()
     hqsam = HQSam(model_type='vit_b')
     hqsam = hqsam.to('cuda')
     image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').pil

@@ -15,7 +15,6 @@ from diffusers import (
 )
 from diffusers.utils.import_utils import is_xformers_available
 from gen.configs import BaseConfig
-from gen.models.attention_utils import CrossAttention
 
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
@@ -25,8 +24,6 @@ from gen.models.neti.xti_attention_processor import XTIAttenProc
 from PIL import Image
 import numpy as np
 import open_clip
-
-from flash_attn.modules.mha import MHA
 
 from gen.models.sam import find_true_indices_batched
 from gen.models.sam import HQSam
@@ -78,19 +75,12 @@ class BaseMapper(nn.Module):
         
         self.clip = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[0]
         self.clip = create_feature_extractor(self.clip.visual, return_nodes=return_nodes)
-
-        self.cross_attn = MHA(
-            embed_dim=1024,
-            num_heads=8,
-            use_flash_attn=True,
-            cross_attn=True,
-            fused_bias_fc=False,
-        )
-
-        self.hqsam = HQSam(model_type='vit_b')
-
         # self.eval()
         # self.clip.requires_grad_(False)
+
+        self.hqsam = HQSam(model_type='vit_b')
+        self.hqsam.eval()
+        self.hqsam.requires_grad_(False)
 
         self.vae.requires_grad_(False)
         self.unet.requires_grad_(False)
@@ -128,10 +118,9 @@ class BaseMapper(nn.Module):
             self.unet: UNet2DConditionModel = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
 
         self.clip.to(accelerator.device, dtype=weight_dtype)
-        self.cross_attn.to(accelerator.device, dtype=weight_dtype)
         self.hqsam.to(accelerator.device, dtype=weight_dtype)
 
-    def get_text_conditioning(self, input_ids: torch.Tensor, timesteps: torch.Tensor, device: torch.device) -> Dict:
+    def get_text_conditioning(self, input_ids: torch.Tensor, timesteps: torch.Tensor, device: torch.device, **kwargs) -> Dict:
         """ Compute the text conditioning for the current batch of images using our text encoder over-ride. """
         _hs = {"this_idx": 0}
         for layer_idx, unet_layer in enumerate(UNET_LAYERS):
@@ -141,8 +130,8 @@ class BaseMapper(nn.Module):
                 timesteps=timesteps,
                 unet_layers=torch.tensor(layer_idx, device=device).repeat(timesteps.shape[0])
             )
-            layer_hidden_state, layer_hidden_state_bypass = self.text_encoder(batch=neti_batch)
-            layer_hidden_state = layer_hidden_state[0].to(dtype=self.weight_dtype)
+            layer_hidden_state, layer_hidden_state_bypass = self.text_encoder(batch=neti_batch, **kwargs)
+            layer_hidden_state = layer_hidden_state[0].to(dtype=self.weight_dtype) # TODO: indexing a dataclass like this is very bad practice
             _hs[f"CONTEXT_TENSOR_{layer_idx}"] = layer_hidden_state
             if layer_hidden_state_bypass is not None:
                 layer_hidden_state_bypass = layer_hidden_state_bypass[0].to(dtype=self.weight_dtype)
@@ -200,13 +189,9 @@ class BaseMapper(nn.Module):
         return neti_mapper, loaded_iteration
 
     def forward(self, batch, noisy_latents, timesteps, weight_dtype):
-        # Get the text embedding for conditioning
         bs: int = batch['disc_pixel_values'].shape[0]
 
-        # TODO: HACK!!! We need to create a proper input string. The current implementation will not work
-        batch['input_ids'][:, 0] = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
-        _hs = self.get_text_conditioning(input_ids=batch['input_ids'], timesteps=timesteps, device=noisy_latents.device)
-
+        # Important TODO: Make sure that we're getting the proper features [e.g., after LayerNorm] from ViT
         clip_feature_map = self.clip(batch['disc_pixel_values'].to(noisy_latents))['stage23']
         clip_feature_map = rearrange(clip_feature_map, 'l b d -> b l d')
         clip_feature_cls_token = clip_feature_map[:, 0, :] # TODO: Verify that the first token is cls and not the last
@@ -240,12 +225,25 @@ class BaseMapper(nn.Module):
         k_features = flat_features[flat_mask]
             
         # TODO: Replace dummy query features with output of NeTI mapper (e.g., timestep + layer encoding)
-        query_features = batch['disc_pixel_values'].new_zeros((seqlens_k.shape[0], 1024)).to(noisy_latents.dtype)
+        # query_features = batch['disc_pixel_values'].new_zeros((seqlens_k.shape[0], 1024)).to(noisy_latents.dtype)
         cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(noisy_latents.device)
         max_seqlen_q = 1 # We are doing attention pooling so we have one query per mask
 
-        output = self.cross_attn(x=query_features, x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
-        output = query_features + output # (total, hidden_dim)
+        attn_dict = dict(x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
+
+        # TODO: HACK!!! We need to create a proper input string. The current implementation will not work
+        batch['input_ids'][:, 0] = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
+        and_tokens = self.tokenizer.convert_tokens_to_ids([' ', 'and', ' '])
+        pad_token = self.tokenizer.convert_tokens_to_ids(self.tokenizer._pad_token)
+
+        text_encoder_dict = dict(
+            attn_dict=attn_dict,
+            pad_token=pad_token,
+            and_tokens=and_tokens,
+            feature_map_batch_idxs=feature_map_batch_idxs
+        )
+
+        _hs = self.get_text_conditioning(input_ids=batch['input_ids'], timesteps=timesteps, device=noisy_latents.device, **text_encoder_dict)
 
         # Predict the noise residual
         model_pred = self.unet(noisy_latents, timesteps, _hs).sample
