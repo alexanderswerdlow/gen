@@ -10,6 +10,7 @@ from torchvision import transforms
 
 from gen.configs import BaseConfig
 from gen.datasets.base_dataset import AbstractDataset, Split
+import warnings
 
 
 class CocoCaptions(AbstractDataset):
@@ -27,7 +28,7 @@ class CocoCaptions(AbstractDataset):
         self.disc_image_transforms = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[-1]
         self.override_text = override_text
         if self.override_text:
-            print("Overriding text captions with 'A photo of '")
+            warnings.warn("Overriding text captions with 'A photo of '")
 
     def get_dataset(self, split: Split):
         pass

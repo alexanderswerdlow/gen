@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -31,12 +31,17 @@ class ValidationHandler:
             accelerator: Accelerator,
             tokenizer: CLIPTokenizer,
             text_encoder: NeTICLIPTextModel,
-            unet: UNet2DConditionModel, vae: AutoencoderKL,
+            unet: UNet2DConditionModel, 
+            vae: AutoencoderKL,
             prompts: List[str],
             num_images_per_prompt: int,
-            seeds: List[int],
-            step: int
+            step: int,
+            seeds: Optional[List[int]] = None,
         ):
+    
+        if seeds is None:
+            seeds = list(range(num_images_per_prompt))
+
         """ Runs inference during our training scheme. """
         pipeline = self.load_stable_diffusion_model(accelerator, tokenizer, text_encoder, unet, vae)
         prompt_manager = PromptManager(tokenizer=pipeline.tokenizer, text_encoder=pipeline.text_encoder, timesteps=pipeline.scheduler.timesteps, placeholder_token=self.cfg.model.placeholder_token, placeholder_token_id=self.cfg.model.placeholder_token_id)
@@ -76,13 +81,23 @@ class ValidationHandler:
                 prompt_embeds = prompt_manager.embed_prompt(prompt)
         return prompt_embeds
 
-    def load_stable_diffusion_model(self, accelerator: Accelerator,
-                                    tokenizer: CLIPTokenizer,
-                                    text_encoder: NeTICLIPTextModel,
-                                    unet: UNet2DConditionModel,
-                                    vae: AutoencoderKL) -> StableDiffusionPipeline:
+    def load_stable_diffusion_model(
+            self, 
+            accelerator: Accelerator,
+            tokenizer: CLIPTokenizer,
+            text_encoder: NeTICLIPTextModel,
+            unet: UNet2DConditionModel,
+            vae: AutoencoderKL
+        ) -> StableDiffusionPipeline:
         """ Loads SD model given the current text encoder and our mapper. """
-        pipeline = StableDiffusionPipeline.from_pretrained(self.cfg.model.pretrained_model_name_or_path, text_encoder=accelerator.unwrap_model(text_encoder), tokenizer=tokenizer, unet=unet, vae=vae, torch_dtype=self.weight_dtype)
+        pipeline = StableDiffusionPipeline.from_pretrained(
+            self.cfg.model.pretrained_model_name_or_path, 
+            text_encoder=accelerator.unwrap_model(text_encoder), 
+            tokenizer=tokenizer, 
+            unet=unet,
+            vae=vae,
+            torch_dtype=self.weight_dtype
+        )
         pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
         pipeline = pipeline.to(accelerator.device)
         pipeline.set_progress_bar_config(disable=True)

@@ -12,7 +12,7 @@ pip install 'torch==2.1.*' 'torchvision==0.16.*' 'xformers==0.0.23' --index-url 
 pip install -r requirements.txt
 ```
 
-## Nightly Install
+## Nightly Install (Required for faster SAM)
 
 ```
 pip install https://download.pytorch.org/whl/nightly/cu121/torch-2.3.0.dev20231219%2Bcu121-cp310-cp310-linux_x86_64.whl
@@ -37,5 +37,5 @@ python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo
 ## WIP
 
 ```
-python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo_exp exp=example_exp_name dataset=coco_captions
+python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name dataset=coco_captions
 ```

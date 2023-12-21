@@ -9,6 +9,7 @@ class DatasetConfig:
     dataloader_num_workers: int = 1
     train_batch_size: int = 2
     resolution: Optional[int] = 512
+    num_validation_images: int = 4
     _target_: str = "gen.datasets.base_dataset"
 
 @dataclass
@@ -25,7 +26,6 @@ class HuggingFaceControlNetConfig(DatasetConfig):
     proportion_empty_prompts: float = 0
     validation_prompt: Optional[str] = None
     validation_image: Optional[tuple[str]] = None
-    num_validation_images: int = 4
     cache_dir: Optional[str] = None
 
 @dataclass
