@@ -1,11 +1,11 @@
-from hydra.core.config_store import ConfigStore
-
-from dataclasses import field, dataclass
-from glob import glob
-from typing import List, Optional, Iterable, Union
+from dataclasses import dataclass
+from typing import Optional
+from typing import ClassVar
+from gen.configs.utils import auto_store
 
 @dataclass
 class DatasetConfig:
+    name: ClassVar[str] = 'dataset'
     dataloader_num_workers: int = 1
     train_batch_size: int = 2
     resolution: Optional[int] = 512
@@ -33,7 +33,6 @@ class CocoCaptions(DatasetConfig):
     _target_: str = "gen.datasets.coco_captions.CocoCaptions"
     override_text: bool = True
     
-cs = ConfigStore.instance()
-cs.store(group="dataset", name="base", node=DatasetConfig)
-cs.store(group="dataset", name="huggingface", node=HuggingFaceControlNetConfig)
-cs.store(group="dataset", name="coco_captions", node=CocoCaptions)
+auto_store(DatasetConfig, name="base")
+auto_store(HuggingFaceControlNetConfig,name="huggingface")
+auto_store(CocoCaptions, name="coco_captions")

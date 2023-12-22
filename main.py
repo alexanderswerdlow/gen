@@ -25,6 +25,13 @@ from omegaconf import OmegaConf, open_dict
 from tqdm.auto import tqdm
 
 import wandb
+
+from hydra_zen import (
+    MISSING,
+    ZenField,
+    make_config,
+    store
+)
 from gen.configs.base import BaseConfig
 from gen.utils.decoupled_utils import check_gpu_memory_usage
 from train import run
@@ -36,8 +43,7 @@ os.environ["HYDRA_FULL_ERROR"] = "1"
 
 logger = get_logger(__name__)
 
-# @hydra.main(config_path=None, config_name="config", version_base=None)
-@hydra.main(version_base=None, config_path="gen/configs/conf", config_name="config")
+@hydra.main(config_path=None, config_name="config", version_base=None)
 def main(cfg: BaseConfig):
     with open_dict(cfg):
         cfg.cwd = str(get_original_cwd())

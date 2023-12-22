@@ -1,8 +1,8 @@
 from dataclasses import dataclass
-from typing import Dict, Optional
-from hydra.core.config_store import ConfigStore
+from typing import ClassVar, Dict, Optional
 from enum import Enum
 from dataclasses import dataclass, field
+from gen.configs.utils import auto_store
 
 class ModelType(Enum):
     BASE_MAPPER = 0
@@ -10,6 +10,7 @@ class ModelType(Enum):
 
 @dataclass
 class ModelConfig:
+    name: ClassVar[str] = 'model'
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     revision: Optional[str] = None
     variant: Optional[str] = None
@@ -45,6 +46,5 @@ class BaseMapperConfig(ModelConfig):
     placeholder_token_id: Optional[int] = None
     super_category_token: str = 'object'
 
-cs = ConfigStore.instance()
-cs.store(group="model", name="controlnet", node=ControlNetConfig)
-cs.store(group="model", name="basemapper", node=BaseMapperConfig)
+auto_store(ControlNetConfig, name="controlnet")
+auto_store(BaseMapperConfig, name="basemapper")

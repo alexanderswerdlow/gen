@@ -1,12 +1,15 @@
-from hydra.core.config_store import ConfigStore
-from dataclasses import field, dataclass
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import ClassVar, Optional
 
 from accelerate.utils import PrecisionType
-from accelerate.utils.dataclasses import LoggerType, DynamoBackend
+from accelerate.utils.dataclasses import DynamoBackend, LoggerType
+
+from gen.configs.utils import auto_store
+
 
 @dataclass
 class TrainerConfig:
+    name: ClassVar[str] = 'trainer'
     mixed_precision: PrecisionType = PrecisionType.BF16
     gradient_accumulation_steps: int = 1
     log_with: Optional[LoggerType] = LoggerType.WANDB
@@ -43,5 +46,5 @@ class TrainerConfig:
     compile: bool = False
     profiler_active_steps: int = 2
 
-cs = ConfigStore.instance()
-cs.store(group="trainer", name="base", node=TrainerConfig)
+auto_store(TrainerConfig, name="base")
+
