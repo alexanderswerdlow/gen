@@ -10,12 +10,12 @@ from diffusers.utils import is_wandb_available
 from tqdm import tqdm
 from transformers import CLIPTokenizer
 from gen.configs.base import BaseConfig
+from gen.models.base_mapper_model import BaseMapper
 
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.prompt_manager import PromptManager
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.models.neti.sd_pipeline import sd_pipeline_call
-# from training.config import RunConfig
 
 if is_wandb_available():
     import wandb
@@ -33,7 +33,6 @@ class ValidationHandler:
             text_encoder: NeTICLIPTextModel,
             unet: UNet2DConditionModel, 
             vae: AutoencoderKL,
-            prompts: List[str],
             num_images_per_prompt: int,
             step: int,
             seeds: Optional[List[int]] = None,
@@ -43,8 +42,8 @@ class ValidationHandler:
             seeds = list(range(num_images_per_prompt))
 
         """ Runs inference during our training scheme. """
-        pipeline = self.load_stable_diffusion_model(accelerator, tokenizer, text_encoder, unet, vae)
-        prompt_manager = PromptManager(tokenizer=pipeline.tokenizer, text_encoder=pipeline.text_encoder, timesteps=pipeline.scheduler.timesteps, placeholder_token=self.cfg.model.placeholder_token, placeholder_token_id=self.cfg.model.placeholder_token_id)
+        pipeline, model = self.load_stable_diffusion_model(accelerator, tokenizer, text_encoder, unet, vae)
+        prompt_manager = PromptManager(tokenizer=pipeline.tokenizer, text_encoder=pipeline.text_encoder, timesteps=pipeline.scheduler.timesteps, placeholder_token=self.cfg.model.placeholder_token, placeholder_token_id=self.cfg.model.placeholder_token_id, model=model)
 
         joined_images = []
         for prompt in prompts:
@@ -101,10 +100,21 @@ class ValidationHandler:
         pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
         pipeline = pipeline.to(accelerator.device)
         pipeline.set_progress_bar_config(disable=True)
-        pipeline.scheduler.set_timesteps(self.cfg.eval.num_denoising_steps, device=pipeline.device)
+        num_denoising_steps = 50
+        pipeline.scheduler.set_timesteps(num_denoising_steps, device=pipeline.device)
         pipeline.unet.set_attn_processor(XTIAttenProc())
         text_encoder.text_model.embeddings.mapper.eval()
-        return pipeline
+
+        model = BaseMapper(self.cfg, init_modules=False)
+        model.tokenizer = tokenizer
+        model.text_encoder = text_encoder
+        model.unet = unet
+        model.vae = vae
+        if self.cfg.trainer.enable_xformers_memory_efficient_attention:
+            import xformers
+            unet.enable_xformers_memory_efficient_attention()
+
+        return pipeline, model
 
     def log_with_accelerator(self, accelerator: Accelerator, images: List[Image.Image], step: int):
         for tracker in accelerator.trackers:

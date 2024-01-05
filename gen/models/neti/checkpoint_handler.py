@@ -39,7 +39,7 @@ class CheckpointHandler:
         """ Save the mapper and config to be used at inference. """
         state_dict = {
             "state_dict": text_encoder.text_model.embeddings.mapper.state_dict(),
-            "cfg": self.cfg,
+            # "cfg": self.cfg, # TODO: fix this
             "encoder": text_encoder.text_model.embeddings.mapper.encoder
         }
         torch.save(state_dict, self.save_root / f"{save_name}_mapper.pt")

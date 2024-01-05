@@ -33,6 +33,8 @@ class ModelConfig:
     # Whether to output the textual bypass vector
     output_bypass: bool = True
 
+    mask_cross_attn: bool = False
+
 @dataclass
 class ControlNetConfig(ModelConfig):
     model_type: ModelType = ModelType.CONTROLNET
@@ -45,6 +47,7 @@ class BaseMapperConfig(ModelConfig):
     placeholder_token: str = 'placeholder'
     placeholder_token_id: Optional[int] = None
     super_category_token: str = 'object'
+    mask_cross_attn: bool = True
 
 auto_store(ControlNetConfig, name="controlnet")
 auto_store(BaseMapperConfig, name="basemapper")

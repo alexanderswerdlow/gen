@@ -18,7 +18,7 @@ from tqdm.auto import tqdm
 
 import wandb
 from gen.configs import BaseConfig, ModelType
-from gen.datasets.base_dataset import AbstractDataset, Split
+from gen.datasets.base_dataset import AbstractDataset
 from gen.models.base_mapper_model import BaseMapper
 from gen.models.controlnet_model import (controlnet_forward,
                                          get_controlnet_model, log_validation,
@@ -68,8 +68,9 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
         eps=cfg.trainer.adam_epsilon,
     )
 
-    dataloader: AbstractDataset = hydra.utils.instantiate(cfg.dataset, cfg=cfg, tokenizer=tokenizer, accelerator=accelerator, _recursive_=False)
-    train_dataloader = dataloader.get_dataloader(Split.TRAIN)
+    train_dataloader: AbstractDataset = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=False)(cfg=cfg, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
+
+    validation_dataloader: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=False)(cfg=cfg, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -107,13 +108,13 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
     cfg.trainer.num_train_epochs = math.ceil(cfg.trainer.max_train_steps / num_update_steps_per_epoch)
 
     # Train!
-    total_batch_size = cfg.dataset.train_batch_size * accelerator.num_processes * cfg.trainer.gradient_accumulation_steps
+    total_batch_size = cfg.dataset.train_dataset.batch_size * accelerator.num_processes * cfg.trainer.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataloader.dataset)}")
     logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
     logger.info(f"  Num Epochs = {cfg.trainer.num_train_epochs}")
-    logger.info(f"  Instantaneous batch size per device = {cfg.dataset.train_batch_size}")
+    logger.info(f"  Instantaneous batch size per device = {cfg.dataset.train_dataset.batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {cfg.trainer.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {cfg.trainer.max_train_steps}")
@@ -214,8 +215,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                                 if cfg.dataset.validation_prompt:
                                     image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
                             case ModelType.BASE_MAPPER:
-                                prompts = ['a' for _ in range(cfg.dataset.num_validation_images)]
-                                validator.infer(accelerator, tokenizer, text_encoder, unet, vae, prompts, cfg.dataset.num_validation_images, global_step)
+                                validator.infer(accelerator, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
 
 
                 logs = {"loss": loss.detach().item() / cfg.trainer.gradient_accumulation_steps, "lr": lr_scheduler.get_last_lr()[0]}

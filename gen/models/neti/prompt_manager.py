@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any
 import torch
 from tqdm import tqdm
 from transformers import CLIPTokenizer
+from gen.models.base_mapper_model import BaseMapper
 
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
@@ -24,7 +25,8 @@ class PromptManager:
             unet_layers: List[str] = UNET_LAYERS,
             placeholder_token_id: Optional[List] = None,
             placeholder_token: Optional[List] = None,
-            torch_dtype: torch.dtype = torch.float32
+            torch_dtype: torch.dtype = torch.float32,
+            model: Optional[BaseMapper] = None
         ):
         self.tokenizer = tokenizer
         self.text_encoder = text_encoder
@@ -33,6 +35,7 @@ class PromptManager:
         self.placeholder_token = placeholder_token
         self.placeholder_token_id = placeholder_token_id
         self.dtype = torch_dtype
+        self.model = model
 
     def embed_prompt(
             self, 
@@ -44,6 +47,9 @@ class PromptManager:
         Compute the conditioning vectors for the given prompt. We assume that the prompt is defined using `{}`
         for indicating where to place the placeholder token string. See constants.VALIDATION_PROMPTS for examples.
         """
+
+        self.model.get_hidden_state(batch, timesteps=None)
+
         text = text.format(self.placeholder_token)
         ids = self.tokenizer(
             text,
@@ -58,17 +64,19 @@ class PromptManager:
         for timestep in tqdm(self.timesteps):
             _hs = {"this_idx": 0}.copy()
             for layer_idx, unet_layer in enumerate(self.unet_layers):
-                batch = NeTIBatch(input_ids=ids.to(device=self.text_encoder.device),
-                                  timesteps=timestep.unsqueeze(0).to(device=self.text_encoder.device),
-                                  unet_layers=torch.tensor(layer_idx, device=self.text_encoder.device).unsqueeze(0),
-                                  placeholder_token_id=self.placeholder_token_id,
-                                  truncation_idx=truncation_idx)
-                layer_hs, layer_hs_bypass = self.text_encoder(batch=batch)
-                layer_hs = layer_hs[0].to(dtype=self.dtype)
-                _hs[f"CONTEXT_TENSOR_{layer_idx}"] = layer_hs.repeat(num_images_per_prompt, 1, 1)
-                if layer_hs_bypass is not None:
-                    layer_hs_bypass = layer_hs_bypass[0].to(dtype=self.dtype)
-                    _hs[f"CONTEXT_TENSOR_BYPASS_{layer_idx}"] = layer_hs_bypass.repeat(num_images_per_prompt, 1, 1)
+                neti_batch = NeTIBatch(
+                    input_ids=ids.to(device=self.text_encoder.device),
+                    placeholder_token_id=self.placeholder_token_id,
+                    timesteps=timestep.unsqueeze(0).to(device=self.text_encoder.device),
+                    unet_layers=torch.tensor(layer_idx, device=self.text_encoder.device).unsqueeze(0),
+                    truncation_idx=truncation_idx
+                )
+                layer_hidden_state, layer_hidden_state_bypass = self.text_encoder(batch=neti_batch)
+                layer_hidden_state = layer_hidden_state[0].to(dtype=self.dtype)
+                _hs[f"CONTEXT_TENSOR_{layer_idx}"] = layer_hidden_state.repeat(num_images_per_prompt, 1, 1)
+                if layer_hidden_state_bypass is not None:
+                    layer_hidden_state_bypass = layer_hidden_state_bypass[0].to(dtype=self.dtype)
+                    _hs[f"CONTEXT_TENSOR_BYPASS_{layer_idx}"] = layer_hidden_state_bypass.repeat(num_images_per_prompt, 1, 1)
             hidden_states_per_timestep.append(_hs)
         print("Done.")
         return hidden_states_per_timestep

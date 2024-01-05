@@ -53,14 +53,12 @@ def main(cfg: BaseConfig):
 
     if cfg.attach:
         import subprocess
-
         import debugpy
         from image_utils import library_ops
         subprocess.run("kill -9 $(lsof -i :5678 | grep $(whoami) | awk '{print $2}')", shell=True)
         debugpy.listen(5678)
         print("Waiting for debugger attach")
         debugpy.wait_for_client()
-        debugpy.breakpoint()
 
     from datetime import datetime
     datetime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -152,7 +150,7 @@ def main(cfg: BaseConfig):
     # TODO: Verify this is what we want to do
     if cfg.trainer.scale_lr:
         cfg.trainer.learning_rate = (
-            cfg.trainer.learning_rate * cfg.trainer.gradient_accumulation_steps * cfg.dataset.train_batch_size * accelerator.num_processes
+            cfg.trainer.learning_rate * cfg.trainer.gradient_accumulation_steps * cfg.dataset.train_dataset.batch_size * accelerator.num_processes
         )
 
     if cfg.profile:

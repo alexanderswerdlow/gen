@@ -56,6 +56,7 @@ def _make_causal_mask(
         mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1)
     return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
 
+        
 class NeTICLIPTextTransformer(CLIPTextTransformer):
     """ Modification of CLIPTextTransformer to use our NeTI mapper for computing the embeddings of the concept. """
 
@@ -103,25 +104,16 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         else:
             raise ValueError("You have to specify either batch or input_ids!")
         
-        if True: # TODO: Add real config
+        if True:
             feature_map_batch_idxs = kwargs.get('feature_map_batch_idxs')
             kwargs['attn_dict']['x'] = mapper_outputs[feature_map_batch_idxs] # Copy the NeTI output to the right masks based on batch idx
 
             # TODO: We should find a better place to put the cross-attn but this is the most convinient for now
             output = self.embeddings.mapper.forward_cross_attn(**kwargs)
 
-            # TODO: Vectorize
-            bs = hidden_states.shape[0]
-            for b in range(bs):
-                # Everything after 1st pad token should also be a pad token
-                token_is_padding = (batch.input_ids[0] == kwargs.get('pad_token')).nonzero()
-                assert (token_is_padding.shape[0] == (batch.input_ids.shape[1] - token_is_padding[0])).item()
-                mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
-                assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0] # We need at least as many pad tokens as we have masks
-
-                # We replace the first n null tokens with the cross-attn outputs for our n masks
-                # E.g., A photo of [1st mask cross-attn output] and [2nd mask cross-attn output] and ...
-                hidden_states[b, token_is_padding[0]:token_is_padding[0]+mask_part_of_batch.shape[0]] = output[mask_part_of_batch, :768]
+            learnable_idxs = (batch.input_ids == batch.placeholder_token_id).nonzero(as_tuple=True)
+            # TODO: Is this residual for T/L what we want?
+            hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[:, :768].to(hidden_states.dtype) + mapper_outputs[feature_map_batch_idxs]
 
         # CLIP's causal mask, prepare it here: https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
         causal_attention_mask = _make_causal_mask(input_shape, hidden_states.dtype, device=hidden_states.device)
@@ -139,32 +131,24 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
             return_dict=return_dict,
         )
 
-        # TODO: Vectorize and avoid duplicating this loop from above
-        bs = hidden_states.shape[0]
-        for b in range(bs):
-            # Everything after 1st pad token should also be a pad token
-            token_is_padding = (batch.input_ids[0] == kwargs.get('pad_token')).nonzero()
-            assert (token_is_padding.shape[0] == (batch.input_ids.shape[1] - token_is_padding[0])).item()
-            mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
-            assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0] # We need at least as many pad tokens as we have masks
-
-            # We replace the first n null tokens with the cross-attn outputs for our n masks
-            encoder_outputs.last_hidden_state[b, token_is_padding[0]:token_is_padding[0]+mask_part_of_batch.shape[0]] = output[mask_part_of_batch, 768:]
-
         last_hidden_state = encoder_outputs[0]
         last_hidden_state_with_bypass = last_hidden_state.clone()
+
+        if True:
+            # TODO: Is this residual for T/L what we want?
+            bypass_output = bypass_output[feature_map_batch_idxs] + output[:, 768:].to(encoder_outputs.last_hidden_state.dtype)
 
         ###############################################
         # NeTI logic - compute the scaled bypass output
         ###############################################
         if bypass_output is not None:
-            learnable_idxs = (batch.input_ids == batch.placeholder_token_id).nonzero(as_tuple=True)[1]
-            existing_state = last_hidden_state_with_bypass[torch.arange(last_hidden_state.shape[0]), learnable_idxs]
+            learnable_idxs = (batch.input_ids == batch.placeholder_token_id).nonzero(as_tuple=True)
+            existing_state = last_hidden_state_with_bypass[learnable_idxs[0], learnable_idxs[1]]
             bypass_output = bypass_output / bypass_output.norm(dim=1, keepdim=True) \
                             * existing_state.norm(dim=1, keepdim=True)
             new_state = existing_state + 0.2 * bypass_output
             new_state = new_state.to(dtype=hidden_states.dtype)
-            last_hidden_state_with_bypass[torch.arange(last_hidden_state.shape[0]), learnable_idxs] = new_state
+            last_hidden_state_with_bypass[learnable_idxs[0], learnable_idxs[1]] = new_state
 
         last_hidden_state = self.final_layer_norm(last_hidden_state)
         last_hidden_state_with_bypass = self.final_layer_norm(last_hidden_state_with_bypass)

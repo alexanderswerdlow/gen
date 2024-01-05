@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any
+from typing import Any, Optional
 from hydra_zen import builds, store
 from hydra_zen import make_config, store
 from hydra_zen.wrapper import default_to_config
@@ -15,11 +15,13 @@ def destructure(x):
         return OmegaConf.create(OmegaConf.to_container(OmegaConf.create(x)))  # type: ignore
     return x
 
-def global_store(name: str, group: str, **kwargs):
+destructure_store = store(to_config=destructure)
+
+def global_store(name: str, group: str, hydra_defaults: Optional[list[Any]] = None, **kwargs):
     from gen.configs.base import BaseConfig
-    store(
+    destructure_store(
         make_config(
-            hydra_defaults=["_self_"],
+            hydra_defaults=hydra_defaults if hydra_defaults is not None else ["_self_"],
             bases=(BaseConfig,),
             zen_dataclass={"kw_only": True},
             **kwargs
@@ -32,7 +34,6 @@ def global_store(name: str, group: str, **kwargs):
 def stored_child_config(cls: Any, group: str, parent: str, child: str):
     store(builds(cls, override_text=False, builds_bases=(store[group][(group, parent)],)), group=group, name=child)
 
-destructure_store = store(to_config=destructure)
 auto_store = store(group=lambda cfg: cfg.name)
 exp_store = partial(global_store, group="experiment")
-mode_store = partial(global_store, group="experiment")
+mode_store = partial(global_store, group="mode")

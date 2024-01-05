@@ -1,16 +1,18 @@
 from dataclasses import dataclass
 from typing import Optional
 from typing import ClassVar
+
+from hydra_zen import builds
 from gen.configs.utils import auto_store
+from gen.datasets.base_dataset import AbstractDataset
+from gen.datasets.coco_captions import CocoCaptions
 
 @dataclass
 class DatasetConfig:
     name: ClassVar[str] = 'dataset'
-    dataloader_num_workers: int = 1
-    train_batch_size: int = 2
-    resolution: Optional[int] = 512
-    num_validation_images: int = 4
-    _target_: str = "gen.datasets.base_dataset"
+    train_dataset: AbstractDataset
+    validation_dataset: AbstractDataset
+    num_validation_images: int = 2
 
 @dataclass
 class HuggingFaceControlNetConfig(DatasetConfig):
@@ -28,11 +30,15 @@ class HuggingFaceControlNetConfig(DatasetConfig):
     validation_image: Optional[tuple[str]] = None
     cache_dir: Optional[str] = None
 
-@dataclass
-class CocoCaptions(DatasetConfig):
-    _target_: str = "gen.datasets.coco_captions.CocoCaptions"
-    override_text: bool = True
-    
-auto_store(DatasetConfig, name="base")
-auto_store(HuggingFaceControlNetConfig,name="huggingface")
-auto_store(CocoCaptions, name="coco_captions")
+def get_train(cls, **kwargs):
+    return builds(cls, populate_full_signature=True, zen_partial=True, shuffle=True, **kwargs)
+
+def get_val(cls, **kwargs):
+    return builds(cls, populate_full_signature=True, zen_partial=True, shuffle=False, **kwargs)
+
+auto_store(
+    DatasetConfig, 
+    train_dataset=get_train(CocoCaptions, num_workers=2, batch_size=2), 
+    validation_dataset=get_val(CocoCaptions, num_workers=2, batch_size=2), 
+    name="coco_captions"
+)

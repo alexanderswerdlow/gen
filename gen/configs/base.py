@@ -15,9 +15,10 @@ from gen.configs.utils import destructure_store, mode_store, exp_store
 defaults = [
     "_self_",
     {"trainer": "base"},
-    {"dataset": "huggingface"},
+    {"dataset": "coco_captions"},
     {"model": "basemapper"},
 ]
+
 
 @dataclass
 class BaseConfig:
@@ -26,13 +27,14 @@ class BaseConfig:
     model: ModelConfig = MISSING
 
     top_level_output_path: Optional[Path] = Path("outputs")
-    logging_dir: Optional[Path] = Path("logs") # Folder inside the experiment folder
+    logging_dir: Optional[Path] = Path("logs")  # Folder inside the experiment folder
     exp: Optional[str] = None
     debug: bool = False
-    tracker_project_name: str = "controlnet" # wandb project name
+    tracker_project_name: str = "controlnet"  # wandb project name
     tags: Optional[tuple[str]] = None
     attach: bool = False
     profile: bool = False
+    overfit: bool = False
 
     # These are set in code
     output_dir: Optional[Path] = None
@@ -40,10 +42,23 @@ class BaseConfig:
     cwd: Optional[Path] = None
     defaults: List[Any] = field(default_factory=lambda: defaults)
 
+
 store(get_hydra_config(), group="hydra", name="default")
 
-exp_store(name="demo_exp", trainer=dict(seed=0))
-mode_store(name="overfit", debug=True, trainer=dict(max_epochs=1))
+exp_store(
+    name="demo_exp",
+    trainer=dict(seed=0),
+    hydra_defaults=[
+        "_self_",
+        {"override /dataset": "coco_captions"},
+    ],
+)
+mode_store(
+    name="overfit", 
+    debug=True, 
+    trainer=dict(num_epochs=1, validation_steps=10),
+    dataset=dict(train_dataset=dict(num_workers=0), validation_dataset=dict(num_workers=0)),
+)
 
 destructure_store(BaseConfig, name="config")
 store.add_to_hydra_store()

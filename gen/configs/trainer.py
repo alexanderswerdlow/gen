@@ -14,9 +14,7 @@ class TrainerConfig:
     gradient_accumulation_steps: int = 1
     log_with: Optional[LoggerType] = LoggerType.WANDB
     seed: int = 42
-    max_steps: int = 4000
     num_epochs: int = 10
-    validate_steps: int = 100
     eval_on_start: bool = True
     save_steps: int = 100
     limit_num_checkpoints: int = 1

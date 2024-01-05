@@ -12,7 +12,7 @@ from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.utils.import_utils import is_xformers_available
 from einops import rearrange
 from PIL import Image
-from transformers import AutoTokenizer
+from transformers import CLIPTokenizer
 
 from gen.configs import BaseConfig
 from gen.configs.models import BaseMapperConfig
@@ -37,14 +37,27 @@ def image_grid(imgs, rows, cols):
     return grid
 
 class BaseMapper(nn.Module):
-    def __init__(self, cfg: BaseMapperConfig):
+    def __init__(self, cfg: BaseMapperConfig, init_modules: bool = True):
         super(BaseMapper, self).__init__()
         self.cfg: BaseMapperConfig = cfg
-        self.get_base_mapper_model()
+        if init_modules:
+            self.get_base_mapper_model()
 
-    def get_base_mapper_model(self) -> tuple[AutoTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
+        self.init_pretrained()
+
+    def init_pretrained(self):
+        self.clip = ClipFeatureExtractor()
+        self.clip.train()
+        self.clip.requires_grad_(True)
+
+        self.hqsam = HQSam(model_type='vit_b')
+        self.hqsam.eval()
+        self.hqsam.requires_grad_(False)
+
+
+    def get_base_mapper_model(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
         # Load the tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="tokenizer", revision=self.cfg.model.revision)
+        self.tokenizer = CLIPTokenizer.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="tokenizer")
 
         # Load scheduler and models
         self.noise_scheduler = DDPMScheduler.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="scheduler")
@@ -56,14 +69,6 @@ class BaseMapper(nn.Module):
         self.token_embeds, self.placeholder_token_id = self._add_concept_token_to_tokenizer()
         neti_mapper, self.loaded_iteration = self._init_neti_mapper()
         self.text_encoder.text_model.embeddings.set_mapper(neti_mapper)
-        
-        self.clip = ClipFeatureExtractor()
-        self.clip.train()
-        self.clip.requires_grad_(True)
-
-        self.hqsam = HQSam(model_type='vit_b')
-        self.hqsam.eval()
-        self.hqsam.requires_grad_(False)
 
         self.vae.requires_grad_(False)
         self.unet.requires_grad_(False)
@@ -77,9 +82,7 @@ class BaseMapper(nn.Module):
         if self.cfg.trainer.enable_xformers_memory_efficient_attention:
             import xformers
             self.unet.enable_xformers_memory_efficient_attention()
-
         self.unet.set_attn_processor(XTIAttenProc())
-
 
     def pre_train_setup_base_mapper(self, weight_dtype: torch.dtype, accelerator: Accelerator):
         self.weight_dtype = weight_dtype
@@ -173,17 +176,18 @@ class BaseMapper(nn.Module):
             output_bypass=self.cfg.model.output_bypass
         )
         return neti_mapper, loaded_iteration
-
-    def forward(self, batch, noisy_latents, timesteps, weight_dtype):
+    
+    def get_hidden_state(self, batch, timesteps, dtype, device):
         bs: int = batch['disc_pixel_values'].shape[0]
 
-        # Important TODO: Make sure that we're getting the proper features [e.g., after LayerNorm] from ViT
-        clip_feature_map = self.clip(batch['disc_pixel_values'].to(noisy_latents))['stage23']
+        clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage23']
         clip_feature_map = rearrange(clip_feature_map, 'l b d -> b l d')
-        clip_feature_cls_token = clip_feature_map[:, 0, :] # TODO: Verify that the first token is cls and not the last
-        clip_feature_map = clip_feature_map[:, 1:, :] # We remove the cls token
+        clip_feature_cls_token = clip_feature_map[:, 0, :] # We take the cls token
+        clip_feature_map = clip_feature_map[:, 1:, :]
 
+        # SAM requires NumPy [0, 255]
         sam_input = rearrange((((batch['pixel_values'] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')
+
         latent_dim = batch['disc_pixel_values'].shape[-1] // 14
         feature_map_masks = []
         feature_map_batch_idxs = []
@@ -198,8 +202,8 @@ class BaseMapper(nn.Module):
 
         # If the 1st image has 5 masks and the 2nd has 3 masks, we will have an integer tensor of shape (total == 8,) for 8 different cross-attns. The sequence length for each is thus the number of valid "pixels" (KVs)
         feature_map_masks = torch.cat(feature_map_masks, dim=0) # feature_map_mask is a boolean mask of (total, h, w)
-        feature_map_masks = rearrange(feature_map_masks, 'total h w -> total (h w)').to(noisy_latents.device)
-        feature_map_batch_idxs = torch.cat(feature_map_batch_idxs, dim=0).to(noisy_latents.device)
+        feature_map_masks = rearrange(feature_map_masks, 'total h w -> total (h w)').to(device)
+        feature_map_batch_idxs = torch.cat(feature_map_batch_idxs, dim=0).to(device)
 
         # We sum the number of valid "pixels" in each mask
         seqlens_k = feature_map_masks.sum(dim=-1) # (total,)
@@ -210,26 +214,39 @@ class BaseMapper(nn.Module):
         flat_mask = rearrange(feature_map_masks, 'total (h w) -> (total h w)', h=latent_dim, w=latent_dim)
         k_features = flat_features[flat_mask]
             
-        # TODO: Replace dummy query features with output of NeTI mapper (e.g., timestep + layer encoding)
-        # query_features = batch['disc_pixel_values'].new_zeros((seqlens_k.shape[0], 1024)).to(noisy_latents.dtype)
-        cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(noisy_latents.device)
+        # The actual query is obtained from the timestep + layer encoding later
+        cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(device)
         max_seqlen_q = 1 # We are doing attention pooling so we have one query per mask
 
         attn_dict = dict(x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
 
-        # TODO: HACK!!! We need to create a proper input string. The current implementation will not work
-        batch['input_ids'][:, 0] = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
-        and_tokens = self.tokenizer.convert_tokens_to_ids([' ', 'and', ' '])
+        # TODO: HACK!!! We need to create a proper input string. The current implementation will not work and just makes sure we have one of these tokens
+        placeholder_token = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
+        mask_tokens = self.tokenizer.convert_tokens_to_ids([self.cfg.model.placeholder_token, 'and', ' '])
         pad_token = self.tokenizer.convert_tokens_to_ids(self.tokenizer._pad_token)
+
+        bs = batch['input_ids'].shape[0]
+        for b in range(bs):
+            # Everything after 1st pad token should also be a pad token
+            token_is_padding = (batch['input_ids'][b] == pad_token).nonzero()
+            assert (token_is_padding.shape[0] == (batch['input_ids'].shape[1] - token_is_padding[0])).item()
+            mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
+            assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0] # We need at least as many pad tokens as we have masks
+            batch['input_ids'][b, token_is_padding[0]:token_is_padding[0]+(mask_part_of_batch.shape[0] * len(mask_tokens))] = torch.tensor(mask_tokens * mask_part_of_batch.shape[0])
 
         text_encoder_dict = dict(
             attn_dict=attn_dict,
+            placeholder_token=placeholder_token,
             pad_token=pad_token,
-            and_tokens=and_tokens,
             feature_map_batch_idxs=feature_map_batch_idxs
         )
 
-        _hs = self.get_text_conditioning(input_ids=batch['input_ids'], timesteps=timesteps, device=noisy_latents.device, **text_encoder_dict)
+        _hs = self.get_text_conditioning(input_ids=batch['input_ids'], timesteps=timesteps, device=device, **text_encoder_dict)
+
+        return _hs
+
+    def forward(self, batch, noisy_latents, timesteps, weight_dtype):
+        _hs = self.get_hidden_state(batch, timesteps, device=noisy_latents.device, dtype=weight_dtype)
 
         # Predict the noise residual
         model_pred = self.unet(noisy_latents, timesteps, _hs).sample

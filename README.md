@@ -37,5 +37,8 @@ python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo
 ## WIP
 
 ```
-python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name dataset=coco_captions
+python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name
+
+# Overfit
+python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name +mode=overfit
 ```
