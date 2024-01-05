@@ -215,7 +215,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                                 if cfg.dataset.validation_prompt:
                                     image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
                             case ModelType.BASE_MAPPER:
-                                validator.infer(accelerator, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
+                                validator.infer(accelerator, validation_dataloader, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
 
 
                 logs = {"loss": loss.detach().item() / cfg.trainer.gradient_accumulation_steps, "lr": lr_scheduler.get_last_lr()[0]}

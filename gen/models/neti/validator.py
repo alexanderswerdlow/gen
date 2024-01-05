@@ -29,6 +29,7 @@ class ValidationHandler:
     def infer(
             self,
             accelerator: Accelerator,
+            validation_dataloader: torch.utils.data.DataLoader,
             tokenizer: CLIPTokenizer,
             text_encoder: NeTICLIPTextModel,
             unet: UNet2DConditionModel, 
@@ -43,13 +44,15 @@ class ValidationHandler:
 
         """ Runs inference during our training scheme. """
         pipeline, model = self.load_stable_diffusion_model(accelerator, tokenizer, text_encoder, unet, vae)
-        prompt_manager = PromptManager(tokenizer=pipeline.tokenizer, text_encoder=pipeline.text_encoder, timesteps=pipeline.scheduler.timesteps, placeholder_token=self.cfg.model.placeholder_token, placeholder_token_id=self.cfg.model.placeholder_token_id, model=model)
+        model, validation_dataloader = accelerator.prepare(model, validation_dataloader)
+        prompt_manager = PromptManager(tokenizer=pipeline.tokenizer, text_encoder=pipeline.text_encoder, timesteps=pipeline.scheduler.timesteps, placeholder_token=self.cfg.model.placeholder_token, placeholder_token_id=self.cfg.model.placeholder_token_id, model=model, torch_dtype=self.weight_dtype)
 
         joined_images = []
-        for prompt in prompts:
-            images = self.infer_on_prompt(pipeline=pipeline, prompt_manager=prompt_manager, prompt=prompt, num_images_per_prompt=num_images_per_prompt, seeds=seeds)
+        for batch in validation_dataloader:
+            images = self.infer_on_prompt(pipeline=pipeline, prompt_manager=prompt_manager, num_images_per_prompt=num_images_per_prompt, seeds=seeds, batch=batch)
             prompt_image = Image.fromarray(np.concatenate(images, axis=1))
             joined_images.append(prompt_image)
+
         final_image = Image.fromarray(np.concatenate(joined_images, axis=0))
         final_image.save(self.cfg.log.exp_dir / f"val-image-{step}.png")
         self.log_with_accelerator(accelerator, joined_images, step=step)
@@ -62,10 +65,10 @@ class ValidationHandler:
 
     def infer_on_prompt(self, pipeline: StableDiffusionPipeline,
                         prompt_manager: PromptManager,
-                        prompt: str,
                         seeds: List[int],
+                        batch: dict,
                         num_images_per_prompt: int = 1) -> List[Image.Image]:
-        prompt_embeds = self.compute_embeddings(prompt_manager=prompt_manager, prompt=prompt)
+        prompt_embeds = self.compute_embeddings(prompt_manager=prompt_manager, batch=batch)
         all_images = []
         for idx in tqdm(range(num_images_per_prompt)):
             generator = torch.Generator(device='cuda').manual_seed(seeds[idx])
@@ -74,10 +77,10 @@ class ValidationHandler:
         return all_images
 
     @staticmethod
-    def compute_embeddings(prompt_manager: PromptManager, prompt: str) -> torch.Tensor:
+    def compute_embeddings(prompt_manager: PromptManager, batch: dict) -> torch.Tensor:
         with torch.autocast("cuda"):
             with torch.no_grad():
-                prompt_embeds = prompt_manager.embed_prompt(prompt)
+                prompt_embeds = prompt_manager.embed_prompt(batch)
         return prompt_embeds
 
     def load_stable_diffusion_model(
@@ -113,6 +116,7 @@ class ValidationHandler:
         if self.cfg.trainer.enable_xformers_memory_efficient_attention:
             import xformers
             unet.enable_xformers_memory_efficient_attention()
+        unet.set_attn_processor(XTIAttenProc())
 
         return pipeline, model
 

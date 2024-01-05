@@ -38,7 +38,7 @@ def sd_pipeline_call(
         input_ids=neg_prompt.input_ids.to(device),
         attention_mask=None,
     )
-    negative_prompt_embeds = negative_prompt_embeds[0]
+    negative_prompt_embeds = negative_prompt_embeds[0].to(pipeline.unet.dtype)
 
     # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
     # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`

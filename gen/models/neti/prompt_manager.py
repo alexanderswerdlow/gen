@@ -39,7 +39,7 @@ class PromptManager:
 
     def embed_prompt(
             self, 
-            text: str,
+            batch: dict,
             truncation_idx: Optional[int] = None,
             num_images_per_prompt: int = 1
         ) -> List[Dict[str, Any]]:
@@ -47,16 +47,9 @@ class PromptManager:
         Compute the conditioning vectors for the given prompt. We assume that the prompt is defined using `{}`
         for indicating where to place the placeholder token string. See constants.VALIDATION_PROMPTS for examples.
         """
-
-        self.model.get_hidden_state(batch, timesteps=None)
-
-        text = text.format(self.placeholder_token)
-        ids = self.tokenizer(
-            text,
-            padding="max_length",
-            max_length=self.tokenizer.model_max_length,
-            return_tensors="pt",
-        ).input_ids
+        self.model.placeholder_token_id = self.model.tokenizer.convert_tokens_to_ids(self.model.cfg.model.placeholder_token)
+        self.model.weight_dtype = self.dtype
+        input_ids, text_encoder_dict = self.model.get_hidden_state(batch, timesteps=self.timesteps, device=batch['pixel_values'].device, dtype=self.dtype, per_timestep=True)
 
         # Compute embeddings for each timestep and each U-Net layer
         print(f"Computing embeddings over {len(self.timesteps)} timesteps and {len(self.unet_layers)} U-Net layers.")
@@ -65,13 +58,13 @@ class PromptManager:
             _hs = {"this_idx": 0}.copy()
             for layer_idx, unet_layer in enumerate(self.unet_layers):
                 neti_batch = NeTIBatch(
-                    input_ids=ids.to(device=self.text_encoder.device),
+                    input_ids=input_ids.to(device=self.text_encoder.device),
                     placeholder_token_id=self.placeholder_token_id,
                     timesteps=timestep.unsqueeze(0).to(device=self.text_encoder.device),
                     unet_layers=torch.tensor(layer_idx, device=self.text_encoder.device).unsqueeze(0),
                     truncation_idx=truncation_idx
                 )
-                layer_hidden_state, layer_hidden_state_bypass = self.text_encoder(batch=neti_batch)
+                layer_hidden_state, layer_hidden_state_bypass = self.text_encoder(batch=neti_batch, **text_encoder_dict)
                 layer_hidden_state = layer_hidden_state[0].to(dtype=self.dtype)
                 _hs[f"CONTEXT_TENSOR_{layer_idx}"] = layer_hidden_state.repeat(num_images_per_prompt, 1, 1)
                 if layer_hidden_state_bypass is not None:

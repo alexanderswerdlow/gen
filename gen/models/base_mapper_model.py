@@ -12,6 +12,7 @@ from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from diffusers.utils.import_utils import is_xformers_available
 from einops import rearrange
 from PIL import Image
+from tqdm import tqdm
 from transformers import CLIPTokenizer
 
 from gen.configs import BaseConfig
@@ -126,6 +127,28 @@ class BaseMapper(nn.Module):
                 _hs[f"CONTEXT_TENSOR_BYPASS_{layer_idx}"] = layer_hidden_state_bypass
         return _hs
     
+    def get_text_conditioning_per_timestep(self, unet_layers, input_ids: torch.Tensor, timesteps: torch.Tensor, device: torch.device, truncation_idx: Optional[int], num_images_per_prompt: int = 1, **kwargs) -> Dict:
+        print(f"Computing embeddings over {len(timesteps)} timesteps and {len(unet_layers)} U-Net layers.")
+        hidden_states_per_timestep = []
+        for timestep in tqdm(timesteps):
+            _hs = {"this_idx": 0}.copy()
+            for layer_idx, unet_layer in enumerate(unet_layers):
+                neti_batch = NeTIBatch(
+                    input_ids=input_ids.to(device=self.text_encoder.device),
+                    placeholder_token_id=self.placeholder_token_id,
+                    timesteps=timestep.unsqueeze(0).to(device=self.text_encoder.device),
+                    unet_layers=torch.tensor(layer_idx, device=self.text_encoder.device).unsqueeze(0),
+                    truncation_idx=truncation_idx
+                )
+                layer_hidden_state, layer_hidden_state_bypass = self.text_encoder(batch=neti_batch)
+                layer_hidden_state = layer_hidden_state[0].to(dtype=self.dtype)
+                _hs[f"CONTEXT_TENSOR_{layer_idx}"] = layer_hidden_state.repeat(num_images_per_prompt, 1, 1)
+                if layer_hidden_state_bypass is not None:
+                    layer_hidden_state_bypass = layer_hidden_state_bypass[0].to(dtype=self.dtype)
+                    _hs[f"CONTEXT_TENSOR_BYPASS_{layer_idx}"] = layer_hidden_state_bypass.repeat(num_images_per_prompt, 1, 1)
+            hidden_states_per_timestep.append(_hs)
+        print("Done.")
+    
     def _add_concept_token_to_tokenizer(self) -> Tuple[torch.Tensor, int]:
         """
         Adds the concept token to the tokenizer and initializes it with the embeddings of the super category token.
@@ -177,7 +200,7 @@ class BaseMapper(nn.Module):
         )
         return neti_mapper, loaded_iteration
     
-    def get_hidden_state(self, batch, timesteps, dtype, device):
+    def get_hidden_state(self, batch, timesteps, dtype, device, per_timestep: bool = False):
         bs: int = batch['disc_pixel_values'].shape[0]
 
         clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage23']
@@ -240,6 +263,9 @@ class BaseMapper(nn.Module):
             pad_token=pad_token,
             feature_map_batch_idxs=feature_map_batch_idxs
         )
+
+        if per_timestep:
+            return batch['input_ids'], text_encoder_dict
 
         _hs = self.get_text_conditioning(input_ids=batch['input_ids'], timesteps=timesteps, device=device, **text_encoder_dict)
 

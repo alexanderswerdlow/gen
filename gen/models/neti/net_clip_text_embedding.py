@@ -70,6 +70,8 @@ class NeTICLIPTextEmbeddings(nn.Module):
             # We had to modify this since we now have multiple placeholders per prompt
             learnable_idxs = (input_ids == batch.placeholder_token_id).nonzero(as_tuple=True)
             inputs_embeds[learnable_idxs[0], learnable_idxs[1]] = mapper_outputs[learnable_idxs[0]]
+        else:
+            bypass_outputs, mapper_outputs = None, None
 
         position_embeddings = self.position_embedding(position_ids)
         embeddings = inputs_embeds + position_embeddings

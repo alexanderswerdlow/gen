@@ -104,7 +104,7 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         else:
             raise ValueError("You have to specify either batch or input_ids!")
         
-        if True:
+        if batch is not None:
             feature_map_batch_idxs = kwargs.get('feature_map_batch_idxs')
             kwargs['attn_dict']['x'] = mapper_outputs[feature_map_batch_idxs] # Copy the NeTI output to the right masks based on batch idx
 
@@ -134,7 +134,7 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         last_hidden_state = encoder_outputs[0]
         last_hidden_state_with_bypass = last_hidden_state.clone()
 
-        if True:
+        if batch is not None:
             # TODO: Is this residual for T/L what we want?
             bypass_output = bypass_output[feature_map_batch_idxs] + output[:, 768:].to(encoder_outputs.last_hidden_state.dtype)
 

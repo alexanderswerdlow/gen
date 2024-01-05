@@ -48,6 +48,7 @@ store(get_hydra_config(), group="hydra", name="default")
 exp_store(
     name="demo_exp",
     trainer=dict(seed=0),
+    dataset=dict(validation_dataset=dict(batch_size=1)),
     hydra_defaults=[
         "_self_",
         {"override /dataset": "coco_captions"},
@@ -56,7 +57,7 @@ exp_store(
 mode_store(
     name="overfit", 
     debug=True, 
-    trainer=dict(num_epochs=1, validation_steps=10),
+    trainer=dict(num_epochs=1, validation_steps=5),
     dataset=dict(train_dataset=dict(num_workers=0), validation_dataset=dict(num_workers=0)),
 )
 
