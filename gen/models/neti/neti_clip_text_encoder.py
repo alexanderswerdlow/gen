@@ -5,10 +5,23 @@ import torch.utils.checkpoint
 from torch import nn
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 from transformers.models.clip.modeling_clip import CLIPTextConfig, CLIPTextModel, CLIPEncoder
-from transformers.models.clip.modeling_clip import CLIPTextTransformer, _expand_mask
+from transformers.models.clip.modeling_clip import CLIPTextTransformer
 
 from gen.models.neti.net_clip_text_embedding import NeTICLIPTextEmbeddings, NeTIBatch
 
+# Copied from transformers.models.bart.modeling_bart._expand_mask
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
+    """
+    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
+    """
+    bsz, src_len = mask.size()
+    tgt_len = tgt_len if tgt_len is not None else src_len
+
+    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+
+    inverted_mask = 1.0 - expanded_mask
+
+    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 class NeTICLIPTextModel(CLIPTextModel):
     """ Modification of CLIPTextModel to use our NeTI mapper for computing the embeddings of the concept. """

@@ -31,4 +31,8 @@ diffusers
 segment-anything-hq
 tensorboardX
 torch-tb-profiler
+hydra_zen
+transformers
+open_clip_torch
+webdataset
 git+https://github.com/alexanderswerdlow/image_utils.git
