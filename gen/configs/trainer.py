@@ -15,8 +15,6 @@ class TrainerConfig:
     log_with: Optional[LoggerType] = LoggerType.WANDB
     seed: int = 42
     num_epochs: int = 10
-    eval_on_start: bool = True
-    save_steps: int = 100
     limit_num_checkpoints: int = 1
     dynamo_backend: DynamoBackend = DynamoBackend.NO
     num_train_epochs: int = 1

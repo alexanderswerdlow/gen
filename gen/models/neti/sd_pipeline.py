@@ -104,28 +104,25 @@ def sd_pipeline_call(
 
     if output_type == "latent":
         image = latents
-        has_nsfw_concept = None
     elif output_type == "pil":
         # 8. Post-processing
         image = pipeline.decode_latents(latents)
-        # 9. Run safety checker
-        image, has_nsfw_concept = pipeline.run_safety_checker(image, device, pipeline.text_encoder.dtype)
+        # 9. Run safety checker (Disabled)
         # 10. Convert to PIL
         image = pipeline.numpy_to_pil(image)
     else:
         # 8. Post-processing
         image = pipeline.decode_latents(latents)
-        # 9. Run safety checker
-        image, has_nsfw_concept = pipeline.run_safety_checker(image, device, pipeline.text_encoder.dtype)
+        # 9. Run safety checker (Disabled)
 
     # Offload last model to CPU
     if hasattr(pipeline, "final_offload_hook") and pipeline.final_offload_hook is not None:
         pipeline.final_offload_hook.offload()
 
     if not return_dict:
-        return image, has_nsfw_concept
+        return image, None
 
-    return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+    return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=None)
 
 
 def get_neg_prompt_input_ids(pipeline: StableDiffusionPipeline,

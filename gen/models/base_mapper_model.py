@@ -130,7 +130,7 @@ class BaseMapper(nn.Module):
     def get_text_conditioning_per_timestep(self, unet_layers, input_ids: torch.Tensor, timesteps: torch.Tensor, device: torch.device, truncation_idx: Optional[int], num_images_per_prompt: int = 1, **kwargs) -> Dict:
         print(f"Computing embeddings over {len(timesteps)} timesteps and {len(unet_layers)} U-Net layers.")
         hidden_states_per_timestep = []
-        for timestep in tqdm(timesteps):
+        for timestep in tqdm(timesteps, leave=False):
             _hs = {"this_idx": 0}.copy()
             for layer_idx, unet_layer in enumerate(unet_layers):
                 neti_batch = NeTIBatch(
@@ -147,7 +147,6 @@ class BaseMapper(nn.Module):
                     layer_hidden_state_bypass = layer_hidden_state_bypass[0].to(dtype=self.dtype)
                     _hs[f"CONTEXT_TENSOR_BYPASS_{layer_idx}"] = layer_hidden_state_bypass.repeat(num_images_per_prompt, 1, 1)
             hidden_states_per_timestep.append(_hs)
-        print("Done.")
     
     def _add_concept_token_to_tokenizer(self) -> Tuple[torch.Tensor, int]:
         """

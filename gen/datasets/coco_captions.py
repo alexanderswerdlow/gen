@@ -1,28 +1,34 @@
+from typing import Optional
+import autoroot
+
+import warnings
 from enum import Enum
 from pathlib import Path
 
-import autoroot
 import open_clip
 import torch
 import webdataset as wds
 from ipdb import set_trace as st
 from torch.utils.data import DataLoader
 from torchvision import transforms
-import os
-ARGOVERSE_DIR = Path().expanduser().resolve()
+
+from gen import COCO_CAPTIONS_PATH
 from gen.datasets.base_dataset import AbstractDataset
-import warnings
+
 
 class CocoCaptions(AbstractDataset):
     def __init__(
             self, 
             tokenizer,
-            path: str = str(Path(os.getenv('COCO_CAPTIONS_PATH', '/home/aswerdlow/research/lib/img2dataset/mscoco')) / '{00000..00059}.tar'),
+            path: str = COCO_CAPTIONS_PATH,
             resolution: int = 512, 
             override_text: bool = True,
+            random_subset: Optional[int] = None,
             **kwargs
         ):
-        super().__init__(**kwargs)
+        super().__init__(random_subset=random_subset, **kwargs)
+        self.allow_shuffle = False
+        self.allow_random_subset = False
         self.tokenizer = tokenizer
         self.path = path
         self.gen_image_transforms = transforms.Compose([
@@ -39,7 +45,14 @@ class CocoCaptions(AbstractDataset):
             warnings.warn("Overriding text captions with 'A photo of'")
 
     def get_dataset(self):
-        pass
+        # See: https://github.com/rom1504/img2dataset/blob/main/dataset_examples/mscoco.md
+        dataset = wds.WebDataset(self.path)
+        if self.shuffle:
+            dataset = dataset.shuffle(0)
+        dataset = dataset.decode("pil").map(self.make_sample)
+        if self.random_subset:
+            dataset = dataset.with_length(self.random_subset)
+        return dataset
 
     def collate_fn(self, batch):
         pixel_values = torch.stack([example[0] for example in batch])
@@ -53,10 +66,3 @@ class CocoCaptions(AbstractDataset):
         input_text = 'A photo of' if sample['txt'] else self.override_text
         inputs = self.tokenizer(input_text, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt")
         return self.gen_image_transforms(sample["jpg"]), self.disc_image_transforms(sample["jpg"]), inputs.input_ids
-    
-    def get_dataloader(self):
-        # See: https://github.com/rom1504/img2dataset/blob/main/dataset_examples/mscoco.md
-        dataset = wds.WebDataset(self.path)
-        dataset = dataset.shuffle(0).decode("pil").map(self.make_sample).with_length(100)
-        loader = DataLoader(dataset, batch_size=self.batch_size, collate_fn=self.collate_fn, num_workers=self.num_workers)
-        return loader

@@ -14,24 +14,18 @@ import torch.backends.cuda as cuda
 import torch.backends.cudnn as cudnn
 import torch.utils.checkpoint
 import transformers
+import wandb
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from diffusers.utils import check_min_version
 from hydra.utils import get_original_cwd
+from hydra_zen import MISSING, ZenField, make_config, store
 from image_utils import library_ops  # This overrides repr() for tensors
 from ipdb import set_trace
 from omegaconf import OmegaConf, open_dict
 from tqdm.auto import tqdm
 
-import wandb
-
-from hydra_zen import (
-    MISSING,
-    ZenField,
-    make_config,
-    store
-)
 from gen.configs.base import BaseConfig
 from gen.utils.decoupled_utils import check_gpu_memory_usage
 from train import run
@@ -53,6 +47,7 @@ def main(cfg: BaseConfig):
 
     if cfg.attach:
         import subprocess
+
         import debugpy
         from image_utils import library_ops
         subprocess.run("kill -9 $(lsof -i :5678 | grep $(whoami) | awk '{print $2}')", shell=True)

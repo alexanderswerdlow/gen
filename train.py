@@ -7,6 +7,7 @@ import hydra
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
+import wandb
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from diffusers.optimization import get_scheduler
@@ -16,7 +17,6 @@ from ipdb import set_trace
 from torchinfo import summary
 from tqdm.auto import tqdm
 
-import wandb
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset
 from gen.models.base_mapper_model import BaseMapper
@@ -202,9 +202,6 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
             # Important Note: Right now a single "global_step" is a single gradient update step (same if we don't have grad accum)
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                progress_bar.update(1)
-                global_step += 1
-
                 if accelerator.is_main_process:
                     if global_step % cfg.trainer.checkpointing_steps == 0:
                         handle_checkpointing(cfg, accelerator, global_step)
@@ -217,7 +214,8 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                             case ModelType.BASE_MAPPER:
                                 validator.infer(accelerator, validation_dataloader, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
 
-
+                progress_bar.update(1)
+                global_step += 1
                 logs = {"loss": loss.detach().item() / cfg.trainer.gradient_accumulation_steps, "lr": lr_scheduler.get_last_lr()[0]}
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)

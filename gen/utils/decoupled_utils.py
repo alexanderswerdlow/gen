@@ -12,6 +12,7 @@ import os
 import subprocess
 import glob
 import wandb
+from jaxtyping import BFloat16
 from accelerate.logging import get_logger
 
 logger = get_logger(__name__)
@@ -87,7 +88,7 @@ def load_tensor_dict(path: Path):
     tensor_dict = {}
     np_dict = np.load(path)
     for k,v in np_dict.items():
-        if v.dtype == bfloat16:
+        if v.dtype == BFloat16:
             tensor_dict[k] = torch.from_numpy(v.astype(np.float32)).to(dtype=torch.bfloat16)
         else:
             tensor_dict[k] = torch.from_numpy(v)
@@ -95,7 +96,7 @@ def load_tensor_dict(path: Path):
 
 def tensor_hash(tensor):
     """Computes a SHA256 hash of a tensor. Useful for debugging to check equality in different places."""
-    tensor_bytes = tensor.cpu().numpy().tobytes()
+    tensor_bytes = tensor.float().cpu().numpy().tobytes()
     return hashlib.sha256(tensor_bytes).hexdigest()
 
 def module_hash(module):
