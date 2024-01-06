@@ -95,7 +95,7 @@ class ValidationHandler:
         pipeline = StableDiffusionPipeline.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path, 
             text_encoder=accelerator.unwrap_model(text_encoder), 
-            tokenizer=tokenizer, 
+            tokenizer=tokenizer,
             unet=unet,
             vae=vae,
             torch_dtype=self.weight_dtype
@@ -124,7 +124,6 @@ class ValidationHandler:
         for tracker in accelerator.trackers:
             if tracker.name == "tensorboard":
                 np_images = np.stack([np.asarray(img) for img in images])
-                tracker.writer.add_images(
-                    "validation", np_images, step, dataformats="NHWC")
+                tracker.writer.add_images("validation", np_images, step, dataformats="NHWC")
             if tracker.name == "wandb":
                 tracker.log({"validation": [wandb.Image(image, caption=f"{i}: {self.cfg.eval.validation_prompts[i]}") for i, image in enumerate(images)]})
