@@ -214,7 +214,7 @@ class BaseMapper(nn.Module):
             outmap_max, _ = torch.max(outmap, dim=1, keepdim=True)
             outmap = (outmap - outmap_min) / (outmap_max - outmap_min)
             Im(outmap).save('pca')
-            sam_input = rearrange((((batch['pixel_values'] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')
+            sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')
             Im(sam_input).save('rgb')
 
         # viz()
@@ -224,7 +224,7 @@ class BaseMapper(nn.Module):
         clip_feature_map = clip_feature_map[:, 1:, :]
 
         # SAM requires NumPy [0, 255]
-        sam_input = rearrange((((batch['pixel_values'] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')
+        sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')
 
         latent_dim = batch['disc_pixel_values'].shape[-1] // 14
         feature_map_masks = []

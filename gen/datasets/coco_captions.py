@@ -12,21 +12,22 @@ from ipdb import set_trace as st
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-from gen import COCO_CAPTIONS_PATH
+from gen import COCO_CAPTIONS_FILES
+from gen.configs.utils import inherit_parent_args
 from gen.datasets.base_dataset import AbstractDataset
 
-
+@inherit_parent_args
 class CocoCaptions(AbstractDataset):
     def __init__(
-            self, 
+            self,
+            *,
             tokenizer,
-            path: str = COCO_CAPTIONS_PATH,
+            path: str = COCO_CAPTIONS_FILES,
             resolution: int = 512, 
             override_text: bool = True,
-            random_subset: Optional[int] = None,
             **kwargs
         ):
-        super().__init__(random_subset=random_subset, **kwargs)
+        # Note: The super __init__ is handled by inherit_parent_args
         self.allow_shuffle = False
         self.allow_random_subset = False
         self.tokenizer = tokenizer
@@ -60,7 +61,7 @@ class CocoCaptions(AbstractDataset):
         disc_pixel_values = torch.stack([example[1] for example in batch])
         disc_pixel_values = disc_pixel_values.to(memory_format=torch.contiguous_format).float()
         input_ids = torch.stack([example[2] for example in batch]).squeeze(1)
-        return {"pixel_values": pixel_values, "input_ids": input_ids, "disc_pixel_values": disc_pixel_values}
+        return {"gen_pixel_values": pixel_values, "input_ids": input_ids, "disc_pixel_values": disc_pixel_values}
 
     def make_sample(self, sample, val=False):
         input_text = 'A photo of' if self.override_text else sample['txt']

@@ -51,7 +51,7 @@ class ValidationHandler:
         joined_images = []
         for idx, batch in tqdm(enumerate(validation_dataloader), leave=False):
             images = self.infer_on_prompt(pipeline=pipeline, prompt_manager=prompt_manager, num_images_per_prompt=num_images_per_prompt, seeds=seeds, batch=batch)
-            images = [Im(batch['pixel_values']).denormalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)).pil, *images]
+            images = [Im(batch["gen_pixel_values"]).denormalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)).pil, *images]
             prompt_image = Image.fromarray(np.concatenate(images, axis=1))
             joined_images.append(prompt_image)
             # TODO: Show mask information

@@ -1,5 +1,5 @@
 import random
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import torch
@@ -8,13 +8,14 @@ from accelerate.logging import get_logger
 from datasets import load_dataset
 from torchvision import transforms
 import open_clip
+from gen.configs.utils import inherit_parent_args
 
 from gen.datasets.base_dataset import AbstractDataset, Split
 
 logger = get_logger(__name__)
 
 def collate_fn(examples):
-    pixel_values = torch.stack([example["pixel_values"] for example in examples])
+    pixel_values = torch.stack([example["gen_pixel_values"] for example in examples])
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
     disc_pixel_values = torch.stack([example["disc_pixel_values"] for example in examples])
@@ -23,19 +24,20 @@ def collate_fn(examples):
     input_ids = torch.stack([example["input_ids"] for example in examples])
 
     return {
-        "pixel_values": pixel_values,
+        "gen_pixel_values": pixel_values,
         "disc_pixel_values": pixel_values,
         "disc_pixel_values": disc_pixel_values,
         "input_ids": input_ids,
     }
 
+@inherit_parent_args
 class ControlnetDataset(AbstractDataset):
     def __init__(
             self,
-            tokenizer,
-            accelerator,
+            *,
+            tokenizer: Optional[Any] = None,
+            accelerator: Optional[Any] = None,
             resolution: int = 512, 
-            random_subset: Optional[int] = None, 
             dataset_class: str = 'controlnet_dataset',
             dataset_name: Optional[str] = "fusing/fill50k",
             dataset_config_name: Optional[str] = None,
@@ -49,8 +51,10 @@ class ControlnetDataset(AbstractDataset):
             validation_image: Optional[tuple[str]] = None,
             cache_dir: Optional[str] = None,
             override_text: bool = True,
-            **kwargs):
-        super().__init__(random_subset=random_subset, **kwargs)
+            **kwargs
+        ):
+
+        # Note: The super __init__ is handled by inherit_parent_args
         self.allow_random_subset = False
         self.allow_shuffle = False
         self.resolution = resolution
@@ -164,7 +168,7 @@ class ControlnetDataset(AbstractDataset):
             conditioning_images = [image.convert("RGB") for image in examples[image_column]]
             conditioning_images = [self.disc_image_transforms(image) for image in conditioning_images]
 
-            examples["pixel_values"] = images
+            examples["gen_pixel_values"] = images
             examples["disc_pixel_values"] = conditioning_images
             examples["input_ids"] = tokenize_captions(examples)
 

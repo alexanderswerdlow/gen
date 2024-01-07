@@ -19,7 +19,7 @@ from tqdm.auto import tqdm
 from torch.utils.data import DataLoader, Dataset
 
 from gen.configs import BaseConfig, ModelType
-from gen.datasets.base_dataset import AbstractDataset
+from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
 from gen.models.controlnet_model import (controlnet_forward,
                                          get_controlnet_model, log_validation,
@@ -69,9 +69,9 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
         eps=cfg.trainer.adam_epsilon,
     )
 
-    train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=False)(cfg=cfg, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
+    train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=False)(cfg=cfg, split=Split.TRAIN, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
 
-    validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=False)(cfg=cfg, tokenizer=tokenizer, accelerator=accelerator)
+    validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=False)(cfg=cfg ,split=Split.VALIDATION, tokenizer=tokenizer, accelerator=accelerator)
 
     if cfg.dataset.overfit:
         validation_dataset_holder.get_dataset = lambda: train_dataloader.dataset
@@ -167,7 +167,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnet if cfg.model.model_type == ModelType.CONTROLNET else text_encoder):
                 # Convert images to latent space
-                latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                latents = vae.encode(batch["gen_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
 
                 # Sample noise that we'll add to the latents
