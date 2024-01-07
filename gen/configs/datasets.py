@@ -45,6 +45,13 @@ stored_child_config(DatasetConfig, "dataset", "coco_captions", "coco_captions_te
 
 auto_store(
     DatasetConfig, 
+    train_dataset=get_train(ControlnetDataset, num_workers=2, batch_size=2, conditioning_image_column='image', caption_column="prompt", dataset_config_name="2m_random_5k", dataset_name="poloclub/diffusiondb"),
+    validation_dataset=get_val(ControlnetDataset, num_workers=2, batch_size=2, conditioning_image_column='image', caption_column="prompt", dataset_config_name="2m_random_5k", dataset_name="poloclub/diffusiondb"), 
+    name="diffusiondb"
+)
+
+auto_store(
+    DatasetConfig, 
     train_dataset=get_train(MoviDataset), 
     validation_dataset=get_val(MoviDataset), 
     name="movi_e"

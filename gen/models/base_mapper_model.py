@@ -231,6 +231,7 @@ class BaseMapper(nn.Module):
         feature_map_batch_idxs = []
         for i in range(bs):
             masks = self.hqsam.forward(sam_input[i])
+            masks = masks[:23]
             num_masks = len(masks)
             if num_masks == 0:
                 tmp_ = torch.zeros((1, 16, 16), dtype=torch.bool)
@@ -279,7 +280,8 @@ class BaseMapper(nn.Module):
             assert (token_is_padding.shape[0] == (batch['input_ids'].shape[1] - token_is_padding[0])).item()
             mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
             assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0] # We need at least as many pad tokens as we have masks
-            batch['input_ids'][b, token_is_padding[0]:token_is_padding[0]+(mask_part_of_batch.shape[0] * len(mask_tokens_ids))] = torch.tensor(mask_tokens_ids * mask_part_of_batch.shape[0])
+            extent = len(batch['input_ids'][b, token_is_padding[0]:token_is_padding[0]+(mask_part_of_batch.shape[0] * len(mask_tokens_ids))])
+            batch['input_ids'][b, token_is_padding[0]:token_is_padding[0]+(mask_part_of_batch.shape[0] * len(mask_tokens_ids))] = torch.tensor(mask_tokens_ids * mask_part_of_batch.shape[0])[:extent]
 
         text_encoder_dict = dict(
             attn_dict=attn_dict,

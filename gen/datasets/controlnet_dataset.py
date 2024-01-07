@@ -145,7 +145,7 @@ class ControlnetDataset(AbstractDataset):
             for caption in examples[caption_column]:
                 if self.override_text:
                     captions.append("A photo of")
-                if random.random() < self.proportion_empty_prompts:
+                elif random.random() < self.proportion_empty_prompts:
                     captions.append("")
                 elif isinstance(caption, str):
                     captions.append(caption)

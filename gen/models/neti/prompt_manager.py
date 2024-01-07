@@ -7,6 +7,7 @@ from gen.models.base_mapper_model import BaseMapper
 
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
+from torch.nn.parallel import DistributedDataParallel
 
 UNET_LAYERS = ['IN01', 'IN02', 'IN04', 'IN05', 'IN07', 'IN08', 'MID',
                'OUT03', 'OUT04', 'OUT05', 'OUT06', 'OUT07', 'OUT08', 'OUT09', 'OUT10', 'OUT11']
@@ -47,9 +48,14 @@ class PromptManager:
         Compute the conditioning vectors for the given prompt. We assume that the prompt is defined using `{}`
         for indicating where to place the placeholder token string. See constants.VALIDATION_PROMPTS for examples.
         """
-        self.model.placeholder_token_id = self.model.tokenizer.convert_tokens_to_ids(self.model.cfg.model.placeholder_token)
-        self.model.weight_dtype = self.dtype
-        input_ids, text_encoder_dict = self.model.get_hidden_state(batch, timesteps=self.timesteps, device=batch["gen_pixel_values"].device, dtype=self.dtype, per_timestep=True)
+        if isinstance(self.model, DistributedDataParallel):
+            model_ = self.model.module
+        else:
+            model_ = self.model
+
+        model_.placeholder_token_id = model_.tokenizer.convert_tokens_to_ids(model_.cfg.model.placeholder_token)
+        model_.weight_dtype = self.dtype
+        input_ids, text_encoder_dict = model_.get_hidden_state(batch, timesteps=self.timesteps, device=batch['pixel_values'].device, dtype=self.dtype, per_timestep=True)
 
         # Compute embeddings for each timestep and each U-Net layer
         print(f"Computing embeddings over {len(self.timesteps)} timesteps and {len(self.unet_layers)} U-Net layers.")

@@ -64,10 +64,6 @@ def main(cfg: BaseConfig):
     cfg.output_dir = cfg.top_level_output_path / ('debug' if cfg.debug else 'train') / cfg.run_name
     cfg.output_dir.mkdir(exist_ok=True, parents=True)
 
-    original_output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / '.hydra'
-    if original_output_dir.exists():
-        shutil.move(original_output_dir, cfg.output_dir)
-
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
     log_file_path = logging_dir / "output.log"
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +97,9 @@ def main(cfg: BaseConfig):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
+        original_output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / '.hydra'
+        if original_output_dir.exists():
+            shutil.move(original_output_dir, cfg.output_dir)
         accelerator.init_trackers(
             cfg.tracker_project_name,
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),

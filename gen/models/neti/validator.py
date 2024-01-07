@@ -17,6 +17,7 @@ from gen.models.neti.prompt_manager import PromptManager
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.models.neti.sd_pipeline import sd_pipeline_call
 from image_utils import Im
+from torch.nn.parallel import DistributedDataParallel
 
 if is_wandb_available():
     import wandb
@@ -116,7 +117,12 @@ class ValidationHandler:
         num_denoising_steps = 50
         pipeline.scheduler.set_timesteps(num_denoising_steps, device=pipeline.device)
         pipeline.unet.set_attn_processor(XTIAttenProc())
-        text_encoder.text_model.embeddings.mapper.eval()
+
+        if isinstance(text_encoder, DistributedDataParallel):
+            model_ = text_encoder.module
+        else:
+            model_ = text_encoder
+        model_.text_model.embeddings.mapper.eval()
 
         model = BaseMapper(self.cfg, init_modules=False)
         model.tokenizer = tokenizer

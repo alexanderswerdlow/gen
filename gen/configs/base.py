@@ -47,11 +47,11 @@ store(get_hydra_config(), group="hydra", name="default")
 
 exp_store(
     name="demo_exp",
-    trainer=dict(num_train_epochs=100, num_val_steps=25, checkpointing_steps=50),
+    trainer=dict(num_train_epochs=1000, num_val_steps=500, checkpointing_steps=10000),
     dataset=dict(
         num_validation_images=1,
-        train_dataset=dict(batch_size=4, random_subset=100),
-        validation_dataset=dict(batch_size=1, random_subset=2)
+        train_dataset=dict(batch_size=8),
+        validation_dataset=dict(batch_size=1, random_subset=4)
     ),
     hydra_defaults=[
         "_self_",
