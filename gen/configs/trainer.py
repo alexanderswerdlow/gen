@@ -14,10 +14,9 @@ class TrainerConfig:
     gradient_accumulation_steps: int = 1
     log_with: Optional[LoggerType] = LoggerType.WANDB
     seed: int = 42
-    num_epochs: int = 10
+    num_train_epochs: int = 10
     limit_num_checkpoints: int = 1
     dynamo_backend: DynamoBackend = DynamoBackend.NO
-    num_train_epochs: int = 1
     max_train_steps: Optional[int] = None
     checkpointing_steps: int = 500
     checkpoints_total_limit: Optional[int] = None
@@ -37,10 +36,12 @@ class TrainerConfig:
     max_grad_norm: float = 1.0
     set_grads_to_none: bool = True
     max_train_samples: Optional[int] = None
-    validation_steps: int = 100
+    num_val_steps: int = 100
+    eval_every_n_epochs: Optional[int] = None
     enable_xformers_memory_efficient_attention: bool = True
     compile: bool = False
     profiler_active_steps: int = 2
+    log_gradients: Optional[int] = None
 
 auto_store(TrainerConfig, name="base")
 

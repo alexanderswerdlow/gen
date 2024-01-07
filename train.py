@@ -16,6 +16,7 @@ from diffusers.utils.import_utils import is_xformers_available
 from ipdb import set_trace
 from torchinfo import summary
 from tqdm.auto import tqdm
+from torch.utils.data import DataLoader, Dataset
 
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset
@@ -68,9 +69,14 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
         eps=cfg.trainer.adam_epsilon,
     )
 
-    train_dataloader: AbstractDataset = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=False)(cfg=cfg, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
+    train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=False)(cfg=cfg, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
 
-    validation_dataloader: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=False)(cfg=cfg, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
+    validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=False)(cfg=cfg, tokenizer=tokenizer, accelerator=accelerator)
+
+    if cfg.dataset.overfit:
+        validation_dataset_holder.get_dataset = lambda: train_dataloader.dataset
+    
+    validation_dataset_holder = validation_dataset_holder.get_dataloader()
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -152,6 +158,8 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
         profiler = Profiler(output_dir=cfg.output_dir, active_steps=cfg.trainer.profiler_active_steps)
 
     progress_bar = tqdm(range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not accelerator.is_local_main_process)
+    if cfg.trainer.log_gradients is not None:
+        wandb.watch(model, log_freq=cfg.trainer.log_gradients)
     print(f'load_time: {__import__("time").time() - load_time} seconds')
 
     image_logs = None
@@ -206,13 +214,15 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                     if global_step % cfg.trainer.checkpointing_steps == 0:
                         handle_checkpointing(cfg, accelerator, global_step)
                     
-                    if global_step % cfg.trainer.validation_steps == 0:
+                    if global_step % cfg.trainer.num_val_steps == 0 or (step == 0 and cfg.trainer.eval_every_n_epochs and epoch % cfg.trainer.eval_every_n_epochs == 0):
+                        logger.info(f'Starting validation at step {global_step}, epoch {epoch}')
                         match cfg.model.model_type:
                             case ModelType.CONTROLNET:
                                 if cfg.dataset.validation_prompt:
                                     image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
                             case ModelType.BASE_MAPPER:
-                                validator.infer(accelerator, validation_dataloader, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
+                                validator.infer(accelerator, validation_dataset_holder, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
+                        logger.info(f'Finished validation at step {global_step}, epoch {epoch}')
 
                 progress_bar.update(1)
                 global_step += 1

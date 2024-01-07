@@ -50,7 +50,7 @@ def sd_pipeline_call(
     timesteps = pipeline.scheduler.timesteps
 
     # 5. Prepare latent variables
-    num_channels_latents = pipeline.unet.in_channels
+    num_channels_latents = pipeline.unet.config.in_channels
     latents = pipeline.prepare_latents(
         batch_size * num_images_per_prompt,
         num_channels_latents,

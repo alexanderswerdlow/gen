@@ -11,8 +11,9 @@ from gen.datasets.coco_captions import CocoCaptions
 class DatasetConfig:
     name: ClassVar[str] = 'dataset'
     train_dataset: AbstractDataset
-    validation_dataset: AbstractDataset
+    validation_dataset: Optional[AbstractDataset]
     num_validation_images: int = 2
+    overfit: bool = False
 
 @dataclass
 class HuggingFaceControlNetConfig(DatasetConfig):

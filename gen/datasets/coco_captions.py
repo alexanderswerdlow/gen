@@ -48,7 +48,7 @@ class CocoCaptions(AbstractDataset):
         # See: https://github.com/rom1504/img2dataset/blob/main/dataset_examples/mscoco.md
         dataset = wds.WebDataset(self.path)
         if self.shuffle:
-            dataset = dataset.shuffle(0)
+            dataset = dataset.shuffle(100)
         dataset = dataset.decode("pil").map(self.make_sample)
         if self.random_subset:
             dataset = dataset.with_length(self.random_subset)

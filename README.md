@@ -30,7 +30,7 @@ mkdir data
 wget https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/controlnet_training/conditioning_image_1.png --directory-prefix=data
 wget https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/controlnet_training/conditioning_image_2.png --directory-prefix=data
 
-python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo_exp dataset.train_batch_size=2 'dataset.validation_image=[data/conditioning_image_1.png,data/conditioning_image_2.png]' dataset.validation_prompt="red circle with blue background" trainer.validation_steps=10 exp=example_exp_name tags='[example_tag_1,example_tag_2]'
+python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo_exp dataset.train_batch_size=2 'dataset.validation_image=[data/conditioning_image_1.png,data/conditioning_image_2.png]' dataset.validation_prompt="red circle with blue background" trainer.num_val_steps=10 exp=example_exp_name tags='[example_tag_1,example_tag_2]'
 ```
 
 ## WIP
@@ -39,5 +39,5 @@ python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo
 python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name
 
 # Overfit
-python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name +mode=overfit
+python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name +mode=overfit trainer.log_gradients=10
 ```

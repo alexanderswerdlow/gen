@@ -1,4 +1,5 @@
 from typing import Dict, Optional, Tuple
+import warnings
 
 import numpy as np
 import open_clip
@@ -128,7 +129,7 @@ class BaseMapper(nn.Module):
         return _hs
     
     def get_text_conditioning_per_timestep(self, unet_layers, input_ids: torch.Tensor, timesteps: torch.Tensor, device: torch.device, truncation_idx: Optional[int], num_images_per_prompt: int = 1, **kwargs) -> Dict:
-        print(f"Computing embeddings over {len(timesteps)} timesteps and {len(unet_layers)} U-Net layers.")
+        warnings.warn(f"Computing embeddings over {len(timesteps)} timesteps and {len(unet_layers)} U-Net layers.")
         hidden_states_per_timestep = []
         for timestep in tqdm(timesteps, leave=False):
             _hs = {"this_idx": 0}.copy()
@@ -242,10 +243,12 @@ class BaseMapper(nn.Module):
 
         attn_dict = dict(x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
 
-        # TODO: HACK!!! We need to create a proper input string. The current implementation will not work and just makes sure we have one of these tokens
         placeholder_token = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
         mask_tokens = self.tokenizer.convert_tokens_to_ids([self.cfg.model.placeholder_token, 'and', ' '])
         pad_token = self.tokenizer.convert_tokens_to_ids(self.tokenizer._pad_token)
+
+        # # Clone so that we can access it again in the dataloader without modification
+        # batch['input_ids'] = batch['input_ids'].clone()
 
         bs = batch['input_ids'].shape[0]
         for b in range(bs):

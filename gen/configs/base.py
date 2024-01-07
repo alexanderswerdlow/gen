@@ -47,7 +47,7 @@ store(get_hydra_config(), group="hydra", name="default")
 
 exp_store(
     name="demo_exp",
-    trainer=dict(num_epochs=100, validation_steps=25, checkpointing_steps=50),
+    trainer=dict(num_train_epochs=100, num_val_steps=25, checkpointing_steps=50),
     dataset=dict(
         num_validation_images=1,
         train_dataset=dict(batch_size=4, random_subset=100),
@@ -60,11 +60,11 @@ exp_store(
 )
 
 mode_store(
-    name="overfit", 
+    name="fast", 
     debug=True, 
     trainer=dict(
-        num_epochs=1, 
-        validation_steps=2
+        num_train_epochs=1, 
+        num_val_steps=2
     ),
     dataset=dict(
         train_dataset=dict(
@@ -77,6 +77,25 @@ mode_store(
             random_subset=2, 
             num_workers=0
         )
+    ),
+)
+
+mode_store(
+    name="overfit", 
+    debug=True, 
+    trainer=dict(
+        num_train_epochs=100, 
+        eval_every_n_epochs=10,
+        num_val_steps=1000,
+        checkpointing_steps=1000,
+    ),
+    dataset=dict(
+        train_dataset=dict(
+            batch_size=4, 
+            random_subset=8, 
+            num_workers=0
+        ),
+        overfit=True,
     ),
 )
 
