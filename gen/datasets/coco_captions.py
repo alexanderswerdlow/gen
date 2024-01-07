@@ -63,6 +63,6 @@ class CocoCaptions(AbstractDataset):
         return {"pixel_values": pixel_values, "input_ids": input_ids, "disc_pixel_values": disc_pixel_values}
 
     def make_sample(self, sample, val=False):
-        input_text = 'A photo of' if sample['txt'] else self.override_text
+        input_text = 'A photo of' if self.override_text else sample['txt']
         inputs = self.tokenizer(input_text, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt")
         return self.gen_image_transforms(sample["jpg"]), self.disc_image_transforms(sample["jpg"]), inputs.input_ids

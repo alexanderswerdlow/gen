@@ -32,7 +32,7 @@ def global_store(name: str, group: str, hydra_defaults: Optional[list[Any]] = No
     )
     
 def stored_child_config(cls: Any, group: str, parent: str, child: str):
-    store(builds(cls, override_text=False, builds_bases=(store[group][(group, parent)],)), group=group, name=child)
+    store(builds(cls, builds_bases=(store[group][(group, parent)],)), group=group, name=child)
 
 auto_store = store(group=lambda cfg: cfg.name)
 exp_store = partial(global_store, group="experiment")

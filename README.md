@@ -38,6 +38,10 @@ python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo
 ```
 python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name
 
-# Overfit
 python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name +mode=overfit trainer.log_gradients=10
+
+# Custom
+python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name +mode=overfit trainer.log_gradients=10 trainer.eval_every_n_epochs=100 trainer.num_train_epochs=1000
+
+python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name trainer.log_gradients=10 dataset=controlnet +mode=overfit dataset.train_dataset.random_subset=4 dataset.train_dataset.conditioning_image_column=image dataset.train_dataset.dataset_name=poloclub/diffusiondb dataset.train_dataset.dataset_config_name=2m_random_1k trainer.eval_every_n_epochs=100 trainer.num_train_epochs=1000 dataset.train_dataset.caption_column=prompt
 ```

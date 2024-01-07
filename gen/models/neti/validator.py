@@ -69,8 +69,8 @@ class ValidationHandler:
         del pipeline
         torch.cuda.empty_cache()
         text_encoder.text_model.embeddings.mapper.train()
-        if self.cfg.trainer.seed is not None:
-            set_seed(self.cfg.trainer.seed)
+        # if self.cfg.trainer.seed is not None:
+        #     set_seed(self.cfg.trainer.seed)
         return final_image
 
     def infer_on_prompt(self, pipeline: StableDiffusionPipeline,

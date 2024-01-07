@@ -50,7 +50,8 @@ class BaseMapper(nn.Module):
     def init_pretrained(self):
         self.clip = ClipFeatureExtractor()
         self.clip.train()
-        self.clip.requires_grad_(True)
+        self.clip.requires_grad_(False)
+        print('Warning, CLIP is frozen for debugging!!!!!')
 
         self.hqsam = HQSam(model_type='vit_b')
         self.hqsam.eval()
@@ -203,7 +204,21 @@ class BaseMapper(nn.Module):
     def get_hidden_state(self, batch, timesteps, dtype, device, per_timestep: bool = False):
         bs: int = batch['disc_pixel_values'].shape[0]
 
-        clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage23']
+        clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage0']
+
+        def viz():
+            from image_utils import Im, pca
+            clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage0']
+            outmap = pca(clip_feature_map[1:, ...].permute(1, 2, 0).reshape(4, 1024, 16, 16).permute(0, 2, 3, 1).reshape(-1, 1024).float()).reshape(4, 16, 16, 3).permute(0, 3, 1, 2)
+            outmap_min, _ = torch.min(outmap, dim=1, keepdim=True)
+            outmap_max, _ = torch.max(outmap, dim=1, keepdim=True)
+            outmap = (outmap - outmap_min) / (outmap_max - outmap_min)
+            Im(outmap).save('pca')
+            sam_input = rearrange((((batch['pixel_values'] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')
+            Im(sam_input).save('rgb')
+
+        # viz()
+        
         clip_feature_map = rearrange(clip_feature_map, 'l b d -> b l d')
         clip_feature_cls_token = clip_feature_map[:, 0, :] # We take the cls token
         clip_feature_map = clip_feature_map[:, 1:, :]
@@ -217,6 +232,13 @@ class BaseMapper(nn.Module):
         for i in range(bs):
             masks = self.hqsam.forward(sam_input[i])
             num_masks = len(masks)
+            if num_masks == 0:
+                tmp_ = torch.zeros((1, 16, 16), dtype=torch.bool)
+                tmp_[:, 0, 0] = True
+                feature_map_masks.append(tmp_)
+                feature_map_batch_idxs.append(i * torch.ones((1), dtype=torch.long))
+                continue
+
             original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(num_masks)]))
             assert batch['disc_pixel_values'].shape[-1] == batch['disc_pixel_values'].shape[-2]
             feature_map_mask_ = find_true_indices_batched(original=original, dh=latent_dim, dw=latent_dim)
@@ -249,6 +271,8 @@ class BaseMapper(nn.Module):
 
         # # Clone so that we can access it again in the dataloader without modification
         # batch['input_ids'] = batch['input_ids'].clone()
+
+        st()
 
         bs = batch['input_ids'].shape[0]
         for b in range(bs):

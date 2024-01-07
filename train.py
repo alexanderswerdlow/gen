@@ -53,7 +53,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
             model = BaseMapper(cfg)
             params_to_optimize = model.text_encoder.text_model.embeddings.mapper.parameters
             tokenizer = model.tokenizer
-            summary(model)
+            summary(model, col_names=("trainable",  "num_params"))
             checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.output_dir)
             validator: ValidationHandler = ValidationHandler(cfg=cfg, weights_dtype=weight_dtype)
 
@@ -76,7 +76,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
     if cfg.dataset.overfit:
         validation_dataset_holder.get_dataset = lambda: train_dataloader.dataset
     
-    validation_dataset_holder = validation_dataset_holder.get_dataloader()
+    validation_dataloader = validation_dataset_holder.get_dataloader()
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -221,7 +221,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                                 if cfg.dataset.validation_prompt:
                                     image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
                             case ModelType.BASE_MAPPER:
-                                validator.infer(accelerator, validation_dataset_holder, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
+                                validator.infer(accelerator, validation_dataloader, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
                         logger.info(f'Finished validation at step {global_step}, epoch {epoch}')
 
                 progress_bar.update(1)
@@ -235,6 +235,11 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
             elif cfg.profile and profiler.step(global_step):
                 print(f"Profiling finished at step: {global_step}")
                 break
+
+            # TODO: Something weird happens with webdataset:
+            # UserWarning: Length of IterableDataset <abc.WebDataset_Length object at 0x7f0748da4640> was reported to be 2 (when accessing len(dataloader)), but 3 samples have been fetched.
+            if step >= len(train_dataloader) - 1:
+                break   
 
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
