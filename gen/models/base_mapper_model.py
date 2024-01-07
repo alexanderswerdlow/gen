@@ -265,28 +265,26 @@ class BaseMapper(nn.Module):
 
         attn_dict = dict(x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
 
-        placeholder_token = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
-        mask_tokens = self.tokenizer.convert_tokens_to_ids([self.cfg.model.placeholder_token, 'and', ' '])
-        pad_token = self.tokenizer.convert_tokens_to_ids(self.tokenizer._pad_token)
+        placeholder_token_id = self.tokenizer(self.cfg.model.placeholder_token, add_special_tokens=False).input_ids[0]
+        mask_tokens_ids = self.tokenizer(f"{self.cfg.model.placeholder_token} and", add_special_tokens=False).input_ids
+        pad_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer._pad_token)
 
         # # Clone so that we can access it again in the dataloader without modification
         # batch['input_ids'] = batch['input_ids'].clone()
 
-        st()
-
         bs = batch['input_ids'].shape[0]
         for b in range(bs):
             # Everything after 1st pad token should also be a pad token
-            token_is_padding = (batch['input_ids'][b] == pad_token).nonzero()
+            token_is_padding = (batch['input_ids'][b] == pad_token_id).nonzero()
             assert (token_is_padding.shape[0] == (batch['input_ids'].shape[1] - token_is_padding[0])).item()
             mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
             assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0] # We need at least as many pad tokens as we have masks
-            batch['input_ids'][b, token_is_padding[0]:token_is_padding[0]+(mask_part_of_batch.shape[0] * len(mask_tokens))] = torch.tensor(mask_tokens * mask_part_of_batch.shape[0])
+            batch['input_ids'][b, token_is_padding[0]:token_is_padding[0]+(mask_part_of_batch.shape[0] * len(mask_tokens_ids))] = torch.tensor(mask_tokens_ids * mask_part_of_batch.shape[0])
 
         text_encoder_dict = dict(
             attn_dict=attn_dict,
-            placeholder_token=placeholder_token,
-            pad_token=pad_token,
+            placeholder_token=placeholder_token_id,
+            pad_token=pad_token_id,
             feature_map_batch_idxs=feature_map_batch_idxs
         )
 
