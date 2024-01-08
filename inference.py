@@ -114,7 +114,6 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
                 pipeline=pipeline,
                 prompt_manager=prompt_manager,
                 seeds=inference_cfg.inference.seeds,
-                output_path=output_path,
                 num_images_per_prompt=1,
                 truncation_idx=truncation_idx,
             )
@@ -130,7 +129,6 @@ def run_inference_batch(
     prompt_manager: PromptManager,
     seeds: List[int],
     batch: dict,
-    output_path: Optional[Path] = None,
     num_images_per_prompt: int = 1,
     truncation_idx: Optional[int] = None,
 ) -> Image.Image:
@@ -142,9 +140,6 @@ def run_inference_batch(
         generator = torch.Generator(device="cuda").manual_seed(seed)
         images = sd_pipeline_call(pipeline, prompt_embeds=prompt_embeds, generator=generator, num_images_per_prompt=num_images_per_prompt).images
         seed_image = Image.fromarray(np.concatenate(images, axis=1)).convert("RGB")
-        if output_path is not None:
-            save_name = f"{seed}_truncation_{truncation_idx}.png" if truncation_idx is not None else f"{seed}.png"
-            seed_image.save(output_path / save_name)
         joined_images.append(seed_image)
     joined_image = get_image_grid(joined_images)
     return joined_image

@@ -20,6 +20,8 @@ from gen.models.neti.sd_pipeline import sd_pipeline_call
 from image_utils import Im
 from torch.nn.parallel import DistributedDataParallel
 
+from gen.utils.trainer_utils import every_n_steps
+
 if is_wandb_available():
     import wandb
 
@@ -29,6 +31,7 @@ class ValidationHandler:
         self.cfg = cfg
         self.weight_dtype = weights_dtype
 
+    # @every_n_steps(n=self.cfg)
     def infer(
             self,
             accelerator: Accelerator,

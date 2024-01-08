@@ -27,7 +27,7 @@ from gen.models.controlnet_model import (controlnet_forward,
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
 from gen.utils.decoupled_utils import Profiler
-from gen.utils.trainer_utils import handle_checkpointing
+from gen.utils.trainer_utils import TrainingState, handle_checkpointing
 
 logger = get_logger(__name__)
 
@@ -168,6 +168,14 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnet if cfg.model.model_type == ModelType.CONTROLNET else text_encoder):
+                state: TrainingState = TrainingState(
+                    epoch_step=step,
+                    total_epoch_steps=len(train_dataloader),
+                    global_step=global_step,
+                    epoch=epoch,
+                    accelerator=accelerator,
+                )
+
                 # Convert images to latent space
                 latents = vae.encode(batch["gen_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
@@ -210,15 +218,17 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 optimizer.zero_grad(set_to_none=cfg.trainer.set_grads_to_none)
 
             # Important Note: Right now a single "global_step" is a single gradient update step (same if we don't have grad accum)
+            # This is different from "step" which only counts the number of forward passes
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 if accelerator.is_main_process:
                     if global_step % cfg.trainer.checkpointing_steps == 0:
-                        handle_checkpointing(cfg, accelerator, global_step)
                         if cfg.model.model_type == ModelType.BASE_MAPPER:
                             checkpoint_handler.save_model(text_encoder=text_encoder, accelerator=accelerator, save_name=f'{global_step}')
+                        else:
+                            handle_checkpointing(cfg, accelerator, global_step)
                     
-                if (cfg.trainer.eval_every_n_steps and global_step % cfg.trainer.eval_every_n_steps == 0) or (step == 0 and cfg.trainer.eval_every_n_epochs and epoch % cfg.trainer.eval_every_n_epochs == 0):
+                if (cfg.trainer.eval_every_n_steps and global_step % cfg.trainer.eval_every_n_steps == 0) or (step == len(train_dataloader) - 1 and cfg.trainer.eval_every_n_epochs and (epoch + 1) % cfg.trainer.eval_every_n_epochs == 0):
                     logger.info(f'Starting validation at step {global_step}, epoch {epoch}')
                     match cfg.model.model_type:
                         case ModelType.CONTROLNET:

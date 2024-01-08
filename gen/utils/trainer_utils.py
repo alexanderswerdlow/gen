@@ -1,10 +1,15 @@
-from gen.configs.base import BaseConfig
-from accelerate import Accelerator
-from accelerate.logging import get_logger
 import os
 import shutil
+from dataclasses import dataclass
+from functools import wraps
+
+from accelerate import Accelerator
+from accelerate.logging import get_logger
+
+from gen.configs.base import BaseConfig
 
 logger = get_logger(__name__)
+
 
 def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step: int):
     # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
@@ -28,3 +33,33 @@ def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step:
     save_path = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
     accelerator.save_state(save_path)
     logger.info(f"Saved state to {save_path}")
+
+
+
+
+
+@dataclass
+class TrainingState:
+    epoch_step: int
+    total_epoch_steps: int
+    global_step: int
+    epoch: int
+    accelerator: Accelerator
+
+
+def every_n_steps(func, n: int, except_first: bool = False, all_processes: bool = False):
+    @wraps(func)
+    def wrapper(state: TrainingState, *args, **kwargs):
+        if (state.global_step % n == 0 and (not except_first or state.global_step > 0)) and (state.accelerator.is_local_main_process or not state.accelerator.use_distributed or all_processes):
+            return func(*args, **kwargs)
+
+    return wrapper
+
+def every_n_epochs(func, n: int, except_first: bool = False, all_processes: bool = False):
+    @wraps(func)
+    def wrapper(state: TrainingState, *args, **kwargs):
+        # Check if the current step is the last one in the epoch
+        if (state.epoch_step == state.total_epoch_steps - 1) and ((state.epoch + 1) % n == 0 or (not except_first)) and (state.accelerator.is_local_main_process or not state.accelerator.use_distributed or all_processes):
+            return func(*args, **kwargs)
+
+    return wrapper

@@ -27,6 +27,7 @@ class CheckpointHandler:
         ):
         self.save_learned_embeds(text_encoder, accelerator, save_name)
         self.save_mapper(accelerator, text_encoder, save_name)
+        print(f'Saved checkpoint at step: {save_name} in {self.save_root}')
         
     def save_learned_embeds(self, text_encoder: NeTICLIPTextModel, accelerator: Accelerator, save_name: str):
         """
