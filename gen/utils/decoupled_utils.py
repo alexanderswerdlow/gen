@@ -96,11 +96,12 @@ def load_tensor_dict(path: Path):
 
 def tensor_hash(tensor):
     """Computes a SHA256 hash of a tensor. Useful for debugging to check equality in different places."""
-    tensor_bytes = tensor.float().cpu().numpy().tobytes()
+    tensor_bytes = tensor.detach().float().cpu().numpy().tobytes()
     return hashlib.sha256(tensor_bytes).hexdigest()
 
-def module_hash(module):
-    state_dict = module.state_dict()
+def module_hash(module: Optional[dict] = None, state_dict: Optional[dict] = None):
+    assert module is not None or state_dict is not None
+    state_dict = module.state_dict() if module is not None else state_dict
     sorted_state_dict = {k: state_dict[k] for k in sorted(state_dict)}
     params_cat = torch.cat([v.flatten() for _,v in sorted_state_dict.items()])
     return tensor_hash(params_cat)

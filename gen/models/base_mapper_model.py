@@ -87,14 +87,14 @@ class BaseMapper(nn.Module):
             self.unet.enable_xformers_memory_efficient_attention()
         self.unet.set_attn_processor(XTIAttenProc())
 
-    def pre_train_setup_base_mapper(self, weight_dtype: torch.dtype, accelerator: Accelerator):
+    def pre_train_setup_base_mapper(self, weight_dtype: torch.dtype, accelerator: Accelerator, bypass_dtype_check: bool = False):
         self.weight_dtype = weight_dtype
         self.text_encoder = accelerator.prepare(self.text_encoder)
 
         if self.cfg.trainer.gradient_checkpointing:
             self.text_encoder.enable_gradient_checkpointing()
 
-        if accelerator.unwrap_model(self.text_encoder).dtype != torch.float32:
+        if not bypass_dtype_check and accelerator.unwrap_model(self.text_encoder).dtype != torch.float32:
             raise ValueError(f"text_encoder loaded as datatype {accelerator.unwrap_model(self.text_encoder).dtype}.")
 
         # Move vae, unet and text_encoder to device and cast to weight_dtype

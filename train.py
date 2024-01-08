@@ -31,7 +31,7 @@ from gen.utils.trainer_utils import handle_checkpointing
 
 logger = get_logger(__name__)
 
-def run(cfg: BaseConfig, accelerator: Accelerator):
+def train(cfg: BaseConfig, accelerator: Accelerator):
     # TODO: Define a better interface for different models once we get a better idea of the requires inputs/outputs
     # Right now we just conditionally call methods in the respective files based on the model_type enum
     assert is_xformers_available()
@@ -55,7 +55,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
             tokenizer = model.tokenizer
             if accelerator.is_local_main_process:
                 summary(model, col_names=("trainable",  "num_params"))
-            checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.output_dir)
+            checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.output_dir / 'checkpoints')
             validator: ValidationHandler = ValidationHandler(cfg=cfg, weights_dtype=weight_dtype)
 
     if accelerator.is_local_main_process:
@@ -111,6 +111,7 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / cfg.trainer.gradient_accumulation_steps)
     if overrode_max_train_steps:
         cfg.trainer.max_train_steps = cfg.trainer.num_train_epochs * num_update_steps_per_epoch
+
     # Afterwards we recalculate our number of training epochs
     cfg.trainer.num_train_epochs = math.ceil(cfg.trainer.max_train_steps / num_update_steps_per_epoch)
 
@@ -214,8 +215,10 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                 if accelerator.is_main_process:
                     if global_step % cfg.trainer.checkpointing_steps == 0:
                         handle_checkpointing(cfg, accelerator, global_step)
+                        if cfg.model.model_type == ModelType.BASE_MAPPER:
+                            checkpoint_handler.save_model(text_encoder=text_encoder, accelerator=accelerator, save_name=f'{global_step}')
                     
-                if global_step % cfg.trainer.eval_every_n_steps == 0 or (step == 0 and cfg.trainer.eval_every_n_epochs and epoch % cfg.trainer.eval_every_n_epochs == 0):
+                if (cfg.trainer.eval_every_n_steps and global_step % cfg.trainer.eval_every_n_steps == 0) or (step == 0 and cfg.trainer.eval_every_n_epochs and epoch % cfg.trainer.eval_every_n_epochs == 0):
                     logger.info(f'Starting validation at step {global_step}, epoch {epoch}')
                     match cfg.model.model_type:
                         case ModelType.CONTROLNET:

@@ -14,7 +14,7 @@ import torchvision
 import webdataset as wds
 from einops import rearrange
 from ipdb import set_trace as st
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 
 from gen import COCO_CAPTIONS_FILES, MOVI_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
@@ -23,7 +23,6 @@ from gen.datasets.utils import get_open_clip_transforms_v2
 
 torchvision.disable_beta_transforms_warning()
 import torchvision.transforms.v2 as transforms
-from image_utils import Im, get_layered_image_from_binary_mask
 from torchvision.tv_tensors import BoundingBoxes, BoundingBoxFormat, Image, Mask
 
 @inherit_parent_args
@@ -39,6 +38,7 @@ class MoviDataset(AbstractDataset, Dataset):
         num_frames: int = 24,
         augment: bool = False,
         num_dataset_frames: int = 24,
+        num_objects: int = 23,
         **kwargs
     ):  
         # Note: The super __init__ is handled by inherit_parent_args
@@ -55,9 +55,11 @@ class MoviDataset(AbstractDataset, Dataset):
         )
         self.files = os.listdir(self.root_dir)
         self.files.sort()
+        # self.files = self.files[:20]
         self.num_dataset_frames = num_dataset_frames
         self.num_frames = num_frames
         self.augment = augment
+        self.num_classes = num_objects
 
         # self.transform = transforms.Compose([transforms.RandomResizedCrop(self.resolution, scale=(0.5, 1.0), antialias=True)])
         self.gen_image_transforms = transforms.Compose(
@@ -74,9 +76,8 @@ class MoviDataset(AbstractDataset, Dataset):
         )
 
         # TODO: This is super inefficient as we load the entire model just to get the transforms!
-        # self.disc_image_transforms = open_clip.create_model_and_transforms(
-        #     "ViT-L-14", pretrained="datacomp_xl_s13b_b90k"
-        # )[-1]
+        # self.disc_image_transforms = open_clip.create_model_and_transforms("ViT-L-14", pretrained="datacomp_xl_s13b_b90k")[-1]
+
         self.disc_image_transforms = get_open_clip_transforms_v2()
         self.override_text = override_text
         if self.override_text:
@@ -89,10 +90,15 @@ class MoviDataset(AbstractDataset, Dataset):
         return torch.utils.data.default_collate(batch)
 
     def __getitem__(self, index):
-        video_idx = index // len(self.files)
+        video_idx = index // self.num_dataset_frames
         frame_idx = index % self.num_dataset_frames
 
-        path = self.files[video_idx]
+        try:
+            path = self.files[video_idx]
+        except IndexError:
+            print(f"Index {video_idx} is out of bounds for dataset of size {len(self.files)} for dir: {self.root_dir}")
+            raise
+
         rgb = os.path.join(self.root_dir, os.path.join(path, "rgb.npy"))
         instance = os.path.join(self.root_dir, os.path.join(path, "segment.npy"))
         bbx = os.path.join(self.root_dir, os.path.join(path, "bbox.npy"))
@@ -125,12 +131,22 @@ class MoviDataset(AbstractDataset, Dataset):
         )
         instance = Mask(instance.squeeze(-1))
 
+        if instance.max() > self.num_classes:
+            print('0', instance.min(), instance.max())
+
         gen_rgb, gen_bbx, gen_instance = self.gen_image_transforms(
             Image(rgb), bounding_boxes, instance
         )
-        gen_instance = torch.nn.functional.one_hot(
-            gen_instance.long(), num_classes=21
-        ).numpy()
+
+        try:
+            gen_instance = torch.nn.functional.one_hot(
+                gen_instance.long(), num_classes=self.num_classes + 1
+            ).numpy()
+        except:
+            print('a', instance.min(), instance.max())
+            print('b', gen_instance.min(), gen_instance.max())
+            raise
+
         gen_bbx[..., [0, 2]] /= gen_rgb.shape[1]
         gen_bbx[..., [1, 3]] /= gen_rgb.shape[2]
         assert gen_bbx.min() >= 0 and gen_bbx.max() <= 1
@@ -139,7 +155,7 @@ class MoviDataset(AbstractDataset, Dataset):
             Image(rgb), bounding_boxes, instance
         )
         disc_instance = torch.nn.functional.one_hot(
-            disc_instance.long(), num_classes=21
+            disc_instance.long(), num_classes=self.num_classes + 1
         ).numpy()
         disc_bbx[..., [0, 2]] /= disc_rgb.shape[1]
         disc_bbx[..., [1, 3]] /= disc_rgb.shape[2]

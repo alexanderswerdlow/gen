@@ -2,12 +2,13 @@ from collections import namedtuple
 from dataclasses import dataclass, field
 
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 
 from hydra_zen import MISSING, store
 
 from gen.configs.datasets import DatasetConfig
 from gen.configs.hydra import get_hydra_config
+from gen.configs.inference import InferenceConfig
 from gen.configs.models import ModelConfig
 from gen.configs.trainer import TrainerConfig
 from gen.configs.utils import destructure_store, mode_store, exp_store
@@ -17,14 +18,15 @@ defaults = [
     {"trainer": "base"},
     {"dataset": "coco_captions"},
     {"model": "basemapper"},
+    {"inference": "basemapper"},
 ]
-
 
 @dataclass
 class BaseConfig:
     trainer: TrainerConfig = MISSING
     dataset: DatasetConfig = MISSING
     model: ModelConfig = MISSING
+    inference: InferenceConfig = MISSING
 
     top_level_output_path: Optional[Path] = Path("outputs")
     logging_dir: Optional[Path] = Path("logs")  # Folder inside the experiment folder
@@ -35,6 +37,7 @@ class BaseConfig:
     attach: bool = False
     profile: bool = False
     overfit: bool = False
+    run_inference: bool = False
 
     # These are set in code
     output_dir: Optional[Path] = None

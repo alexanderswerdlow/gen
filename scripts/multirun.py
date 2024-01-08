@@ -3,7 +3,6 @@ from itertools import product
 import typer
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
-from typing_extensions import Annotated
 
 typer.main.get_command_name = lambda name: name
 

@@ -22,5 +22,16 @@ python main.py +experiment=demo_exp exp=example_exp_name trainer.log_gradients=1
 
 python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name trainer.log_gradients=10 dataset=movi_e +mode=overfit dataset.train_dataset.batch_size=8 dataset.train_dataset.random_subset=8 trainer.eval_every_n_epochs=200 trainer.num_train_epochs=5000 trainer.learning_rate=5e-4
 
-python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name dataset=movi_e +mode=overfit dataset.train_dataset.batch_size=8 dataset.train_dataset.random_subset=512 trainer.eval_every_n_steps=250 trainer.eval_every_n_epochs=null trainer.learning_rate=5e-4
+python -m accelerate.commands.launch --num_processes 4 main.py +experiment=demo_exp exp=example_exp_name dataset=movi_e dataset.train_dataset.batch_size=10 trainer.eval_every_n_steps=1000 trainer.eval_every_n_epochs=null trainer.learning_rate=5e-4 trainer.checkpointing_steps=5000
+
+# Short
+python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=example_exp_name dataset=movi_e dataset.train_dataset.batch_size=12 dataset.train_dataset.random_subset=24 trainer.eval_every_n_steps=250 trainer.eval_every_n_epochs=null trainer.learning_rate=5e-4 trainer.num_train_epochs=2
+```
+
+## Inference
+
+```
+python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=inference dataset=movi_e dataset.train_dataset.batch_size=12 dataset.train_dataset.random_subset=24 trainer.eval_every_n_steps=null trainer.eval_every_n_epochs=1 trainer.learning_rate=5e-4 trainer.num_train_epochs=3
+
+python -m accelerate.commands.launch --num_processes 1 main.py run_inference=true inference.input_dir=outputs/train/inference_2024-01-08_13-36-53 inference.iteration=last
 ```

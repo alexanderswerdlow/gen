@@ -24,7 +24,8 @@ class TrainerConfig:
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
     learning_rate: float = 5e-6
-    scale_lr: bool = False
+    scale_lr_batch_size: bool = False
+    scale_lr_gpus_grad_accum: bool = True
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 500
     lr_num_cycles: int = 1
@@ -36,7 +37,7 @@ class TrainerConfig:
     max_grad_norm: float = 1.0
     set_grads_to_none: bool = True
     max_train_samples: Optional[int] = None
-    eval_every_n_steps: int = 100
+    eval_every_n_steps: Optional[int] = 100
     eval_every_n_epochs: Optional[int] = None
     enable_xformers_memory_efficient_attention: bool = True
     compile: bool = False

@@ -28,7 +28,8 @@ from tqdm.auto import tqdm
 
 from gen.configs.base import BaseConfig
 from gen.utils.decoupled_utils import check_gpu_memory_usage
-from train import run
+from inference import inference
+from train import train
 
 check_min_version("0.24.0")
 
@@ -141,17 +142,23 @@ def main(cfg: BaseConfig):
         if cfg.output_dir is not None:
             os.makedirs(cfg.output_dir, exist_ok=True)
 
-    # TODO: Verify this is what we want to do
-    if cfg.trainer.scale_lr:
-        cfg.trainer.learning_rate = (
-            cfg.trainer.learning_rate * cfg.trainer.gradient_accumulation_steps * cfg.dataset.train_dataset.batch_size * accelerator.num_processes
-        )
+    if cfg.trainer.scale_lr_gpus_grad_accum:
+        # For n GPUs, we have an effective xN batch size so we need to scale the learning rate.
+        # Similarly, if we accumulate gradients (e.g., training on 1 GPU), we need to scale the learning rate.
+        cfg.trainer.learning_rate = cfg.trainer.learning_rate * accelerator.num_processes * cfg.trainer.gradient_accumulation_steps
+
+    if cfg.trainer.scale_lr_batch_size:
+        cfg.trainer.learning_rate = cfg.trainer.learning_rate * cfg.dataset.train_dataset.batch_size
 
     if cfg.profile:
         torch.cuda.memory._record_memory_history()
 
     try:
-        run(cfg, accelerator)
+        if cfg.run_inference:
+            inference(cfg, accelerator)
+        else:
+            train(cfg, accelerator)
+            
     except Exception as e:
         logger.error(e)
         if accelerator.is_main_process:
