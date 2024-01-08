@@ -207,15 +207,17 @@ class BaseMapper(nn.Module):
         clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage0']
 
         def viz():
-            from image_utils import Im, pca
+            from image_utils import Im, pca, get_layered_image_from_binary_mask, calculate_principal_components
+            principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]))
             clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage0']
-            outmap = pca(clip_feature_map[1:, ...].permute(1, 2, 0).reshape(4, 1024, 16, 16).permute(0, 2, 3, 1).reshape(-1, 1024).float()).reshape(4, 16, 16, 3).permute(0, 3, 1, 2)
+            outmap = pca(clip_feature_map[1:, ...].permute(1, 2, 0).reshape(4, 1024, 16, 16).permute(0, 2, 3, 1).reshape(-1, 1024).float(), principal_components=principal_components).reshape(4, 16, 16, 3).permute(0, 3, 1, 2)
             outmap_min, _ = torch.min(outmap, dim=1, keepdim=True)
             outmap_max, _ = torch.max(outmap, dim=1, keepdim=True)
             outmap = (outmap - outmap_min) / (outmap_max - outmap_min)
             Im(outmap).save('pca')
             sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')
             Im(sam_input).save('rgb')
+            Im(get_layered_image_from_binary_mask(original.permute(1, 2, 0))).save('masks')
 
         # viz()
         
@@ -230,17 +232,21 @@ class BaseMapper(nn.Module):
         feature_map_masks = []
         feature_map_batch_idxs = []
         for i in range(bs):
-            masks = self.hqsam.forward(sam_input[i])
-            masks = masks[:23]
-            num_masks = len(masks)
-            if num_masks == 0:
-                tmp_ = torch.zeros((1, 16, 16), dtype=torch.bool)
-                tmp_[:, 0, 0] = True
-                feature_map_masks.append(tmp_)
-                feature_map_batch_idxs.append(i * torch.ones((1), dtype=torch.long))
-                continue
+            if 'gen_segmentation' in batch: # We have gt masks
+                original = batch['gen_segmentation'][i].permute(2, 0, 1).bool()
+            else:
+                masks = self.hqsam.forward(sam_input[i])
+                masks = masks[:23]
+                num_masks = len(masks)
+                if num_masks == 0: # Hack to deal with images with no masks. We attend to a single token only
+                    tmp_ = torch.zeros((1, latent_dim, latent_dim), dtype=torch.bool)
+                    tmp_[:, 0, 0] = True
+                    feature_map_masks.append(tmp_)
+                    feature_map_batch_idxs.append(i * torch.ones((1), dtype=torch.long))
+                    continue
 
-            original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(num_masks)]))
+                original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(num_masks)]))
+
             assert batch['disc_pixel_values'].shape[-1] == batch['disc_pixel_values'].shape[-2]
             feature_map_mask_ = find_true_indices_batched(original=original, dh=latent_dim, dw=latent_dim)
             feature_map_masks.append(feature_map_mask_)
@@ -250,6 +256,8 @@ class BaseMapper(nn.Module):
         feature_map_masks = torch.cat(feature_map_masks, dim=0) # feature_map_mask is a boolean mask of (total, h, w)
         feature_map_masks = rearrange(feature_map_masks, 'total h w -> total (h w)').to(device)
         feature_map_batch_idxs = torch.cat(feature_map_batch_idxs, dim=0).to(device)
+
+        # st()
 
         # We sum the number of valid "pixels" in each mask
         seqlens_k = feature_map_masks.sum(dim=-1) # (total,)

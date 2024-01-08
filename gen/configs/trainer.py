@@ -36,7 +36,7 @@ class TrainerConfig:
     max_grad_norm: float = 1.0
     set_grads_to_none: bool = True
     max_train_samples: Optional[int] = None
-    num_val_steps: int = 100
+    eval_every_n_steps: int = 100
     eval_every_n_epochs: Optional[int] = None
     enable_xformers_memory_efficient_attention: bool = True
     compile: bool = False

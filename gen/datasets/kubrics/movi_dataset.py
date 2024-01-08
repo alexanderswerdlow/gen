@@ -131,8 +131,8 @@ class MoviDataset(AbstractDataset, Dataset):
         gen_instance = torch.nn.functional.one_hot(
             gen_instance.long(), num_classes=21
         ).numpy()
-        gen_bbx[..., [0, 2]] /= gen_rgb.shape[0]
-        gen_bbx[..., [1, 3]] /= gen_rgb.shape[1]
+        gen_bbx[..., [0, 2]] /= gen_rgb.shape[1]
+        gen_bbx[..., [1, 3]] /= gen_rgb.shape[2]
         assert gen_bbx.min() >= 0 and gen_bbx.max() <= 1
 
         disc_rgb, disc_bbx, disc_instance = self.disc_image_transforms(
@@ -141,8 +141,8 @@ class MoviDataset(AbstractDataset, Dataset):
         disc_instance = torch.nn.functional.one_hot(
             disc_instance.long(), num_classes=21
         ).numpy()
-        disc_bbx[..., [0, 2]] /= disc_rgb.shape[0]
-        disc_bbx[..., [1, 3]] /= disc_rgb.shape[1]
+        disc_bbx[..., [0, 2]] /= disc_rgb.shape[1]
+        disc_bbx[..., [1, 3]] /= disc_rgb.shape[2]
         assert disc_bbx.min() >= 0 and disc_bbx.max() <= 1
 
         ret = {

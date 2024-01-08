@@ -23,7 +23,7 @@ class CheckpointHandler:
             save_name: str,
         ):
         self.save_learned_embeds(text_encoder, accelerator, save_name)
-        self.save_mapper(text_encoder, save_name)
+        self.save_mapper(accelerator, text_encoder, save_name)
 
     def save_learned_embeds(self, text_encoder: NeTICLIPTextModel, accelerator: Accelerator, save_name: str):
         """
@@ -35,10 +35,10 @@ class CheckpointHandler:
         learned_embeds_dict = {self.cfg.model.placeholder_token: learned_embeds}
         torch.save(learned_embeds_dict, self.save_root / f"{save_name}_embeds.pt")
 
-    def save_mapper(self, text_encoder: NeTICLIPTextModel, save_name: str):
+    def save_mapper(self, accelerator: Accelerator, text_encoder: NeTICLIPTextModel, save_name: str):
         """ Save the mapper and config to be used at inference. """
         state_dict = {
-            "state_dict": text_encoder.text_model.embeddings.mapper.state_dict(),
+            "state_dict": accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.state_dict(),
             # "cfg": self.cfg, # TODO: fix this
             "encoder": text_encoder.text_model.embeddings.mapper.encoder
         }

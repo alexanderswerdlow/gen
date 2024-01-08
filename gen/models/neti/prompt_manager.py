@@ -55,7 +55,7 @@ class PromptManager:
 
         model_.placeholder_token_id = model_.tokenizer.convert_tokens_to_ids(model_.cfg.model.placeholder_token)
         model_.weight_dtype = self.dtype
-        input_ids, text_encoder_dict = model_.get_hidden_state(batch, timesteps=self.timesteps, device=batch['pixel_values'].device, dtype=self.dtype, per_timestep=True)
+        input_ids, text_encoder_dict = model_.get_hidden_state(batch, timesteps=self.timesteps, device=batch['gen_pixel_values'].device, dtype=self.dtype, per_timestep=True)
 
         # Compute embeddings for each timestep and each U-Net layer
         print(f"Computing embeddings over {len(self.timesteps)} timesteps and {len(self.unet_layers)} U-Net layers.")

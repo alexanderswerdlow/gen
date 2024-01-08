@@ -268,7 +268,7 @@ class Profiler():
     def __init__(self, output_dir, active_steps: int = 2, record_separate_memory=True):
         self.profile_dir = Path(output_dir) / 'profile'
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        wait, warmup, active, repeat = 0, 1, active_steps, 0
+        wait, warmup, active, repeat = 0, 0, active_steps, 0
         self.total_steps = (wait + warmup + active) * (1 + repeat)
         schedule = torch.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat)
         self.profiler = torch.profiler.profile(

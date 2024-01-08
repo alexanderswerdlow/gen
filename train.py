@@ -53,7 +53,8 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
             model = BaseMapper(cfg)
             params_to_optimize = model.text_encoder.text_model.embeddings.mapper.parameters
             tokenizer = model.tokenizer
-            summary(model, col_names=("trainable",  "num_params"))
+            if accelerator.is_local_main_process:
+                summary(model, col_names=("trainable",  "num_params"))
             checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.output_dir)
             validator: ValidationHandler = ValidationHandler(cfg=cfg, weights_dtype=weight_dtype)
 
@@ -95,8 +96,8 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
     )
 
     # Prepare everything with our `accelerator`.
-    optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        optimizer, train_dataloader, lr_scheduler
+    optimizer, train_dataloader, validation_dataloader, lr_scheduler = accelerator.prepare(
+        optimizer, train_dataloader, validation_dataloader, lr_scheduler
     )
 
     match cfg.model.model_type:
@@ -214,19 +215,19 @@ def run(cfg: BaseConfig, accelerator: Accelerator):
                     if global_step % cfg.trainer.checkpointing_steps == 0:
                         handle_checkpointing(cfg, accelerator, global_step)
                     
-                    if global_step % cfg.trainer.num_val_steps == 0 or (step == 0 and cfg.trainer.eval_every_n_epochs and epoch % cfg.trainer.eval_every_n_epochs == 0):
-                        logger.info(f'Starting validation at step {global_step}, epoch {epoch}')
-                        match cfg.model.model_type:
-                            case ModelType.CONTROLNET:
-                                if cfg.dataset.validation_prompt:
-                                    image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
-                            case ModelType.BASE_MAPPER:
-                                validator.infer(accelerator, validation_dataloader, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
-                        logger.info(f'Finished validation at step {global_step}, epoch {epoch}')
+                if global_step % cfg.trainer.eval_every_n_steps == 0 or (step == 0 and cfg.trainer.eval_every_n_epochs and epoch % cfg.trainer.eval_every_n_epochs == 0):
+                    logger.info(f'Starting validation at step {global_step}, epoch {epoch}')
+                    match cfg.model.model_type:
+                        case ModelType.CONTROLNET:
+                            if cfg.dataset.validation_prompt:
+                                image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
+                        case ModelType.BASE_MAPPER:
+                            validator.infer(accelerator, validation_dataloader, model, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
+                    logger.info(f'Finished validation at step {global_step}, epoch {epoch}')
 
                 progress_bar.update(1)
                 global_step += 1
-                logs = {"loss": loss.detach().item() / cfg.trainer.gradient_accumulation_steps, "lr": lr_scheduler.get_last_lr()[0]}
+                logs = {"loss": loss.detach().item() / cfg.trainer.gradient_accumulation_steps, "lr": lr_scheduler.get_last_lr()[0], f'gpu_memory_usage_gb': max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024 ** 3)}
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
 
