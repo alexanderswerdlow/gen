@@ -278,9 +278,6 @@ class BaseMapper(nn.Module):
         mask_tokens_ids = self.tokenizer(f"{self.cfg.model.placeholder_token} and", add_special_tokens=False).input_ids
         pad_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer._pad_token)
 
-        # # Clone so that we can access it again in the dataloader without modification
-        # batch['input_ids'] = batch['input_ids'].clone()
-
         bs = batch['input_ids'].shape[0]
         for b in range(bs):
             # Everything after 1st pad token should also be a pad token

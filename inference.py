@@ -12,7 +12,7 @@ import torch
 from tqdm import tqdm
 import typer
 from diffusers import DPMSolverMultistepScheduler, StableDiffusionPipeline
-from image_utils import Im
+from image_utils import Im, get_layered_image_from_binary_mask
 from PIL import Image
 from torch.nn.parallel import DistributedDataParallel
 from transformers import CLIPTokenizer
@@ -28,7 +28,10 @@ from gen.models.neti.sd_pipeline import sd_pipeline_call
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from accelerate import Accelerator
 from accelerate.utils import PrecisionType
+import torch.distributed as dist
 
+def remove_row(tensor, row_index):
+    return torch.cat((tensor[:row_index], tensor[row_index+1:]))
 
 def get_image_grid(images: List[Image.Image]) -> Image:
     num_images = len(images)
@@ -103,25 +106,49 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
 
     validation_dataloader, model = accelerator.prepare(validation_dataloader, model)
 
-    for idx, batch in tqdm(enumerate(validation_dataloader), leave=False, disable=not accelerator.is_local_main_process):
-        prompt = f"{idx}"
-        output_path = inference_cfg.inference.inference_dir / prompt
+    for i, batch in tqdm(enumerate(validation_dataloader), leave=False, disable=not accelerator.is_local_main_process):
+        output_path = inference_cfg.output_dir
         output_path.mkdir(exist_ok=True, parents=True)
+
+        # for truncation_idx in inference_cfg.inference.truncation_idxs:
+        #     print(f"Running with truncation index: {truncation_idx}")
+        #     prompt_image = run_inference_batch(
+        #         batch=batch,
+        #         pipeline=pipeline,
+        #         prompt_manager=prompt_manager,
+        #         seeds=inference_cfg.inference.seeds,
+        #         num_images_per_prompt=1,
+        #         truncation_idx=truncation_idx,
+        #     )
+        #     save_name = f'{i}.png'
+        #     prompt_image.save(inference_cfg.inference.inference_dir / save_name)
+
         for truncation_idx in inference_cfg.inference.truncation_idxs:
             print(f"Running with truncation index: {truncation_idx}")
-            prompt_image = run_inference_batch(
-                batch=batch,
-                pipeline=pipeline,
-                prompt_manager=prompt_manager,
-                seeds=inference_cfg.inference.seeds,
-                num_images_per_prompt=1,
-                truncation_idx=truncation_idx,
-            )
-            if truncation_idx is not None:
-                save_name = f"{prompt.format(placeholder_token)}_truncation_{truncation_idx}.png"
-            else:
-                save_name = f"{prompt.format(placeholder_token)}.png"
-            prompt_image.save(inference_cfg.inference.inference_dir / save_name)
+            gen_segmentation = batch["gen_segmentation"]
+            images = []
+            masks = []
+            input_ids = batch['input_ids']
+            for j in range(gen_segmentation.shape[-1])[:10]:
+                batch["gen_segmentation"] = gen_segmentation[..., torch.arange(gen_segmentation.size(-1)) != j]
+                batch["input_ids"] = input_ids.clone() # We modify input_ids inside the mapper, so we need to clone it
+                prompt_image = run_inference_batch(
+                    batch=batch,
+                    pipeline=pipeline,
+                    prompt_manager=prompt_manager,
+                    seeds=inference_cfg.inference.seeds,
+                    num_images_per_prompt=1,
+                    truncation_idx=truncation_idx,
+                )
+                images.append(prompt_image)
+                masks.append(get_layered_image_from_binary_mask(gen_segmentation[..., [j]].squeeze(0)))
+                        
+            gen_images = Im.concat_horizontal(((batch['gen_pixel_values'].squeeze(0) + 1) / 2).cpu(), *images)
+            gen_masks = Im.concat_horizontal(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)),*masks)
+            output = Im.concat_vertical(gen_images, gen_masks)
+            output_filename = output_path / f'{dist.get_rank() if accelerator.use_distributed else 0}{i}_{j}.png'
+            output.save(output_filename)
+            print(f"Saved to {output_filename}")
 
 
 def run_inference_batch(
@@ -132,17 +159,14 @@ def run_inference_batch(
     num_images_per_prompt: int = 1,
     truncation_idx: Optional[int] = None,
 ) -> Image.Image:
+    assert num_images_per_prompt == 1, "Only num_images_per_prompt=1 is supported for now"
+    assert len(seeds) == 1, "Only one seed is supported for now"
     with torch.autocast("cuda"):
         with torch.no_grad():
             prompt_embeds = prompt_manager.embed_prompt(batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx)
-    joined_images = []
-    for seed in seeds:
-        generator = torch.Generator(device="cuda").manual_seed(seed)
-        images = sd_pipeline_call(pipeline, prompt_embeds=prompt_embeds, generator=generator, num_images_per_prompt=num_images_per_prompt).images
-        seed_image = Image.fromarray(np.concatenate(images, axis=1)).convert("RGB")
-        joined_images.append(seed_image)
-    joined_image = get_image_grid(joined_images)
-    return joined_image
+    generator = torch.Generator(device="cuda").manual_seed(seeds[0])
+    images = sd_pipeline_call(pipeline, prompt_embeds=prompt_embeds, generator=generator, num_images_per_prompt=num_images_per_prompt).images[0]
+    return images
 
 
 def load_stable_diffusion_model(

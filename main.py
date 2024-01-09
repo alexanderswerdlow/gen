@@ -62,7 +62,7 @@ def main(cfg: BaseConfig):
     overfit_str = 'overfit_' if cfg.overfit else ''
     debug_str = 'debug_' if cfg.debug else ''
     cfg.run_name = f'{overfit_str}{debug_str}{exp_name}{datetime_str}'
-    cfg.output_dir = cfg.top_level_output_path / ('debug' if cfg.debug else 'train') / cfg.run_name
+    cfg.output_dir = cfg.top_level_output_path / ('debug' if cfg.debug else ('inference' if cfg.run_inference else 'train')) / cfg.run_name
     cfg.output_dir.mkdir(exist_ok=True, parents=True)
 
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
