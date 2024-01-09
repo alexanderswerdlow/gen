@@ -39,9 +39,9 @@ def image_grid(imgs, rows, cols):
     return grid
 
 class BaseMapper(nn.Module):
-    def __init__(self, cfg: BaseMapperConfig, init_modules: bool = True):
+    def __init__(self, cfg: BaseConfig, init_modules: bool = True):
         super(BaseMapper, self).__init__()
-        self.cfg: BaseMapperConfig = cfg
+        self.cfg: BaseConfig = cfg
         if init_modules:
             self.get_base_mapper_model()
 
@@ -51,6 +51,8 @@ class BaseMapper(nn.Module):
         self.clip = ClipFeatureExtractor()
         self.clip.train()
         self.clip.requires_grad_(False)
+        # for block in self.clip.base_model.transformer.resblocks[-6:]:
+        #     block.requires_grad_(True)
         print('Warning, CLIP is frozen for debugging!!!!!')
 
         self.hqsam = HQSam(model_type='vit_b')
@@ -197,19 +199,20 @@ class BaseMapper(nn.Module):
             use_positional_encoding=self.cfg.model.use_positional_encoding,
             num_pe_time_anchors=self.cfg.model.num_pe_time_anchors,
             pe_sigmas=self.cfg.model.pe_sigmas,
-            output_bypass=self.cfg.model.output_bypass
+            output_bypass=self.cfg.model.output_bypass,
+            cfg=self.cfg
         )
         return neti_mapper, loaded_iteration
     
     def get_hidden_state(self, batch, timesteps, dtype, device, per_timestep: bool = False):
         bs: int = batch['disc_pixel_values'].shape[0]
 
-        clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage0']
+        clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage23']
 
         def viz():
             from image_utils import Im, pca, get_layered_image_from_binary_mask, calculate_principal_components
             principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]))
-            clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage0']
+            clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage23']
             outmap = pca(clip_feature_map[1:, ...].permute(1, 2, 0).reshape(4, 1024, 16, 16).permute(0, 2, 3, 1).reshape(-1, 1024).float(), principal_components=principal_components).reshape(4, 16, 16, 3).permute(0, 3, 1, 2)
             outmap_min, _ = torch.min(outmap, dim=1, keepdim=True)
             outmap_max, _ = torch.max(outmap, dim=1, keepdim=True)
@@ -256,8 +259,6 @@ class BaseMapper(nn.Module):
         feature_map_masks = torch.cat(feature_map_masks, dim=0) # feature_map_mask is a boolean mask of (total, h, w)
         feature_map_masks = rearrange(feature_map_masks, 'total h w -> total (h w)').to(device)
         feature_map_batch_idxs = torch.cat(feature_map_batch_idxs, dim=0).to(device)
-
-        # st()
 
         # We sum the number of valid "pixels" in each mask
         seqlens_k = feature_map_masks.sum(dim=-1) # (total,)

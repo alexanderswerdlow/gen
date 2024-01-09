@@ -62,7 +62,8 @@ class CheckpointHandler:
             use_positional_encoding=cfg.model.use_positional_encoding,
             num_pe_time_anchors=cfg.model.num_pe_time_anchors,
             pe_sigmas=cfg.model.pe_sigmas,
-            output_bypass=cfg.model.output_bypass
+            output_bypass=cfg.model.output_bypass,
+            cfg=cfg,
         )
         print(f'mapper param Hash: {module_hash(state_dict=mapper_ckpt["state_dict"])}')
         neti_mapper.load_state_dict(mapper_ckpt['state_dict'], strict=True)

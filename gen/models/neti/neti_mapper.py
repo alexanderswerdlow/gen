@@ -6,10 +6,13 @@ import torch
 import torch.nn.functional as F
 from flash_attn.modules.mha import MHA
 from torch import nn
+from gen.configs.base import BaseConfig
+from gen.models.neti.decoder import DecoderTransformer
 
 from gen.models.neti.positional_encoding import (BasicEncoder,
                                                  NeTIPositionalEncoding)
 
+import hydra
 
 @dataclass
 class PESigmas:
@@ -22,7 +25,9 @@ UNET_LAYERS = ['IN01', 'IN02', 'IN04', 'IN05', 'IN07', 'IN08', 'MID',
 class NeTIMapper(nn.Module):
     """ Main logic of our NeTI mapper. """
 
-    def __init__(self, output_dim: int = 768,
+    def __init__(self,
+                 cfg: BaseConfig,
+                 output_dim: int = 768,
                  unet_layers: List[str] = UNET_LAYERS,
                  use_nested_dropout: bool = True,
                  nested_dropout_prob: float = 0.5,
@@ -30,13 +35,15 @@ class NeTIMapper(nn.Module):
                  use_positional_encoding: bool = True,
                  num_pe_time_anchors: int = 10,
                  pe_sigmas: PESigmas = PESigmas(sigma_t=0.03, sigma_l=2.0),
-                 output_bypass: bool = True):
+                 output_bypass: bool = True,
+                 ):
         super().__init__()
         self.orig_output_dim = output_dim
         self.use_nested_dropout = use_nested_dropout
         self.nested_dropout_prob = nested_dropout_prob
         self.norm_scale = norm_scale
         self.output_bypass = output_bypass
+        self.cfg = cfg
         if self.output_bypass:
             output_dim *= 2  # Output two vectors
 
@@ -58,13 +65,8 @@ class NeTIMapper(nn.Module):
             nn.Linear(self.orig_output_dim, 1024),
             nn.LayerNorm(1024)
         )
-        self.cross_attn = MHA(
-            embed_dim=1024,
-            num_heads=8,
-            use_flash_attn=True,
-            cross_attn=True,
-            fused_bias_fc=False,
-        )
+        
+        self.decoder = hydra.utils.instantiate(self.cfg.model.decoder_transformer, _recursive_=False)
         self.cross_attn_proj = nn.Sequential(
             nn.Linear(1024, 768 * 2),
             nn.LayerNorm(768 * 2)
@@ -95,8 +97,14 @@ class NeTIMapper(nn.Module):
     
     def forward_cross_attn(self, **kwargs):
         attn_dict = kwargs.get('attn_dict')
-        attn_dict['x'] = self.neti_up_proj(attn_dict['x'])
-        return self.cross_attn_proj(self.cross_attn(**attn_dict))
+        x = self.neti_up_proj(attn_dict['x'])
+
+        del attn_dict['x']
+        
+        output = self.decoder(x, mixer_kwargs=attn_dict)
+        output = self.cross_attn_proj(output)
+
+        return output
 
     def get_encoded_input(self, timestep: torch.Tensor, unet_layer: torch.Tensor) -> torch.Tensor:
         return self.encoder.encode(timestep, unet_layer)

@@ -2,7 +2,11 @@ from dataclasses import dataclass
 from typing import ClassVar, Dict, Optional
 from enum import Enum
 from dataclasses import dataclass, field
+
+from hydra_zen import builds
 from gen.configs.utils import auto_store
+from gen.models.neti.decoder import DecoderTransformer
+from hydra_zen.typing import Builds
 
 class ModelType(Enum):
     BASE_MAPPER = 0
@@ -34,6 +38,8 @@ class ModelConfig:
     output_bypass: bool = True
 
     mask_cross_attn: bool = False
+
+    decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
 
 @dataclass
 class ControlNetConfig(ModelConfig):

@@ -12,7 +12,7 @@ import torch
 from tqdm import tqdm
 import typer
 from diffusers import DPMSolverMultistepScheduler, StableDiffusionPipeline
-from image_utils import Im, get_layered_image_from_binary_mask
+from image_utils import Im, get_layered_image_from_binary_mask, ChannelRange
 from PIL import Image
 from torch.nn.parallel import DistributedDataParallel
 from transformers import CLIPTokenizer
@@ -106,65 +106,82 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
 
     validation_dataloader, model = accelerator.prepare(validation_dataloader, model)
 
-    for i, batch in tqdm(enumerate(validation_dataloader), leave=False, disable=not accelerator.is_local_main_process):
-        output_path = inference_cfg.output_dir
-        output_path.mkdir(exist_ok=True, parents=True)
+    run_inference_dataloader(
+        accelerator=accelerator,
+        pipeline=pipeline,
+        prompt_manager=prompt_manager,
+        output_path=inference_cfg.output_dir,
+        dataloader=validation_dataloader,
+        remove_masks_for_editing=True
+    )
 
-        # for truncation_idx in inference_cfg.inference.truncation_idxs:
-        #     print(f"Running with truncation index: {truncation_idx}")
-        #     prompt_image = run_inference_batch(
-        #         batch=batch,
-        #         pipeline=pipeline,
-        #         prompt_manager=prompt_manager,
-        #         seeds=inference_cfg.inference.seeds,
-        #         num_images_per_prompt=1,
-        #         truncation_idx=truncation_idx,
-        #     )
-        #     save_name = f'{i}.png'
-        #     prompt_image.save(inference_cfg.inference.inference_dir / save_name)
+def run_inference_dataloader(
+    accelerator: Accelerator,
+    pipeline: StableDiffusionPipeline,
+    prompt_manager: PromptManager,
+    output_path: Path,
+    dataloader: torch.utils.data.DataLoader,
+    remove_masks_for_editing: bool = False,
+    num_masks_to_remove: int = 2,
+    global_step: Optional[int] = None,
+):
+    output_path.mkdir(exist_ok=True, parents=True)
+    output_images = []
+    for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not accelerator.is_local_main_process):
+        orig_input_ids = batch["input_ids"].clone()
 
-        for truncation_idx in inference_cfg.inference.truncation_idxs:
-            print(f"Running with truncation index: {truncation_idx}")
+        images = []
+        orig_image = Im((batch['gen_pixel_values'].squeeze(0) + 1) / 2)
+        gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
+
+        batch["input_ids"] = orig_input_ids.clone()
+        prompt_image = run_inference_batch(
+            batch=batch,
+            pipeline=pipeline,
+            prompt_manager=prompt_manager,
+        )
+        images.append(Im(prompt_image))
+
+        if remove_masks_for_editing:
             gen_segmentation = batch["gen_segmentation"]
-            images = []
-            masks = []
-            input_ids = batch['input_ids']
-            for j in range(gen_segmentation.shape[-1])[:10]:
+            
+            for j in range(gen_segmentation.shape[-1])[:num_masks_to_remove]:
                 batch["gen_segmentation"] = gen_segmentation[..., torch.arange(gen_segmentation.size(-1)) != j]
-                batch["input_ids"] = input_ids.clone() # We modify input_ids inside the mapper, so we need to clone it
+                batch["input_ids"] = orig_input_ids.clone()
                 prompt_image = run_inference_batch(
                     batch=batch,
                     pipeline=pipeline,
                     prompt_manager=prompt_manager,
-                    seeds=inference_cfg.inference.seeds,
-                    num_images_per_prompt=1,
-                    truncation_idx=truncation_idx,
                 )
-                images.append(prompt_image)
-                masks.append(get_layered_image_from_binary_mask(gen_segmentation[..., [j]].squeeze(0)))
-                        
-            gen_images = Im.concat_horizontal(((batch['gen_pixel_values'].squeeze(0) + 1) / 2).cpu(), *images)
-            gen_masks = Im.concat_horizontal(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)),*masks)
-            output = Im.concat_vertical(gen_images, gen_masks)
-            output_filename = output_path / f'{dist.get_rank() if accelerator.use_distributed else 0}{i}_{j}.png'
-            output.save(output_filename)
-            print(f"Saved to {output_filename}")
-
+                mask_image = Im(get_layered_image_from_binary_mask(gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+                mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
+                mask_alpha = (gen_segmentation[..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+                composited_image = orig_image.pil.copy().convert('RGBA')
+                composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
+                composited_image = composited_image.convert('RGB')
+                images.append(Im.concat_vertical(prompt_image, mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
+        
+        gen_results = Im.concat_horizontal(images, spacing=5, fill=(128, 128, 128))
+        output = Im.concat_horizontal(gt_info, gen_results, spacing = 50, fill=(255, 255, 255))
+        output = output.torch.to(batch["gen_pixel_values"].device)[None]
+        output_images = accelerator.gather(output)
+        output_file = output_path / f"step_{i}.png"
+        log_with_accelerator(accelerator, output_images, global_step = (global_step if global_step is not None else i), save_path=output_file)
+        print(f"Saved to {output_file}")
 
 def run_inference_batch(
     pipeline: StableDiffusionPipeline,
     prompt_manager: PromptManager,
-    seeds: List[int],
     batch: dict,
+    seed: int = 42,
     num_images_per_prompt: int = 1,
     truncation_idx: Optional[int] = None,
 ) -> Image.Image:
     assert num_images_per_prompt == 1, "Only num_images_per_prompt=1 is supported for now"
-    assert len(seeds) == 1, "Only one seed is supported for now"
     with torch.autocast("cuda"):
         with torch.no_grad():
             prompt_embeds = prompt_manager.embed_prompt(batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx)
-    generator = torch.Generator(device="cuda").manual_seed(seeds[0])
+    generator = torch.Generator(device="cuda").manual_seed(seed)
     images = sd_pipeline_call(pipeline, prompt_embeds=prompt_embeds, generator=generator, num_images_per_prompt=num_images_per_prompt).images[0]
     return images
 
@@ -194,3 +211,18 @@ def load_stable_diffusion_model(
     pipeline.scheduler.set_timesteps(num_denoising_steps, device=pipeline.device)
     pipeline.unet.set_attn_processor(XTIAttenProc())
     return pipeline, placeholder_token, placeholder_token_id
+
+def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], global_step: int, save_path: Optional[Path] = None):
+    save_path.parent.mkdir(exist_ok=True)
+    if len(images) == 1:
+        Im(images[0]).save(save_path)
+    else:
+        get_image_grid(images).save(save_path)
+
+    import wandb
+    for tracker in accelerator.trackers:
+        if tracker.name == "tensorboard":
+            np_images = np.stack([np.asarray(img) for img in images])
+            tracker.writer.add_images("validation", np_images, global_step, dataformats="NHWC")
+        if tracker.name == "wandb":
+            tracker.log({"validation": [wandb.Image(image) for i, image in enumerate(images)]}, step=global_step)

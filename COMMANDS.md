@@ -29,7 +29,12 @@ python -m accelerate.commands.launch --num_processes 4 main.py +experiment=demo_
 python -m accelerate.commands.launch --num_processes 4 main.py +experiment=demo_exp exp=overfit_512_exp dataset=movi_e +mode=overfit dataset.train_dataset.batch_size=10 dataset.train_dataset.random_subset=512 trainer.eval_every_n_steps=500 trainer.eval_every_n_epochs=null trainer.learning_rate=8e-3 trainer.checkpointing_steps=1000
 
 
-python -m accelerate.commands.launch --num_processes 1 main.py run_inference=true inference.input_dir=outputs/train/example_exp_name_2024-01-08_15-14-50 inference.iteration=15000
+python -m accelerate.commands.launch --num_processes 1 main.py run_inference=true inference.input_dir=outputs/train/example_exp_name_2024-01-08_15-14-50 inference.iteration=30000
+```
+
+## Train
+```
+python -m accelerate.commands.launch --num_processes 4 main.py +experiment=demo_exp exp=example_exp_name dataset=movi_e dataset.train_dataset.batch_size=11 trainer.eval_every_n_steps=2000 trainer.eval_every_n_epochs=null trainer.learning_rate=5e-5 trainer.checkpointing_steps=5000
 ```
 
 ## Inference
@@ -38,4 +43,9 @@ python -m accelerate.commands.launch --num_processes 1 main.py run_inference=tru
 python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=inference dataset=movi_e dataset.train_dataset.batch_size=4 dataset.train_dataset.random_subset=4 trainer.eval_every_n_steps=null trainer.eval_every_n_epochs=50 trainer.learning_rate=5e-4 trainer.num_train_epochs=50
 
 python -m accelerate.commands.launch --num_processes 1 main.py run_inference=true inference.input_dir=outputs/train/inference_2024-01-08_13-55-09 inference.iteration=last
+```
+
+## Super quick training
+```
+python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=inference dataset=movi_e dataset.train_dataset.batch_size=4 dataset.train_dataset.random_subset=4 trainer.eval_every_n_steps=null trainer.eval_every_n_epochs=1 trainer.num_train_epochs=1
 ```
