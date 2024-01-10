@@ -37,7 +37,14 @@ class ModelConfig:
     # Whether to output the textual bypass vector
     output_bypass: bool = True
 
-    mask_cross_attn: bool = False
+    model_type: ModelType = ModelType.BASE_MAPPER
+    placeholder_token: str = 'placeholder'
+    placeholder_token_id: Optional[int] = None
+    super_category_token: str = 'object'
+    mask_cross_attn: bool = True
+
+    freeze_clip: bool = True
+    unfreeze_last_n_clip_layers: Optional[int] = None
 
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
 
@@ -46,14 +53,8 @@ class ControlNetConfig(ModelConfig):
     model_type: ModelType = ModelType.CONTROLNET
     controlnet_model_name_or_path: Optional[str] = None
     tokenizer_name: Optional[str] = None
+    mask_cross_attn: bool = False
 
-@dataclass
-class BaseMapperConfig(ModelConfig):
-    model_type: ModelType = ModelType.BASE_MAPPER
-    placeholder_token: str = 'placeholder'
-    placeholder_token_id: Optional[int] = None
-    super_category_token: str = 'object'
-    mask_cross_attn: bool = True
 
 auto_store(ControlNetConfig, name="controlnet")
-auto_store(BaseMapperConfig, name="basemapper")
+auto_store(ModelConfig, model_type=ModelType.BASE_MAPPER, name="basemapper")

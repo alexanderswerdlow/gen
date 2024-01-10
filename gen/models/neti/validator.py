@@ -68,7 +68,7 @@ class ValidationHandler:
             dataloader=validation_dataloader,
             output_path=self.cfg.output_dir / 'images',
             remove_masks_for_editing=True,
-            num_masks_to_remove=3,
+            num_masks_to_remove=6,
             global_step=global_step,
         )
 

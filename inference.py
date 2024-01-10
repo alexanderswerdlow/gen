@@ -66,7 +66,7 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
         inference_cfg.inference.truncation_idxs = [inference_cfg.inference.truncation_idxs]
     torch_dtype = torch.bfloat16 if inference_cfg.trainer.mixed_precision == PrecisionType.BF16 else torch.float32
 
-    train_cfg, mapper = CheckpointHandler.load_mapper(inference_cfg.inference.mapper_checkpoint_path)
+    train_cfg, mapper, clip_state_dict = CheckpointHandler.load_mapper(inference_cfg.inference.mapper_checkpoint_path)
 
     pipeline, placeholder_token, placeholder_token_id = load_stable_diffusion_model(
         pretrained_model_name_or_path=train_cfg.model.pretrained_model_name_or_path,
@@ -77,6 +77,7 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
 
     pipeline.text_encoder.text_model.embeddings.mapper.eval()
     model = BaseMapper(train_cfg, init_modules=False)
+    model.clip.load_state_dict(clip_state_dict)
     model.tokenizer = pipeline.tokenizer
     model.text_encoder = pipeline.text_encoder
     model.unet = pipeline.unet
@@ -217,7 +218,7 @@ def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], gl
     if len(images) == 1:
         Im(images[0]).save(save_path)
     else:
-        get_image_grid(images).save(save_path)
+        Im(images).save(save_path)
 
     import wandb
     for tracker in accelerator.trackers:

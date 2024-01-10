@@ -35,6 +35,8 @@ python -m accelerate.commands.launch --num_processes 1 main.py run_inference=tru
 ## Train
 ```
 python -m accelerate.commands.launch --num_processes 4 main.py +experiment=demo_exp exp=example_exp_name dataset=movi_e dataset.train_dataset.batch_size=11 trainer.eval_every_n_steps=2000 trainer.eval_every_n_epochs=null trainer.learning_rate=5e-5 trainer.checkpointing_steps=5000
+
+python -m accelerate.commands.launch --num_processes 6 main.py +experiment=demo_exp exp=example_exp_name dataset=movi_e dataset.train_dataset.batch_size=8 trainer.eval_every_n_steps=2000 trainer.eval_every_n_epochs=null trainer.learning_rate=5e-5 trainer.checkpointing_steps=5000 model.unfreeze_last_n_clip_layers=6 trainer.gradient_accumulation_steps=4
 ```
 
 ## Inference
@@ -48,4 +50,13 @@ python -m accelerate.commands.launch --num_processes 1 main.py run_inference=tru
 ## Super quick training
 ```
 python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=inference dataset=movi_e dataset.train_dataset.batch_size=4 dataset.train_dataset.random_subset=4 trainer.eval_every_n_steps=null trainer.eval_every_n_epochs=1 trainer.num_train_epochs=1
+
+## No val
+python -m accelerate.commands.launch --num_processes 2 main.py +experiment=demo_exp exp=inference dataset=movi_e dataset.train_dataset.batch_size=8 dataset.train_dataset.random_subset=64 trainer.eval_every_n_steps=null trainer.eval_every_n_epochs=1 trainer.num_train_epochs=1
 ```
+
+# /home/aswerdlo/repos/gen/outputs/train/example_exp_name_2024-01-08_15-14-50
+
+outputs/train/inference_2024-01-09_18-48-55/checkpoints
+
+python -m accelerate.commands.launch --num_processes 1 main.py run_inference=true inference.input_dir=outputs/train/inference_2024-01-09_18-48-55 inference.iteration=last

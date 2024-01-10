@@ -224,7 +224,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 if accelerator.is_main_process:
                     if global_step % cfg.trainer.checkpointing_steps == 0:
                         if cfg.model.model_type == ModelType.BASE_MAPPER:
-                            checkpoint_handler.save_model(text_encoder=text_encoder, accelerator=accelerator, save_name=f'{global_step}')
+                            checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f'{global_step}')
                         else:
                             handle_checkpointing(cfg, accelerator, global_step)
                     
@@ -267,6 +267,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 controlnet = accelerator.unwrap_model(controlnet)
                 controlnet.save_pretrained(cfg.output_dir)
             case ModelType.BASE_MAPPER:
-                checkpoint_handler.save_model(text_encoder=text_encoder, accelerator=accelerator, save_name='last')
+                checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name='last')
 
     accelerator.end_training()

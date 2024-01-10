@@ -17,7 +17,7 @@ from tqdm import tqdm
 from transformers import CLIPTokenizer
 
 from gen.configs import BaseConfig
-from gen.configs.models import BaseMapperConfig
+from gen.configs.models import ModelConfig
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
@@ -50,10 +50,14 @@ class BaseMapper(nn.Module):
     def init_pretrained(self):
         self.clip = ClipFeatureExtractor()
         self.clip.train()
-        self.clip.requires_grad_(False)
-        # for block in self.clip.base_model.transformer.resblocks[-6:]:
-        #     block.requires_grad_(True)
-        print('Warning, CLIP is frozen for debugging!!!!!')
+
+        if self.cfg.model.freeze_clip:
+            self.clip.requires_grad_(False)
+            warnings.warn('Warning, CLIP is frozen for debugging!!!!!')
+        
+        if self.cfg.model.unfreeze_last_n_clip_layers is not None:
+            for block in self.clip.base_model.transformer.resblocks[-self.cfg.model.unfreeze_last_n_clip_layers:]:
+                block.requires_grad_(True)
 
         self.hqsam = HQSam(model_type='vit_b')
         self.hqsam.eval()

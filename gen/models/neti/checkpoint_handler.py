@@ -21,38 +21,41 @@ class CheckpointHandler:
 
     def save_model(
             self, 
-            text_encoder: NeTICLIPTextModel,
+            model: BaseMapper,
             accelerator: Accelerator,
             save_name: str,
         ):
-        self.save_learned_embeds(text_encoder, accelerator, save_name)
-        self.save_mapper(accelerator, text_encoder, save_name)
+        self.save_learned_embeds(model, accelerator, save_name)
+        self.save_mapper(accelerator, model, save_name)
         print(f'Saved checkpoint at step: {save_name} in {self.save_root}')
         
-    def save_learned_embeds(self, text_encoder: NeTICLIPTextModel, accelerator: Accelerator, save_name: str):
+    def save_learned_embeds(self, model: BaseMapper, accelerator: Accelerator, save_name: str):
         """
         Save learned embeddings. This embedding isn't really learned, but we'll add it to the tokenizer at inference
         to take the place of our placeholder token.
         """
-        learned_embeds = accelerator.unwrap_model(text_encoder).get_input_embeddings().weight[self.cfg.model.placeholder_token_id]
+        learned_embeds = accelerator.unwrap_model(model.text_encoder).get_input_embeddings().weight[self.cfg.model.placeholder_token_id]
         print(f'learned_embeds Hash: {tensor_hash(learned_embeds)}')
         learned_embeds = learned_embeds.detach().cpu()
         learned_embeds_dict = {self.cfg.model.placeholder_token: learned_embeds}
         torch.save(learned_embeds_dict, self.save_root / f"learned_embeds-steps-{save_name}.bin")
 
-    def save_mapper(self, accelerator: Accelerator, text_encoder: NeTICLIPTextModel, save_name: str):
+    def save_mapper(self, accelerator: Accelerator, model: BaseMapper, save_name: str):
         """ Save the mapper and config to be used at inference. """
         state_dict = {
-            "state_dict": accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.state_dict(),
-            "encoder": accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.encoder,
-            "cfg": OmegaConf.to_container(self.cfg)
+            "state_dict": accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.state_dict(),
+            "encoder": accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.encoder,
+            "cfg": OmegaConf.to_container(self.cfg),
+            "clip_state_dict": accelerator.unwrap_model(model.clip).state_dict(),
         }
+    
         print(f'mapper param Hash: {module_hash(state_dict=state_dict["state_dict"])}')
         torch.save(state_dict, self.save_root / f"mapper-steps-{save_name}.pt")
 
     @staticmethod
     def load_mapper(mapper_path: Path) -> Tuple[BaseConfig, NeTIMapper]:
         mapper_ckpt = torch.load(mapper_path, map_location="cpu")
+        clip_state_dict = mapper_ckpt['clip_state_dict']
         cfg: BaseConfig = OmegaConf.create(mapper_ckpt['cfg'])
         neti_mapper = NeTIMapper(
             output_dim=768,
@@ -76,7 +79,7 @@ class CheckpointHandler:
         neti_mapper.encoder = encoder.cuda()
         neti_mapper.cuda()
         neti_mapper.eval()
-        return cfg, neti_mapper
+        return cfg, neti_mapper, clip_state_dict
 
     @staticmethod
     def load_learned_embed_in_clip(learned_embeds_path: Path, text_encoder: NeTICLIPTextModel, tokenizer: CLIPTokenizer) -> Tuple[str, int]:
