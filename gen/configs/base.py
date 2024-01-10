@@ -1,6 +1,4 @@
-from collections import namedtuple
 from dataclasses import dataclass, field
-
 from pathlib import Path
 from typing import Any, List, Optional, Union
 
@@ -11,7 +9,7 @@ from gen.configs.hydra import get_hydra_config
 from gen.configs.inference import InferenceConfig
 from gen.configs.models import ModelConfig
 from gen.configs.trainer import TrainerConfig
-from gen.configs.utils import destructure_store, mode_store, exp_store
+from gen.configs.utils import destructure_store, exp_store, mode_store
 
 defaults = [
     "_self_",
@@ -20,6 +18,7 @@ defaults = [
     {"model": "basemapper"},
     {"inference": "basemapper"},
 ]
+
 
 @dataclass
 class BaseConfig:
@@ -50,54 +49,33 @@ store(get_hydra_config(), group="hydra", name="default")
 
 exp_store(
     name="demo_exp",
-    trainer=dict(num_train_epochs=1000, eval_every_n_steps=500, checkpointing_steps=10000),
-    dataset=dict(
-        num_validation_images=1,
-        train_dataset=dict(batch_size=8),
-        validation_dataset=dict(batch_size=1, random_subset=4)
-    ),
+    trainer=dict(num_train_epochs=1000, checkpointing_steps=1000, gradient_accumulation_steps=4, learning_rate=5e-5, eval_every_n_epochs=None, eval_every_n_steps=1000),
+    dataset=dict(num_validation_images=1, train_dataset=dict(batch_size=8), validation_dataset=dict(batch_size=1, random_subset=4)),
+    model=dict(unfreeze_last_n_clip_layers=6, dropout_masks=0.2),
     hydra_defaults=[
         "_self_",
-        {"override /dataset": "coco_captions"},
+        {"override /dataset": "movi_e"},
     ],
 )
 
 mode_store(
-    name="fast", 
-    debug=True, 
-    trainer=dict(
-        num_train_epochs=1, 
-        eval_every_n_steps=2
-    ),
-    dataset=dict(
-        train_dataset=dict(
-            batch_size=2, 
-            random_subset=8, 
-            num_workers=0
-        ), 
-        validation_dataset=dict(
-            batch_size=1, 
-            random_subset=2, 
-            num_workers=0
-        )
-    ),
+    name="fast",
+    debug=True,
+    trainer=dict(num_train_epochs=1, eval_every_n_steps=2),
+    dataset=dict(train_dataset=dict(batch_size=2, random_subset=8, num_workers=0), validation_dataset=dict(batch_size=1, random_subset=2, num_workers=0)),
 )
 
 mode_store(
-    name="overfit", 
-    debug=True, 
+    name="overfit",
+    debug=True,
     trainer=dict(
-        num_train_epochs=1000, 
+        num_train_epochs=1000,
         eval_every_n_epochs=10,
         eval_every_n_steps=1000,
         checkpointing_steps=1000,
     ),
     dataset=dict(
-        train_dataset=dict(
-            batch_size=4, 
-            random_subset=8, 
-            num_workers=0
-        ),
+        train_dataset=dict(batch_size=4, random_subset=8, num_workers=0),
         overfit=True,
     ),
 )

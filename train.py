@@ -70,9 +70,9 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
         eps=cfg.trainer.adam_epsilon,
     )
 
-    train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=False)(cfg=cfg, split=Split.TRAIN, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
+    train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=True)(cfg=cfg, split=Split.TRAIN, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
 
-    validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=False)(cfg=cfg ,split=Split.VALIDATION, tokenizer=tokenizer, accelerator=accelerator)
+    validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=True)(cfg=cfg ,split=Split.VALIDATION, tokenizer=tokenizer, accelerator=accelerator)
 
     if cfg.dataset.overfit:
         validation_dataset_holder.get_dataset = lambda: train_dataloader.dataset

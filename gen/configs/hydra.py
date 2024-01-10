@@ -1,5 +1,6 @@
 from hydra.conf import RunDir, SweepDir
 
+
 def get_hydra_config():
     return dict(
         job_logging=dict(

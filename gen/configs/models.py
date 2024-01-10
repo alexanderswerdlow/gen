@@ -8,13 +8,15 @@ from gen.configs.utils import auto_store
 from gen.models.neti.decoder import DecoderTransformer
 from hydra_zen.typing import Builds
 
+
 class ModelType(Enum):
     BASE_MAPPER = 0
     CONTROLNET = 1
 
+
 @dataclass
 class ModelConfig:
-    name: ClassVar[str] = 'model'
+    name: ClassVar[str] = "model"
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     revision: Optional[str] = None
     variant: Optional[str] = None
@@ -31,22 +33,24 @@ class ModelConfig:
     # Whether to use positional encoding over the input to the mapper
     use_positional_encoding: bool = True
     # Sigmas used for computing positional encoding
-    pe_sigmas: Dict[str, float] = field(default_factory=lambda: {'sigma_t': 0.03, 'sigma_l': 2.0})
+    pe_sigmas: Dict[str, float] = field(default_factory=lambda: {"sigma_t": 0.03, "sigma_l": 2.0})
     # Number of time anchors for computing our positional encodings
     num_pe_time_anchors: int = 10
     # Whether to output the textual bypass vector
     output_bypass: bool = True
 
     model_type: ModelType = ModelType.BASE_MAPPER
-    placeholder_token: str = 'placeholder'
+    placeholder_token: str = "placeholder"
     placeholder_token_id: Optional[int] = None
-    super_category_token: str = 'object'
+    super_category_token: str = "object"
     mask_cross_attn: bool = True
 
     freeze_clip: bool = True
     unfreeze_last_n_clip_layers: Optional[int] = None
+    dropout_masks: Optional[float] = None
 
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
+
 
 @dataclass
 class ControlNetConfig(ModelConfig):

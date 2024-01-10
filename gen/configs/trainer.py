@@ -9,7 +9,7 @@ from gen.configs.utils import auto_store
 
 @dataclass
 class TrainerConfig:
-    name: ClassVar[str] = 'trainer'
+    name: ClassVar[str] = "trainer"
     mixed_precision: PrecisionType = PrecisionType.BF16
     gradient_accumulation_steps: int = 1
     log_with: Optional[LoggerType] = LoggerType.WANDB
@@ -44,5 +44,5 @@ class TrainerConfig:
     profiler_active_steps: int = 2
     log_gradients: Optional[int] = None
 
-auto_store(TrainerConfig, name="base")
 
+auto_store(TrainerConfig, name="base")

@@ -1,5 +1,6 @@
-from typing import Dict, Optional, Tuple
+import math
 import warnings
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import open_clip
@@ -214,9 +215,9 @@ class BaseMapper(nn.Module):
         clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage23']
 
         def viz():
-            from image_utils import Im, pca, get_layered_image_from_binary_mask, calculate_principal_components
+            from image_utils import (Im, calculate_principal_components,
+                                     get_layered_image_from_binary_mask, pca)
             principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]))
-            clip_feature_map = self.clip(batch['disc_pixel_values'].to(device=device, dtype=dtype))['stage23']
             outmap = pca(clip_feature_map[1:, ...].permute(1, 2, 0).reshape(4, 1024, 16, 16).permute(0, 2, 3, 1).reshape(-1, 1024).float(), principal_components=principal_components).reshape(4, 16, 16, 3).permute(0, 3, 1, 2)
             outmap_min, _ = torch.min(outmap, dim=1, keepdim=True)
             outmap_max, _ = torch.max(outmap, dim=1, keepdim=True)
@@ -232,10 +233,9 @@ class BaseMapper(nn.Module):
         clip_feature_cls_token = clip_feature_map[:, 0, :] # We take the cls token
         clip_feature_map = clip_feature_map[:, 1:, :]
 
-        # SAM requires NumPy [0, 255]
-        sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c')
+        sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), 'b c h w -> b h w c') # SAM requires NumPy [0, 255]
 
-        latent_dim = batch['disc_pixel_values'].shape[-1] // 14
+        latent_dim = int(math.sqrt(clip_feature_map.shape[1]))
         feature_map_masks = []
         feature_map_batch_idxs = []
         for i in range(bs):
@@ -243,7 +243,7 @@ class BaseMapper(nn.Module):
                 original = batch['gen_segmentation'][i].permute(2, 0, 1).bool()
             else:
                 masks = self.hqsam.forward(sam_input[i])
-                masks = masks[:23]
+                masks = masks[:24] # We only have 77 tokens
                 num_masks = len(masks)
                 if num_masks == 0: # Hack to deal with images with no masks. We attend to a single token only
                     tmp_ = torch.zeros((1, latent_dim, latent_dim), dtype=torch.bool)
@@ -253,6 +253,10 @@ class BaseMapper(nn.Module):
                     continue
 
                 original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(num_masks)]))
+
+            if self.cfg.model.dropout_masks is not None:
+                mask = torch.rand(original.size(0)) > self.cfg.model.dropout_masks
+                original = original[mask]
 
             assert batch['disc_pixel_values'].shape[-1] == batch['disc_pixel_values'].shape[-2]
             feature_map_mask_ = find_true_indices_batched(original=original, dh=latent_dim, dw=latent_dim)

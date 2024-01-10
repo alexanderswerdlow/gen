@@ -5,9 +5,10 @@ from enum import Enum
 from dataclasses import dataclass, field
 from gen.configs.utils import auto_store
 
+
 @dataclass
 class InferenceConfig:
-    name: ClassVar[str] = 'inference'
+    name: ClassVar[str] = "inference"
     # Specifies which checkpoint iteration we want to load
     iteration: Optional[str] = None
     # The input directory containing the saved models and embeddings
@@ -29,5 +30,6 @@ class InferenceConfig:
     truncation_idxs: Optional[Union[int, List[int]]] = field(default_factory=lambda: [None])
     # Whether to run with torch.float16 or torch.float32
     torch_dtype: str = "fp16"
+
 
 auto_store(InferenceConfig, name="basemapper")
