@@ -40,7 +40,7 @@ class MoviDataset(AbstractDataset, Dataset):
         num_dataset_frames: int = 24,
         num_objects: int = 23,
         legacy_transforms: bool = False,
-        augmentation: Optional[Augmentation] = None,
+        augmentation: Optional[Augmentation] = Augmentation(),
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -143,17 +143,23 @@ class MoviDataset(AbstractDataset, Dataset):
 
         else:
             source_data, target_data = self.augmentation(
-                source_data=Data(image=torch.from_numpy(rgb).float(), segmentation=torch.from_numpy(instance.squeeze(-1)).float()),
-                target_data=Data(image=torch.from_numpy(rgb).float(), segmentation=torch.from_numpy(instance.squeeze(-1)).float()),
+                source_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
+                target_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
             )
 
+            # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
+            source_data.image = source_data.image.squeeze(0)
+            source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1,  num_classes=self.num_classes + 1)[..., 1:]
+            target_data.image = target_data.image.squeeze(0)
+            target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1,  num_classes=self.num_classes + 1)[..., 1:]
+
             ret = {
-                "gen_pixel_values": source_data.image,
-                "gen_grid": source_data.grid,
-                "gen_segmentation": source_data.segmentation,
-                "disc_pixel_values": target_data.image,
-                "disc_grid": target_data.grid,
-                "disc_segmentation": target_data.segmentation,
+                "gen_pixel_values": target_data.image,
+                "gen_grid": target_data.grid,
+                "gen_segmentation": target_data.segmentation,
+                "disc_pixel_values": source_data.image,
+                "disc_grid": source_data.grid,
+                "disc_segmentation": source_data.segmentation,
                 "input_ids": self.tokenizer(
                     "A photo of", max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
                 ).input_ids.squeeze(0),

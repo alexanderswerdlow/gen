@@ -50,16 +50,22 @@ class Augmentation:
         self.target_normalization = get_stable_diffusion_transforms(resolution=target_resolution)
 
         self.source_transform = AugmentationSequential(
-            K.RandomResizedCrop(size=(192, 192), scale=(0.7, 1.3), ratio=(0.7, 1.3)),
-            K.RandomHorizontalFlip(),
-            K.RandomVerticalFlip(),
-            random_apply=True,
+            K.RandomResizedCrop(size=(192, 192), scale=(0.7, 1.3), ratio=(0.7, 1.3), p=1.0), # Difficult to handle variable resolutions
+            AugmentationSequential(
+                K.RandomHorizontalFlip(p=0.95),
+                K.RandomVerticalFlip(p=0.95),
+                random_apply=1,
+            ),
+            AugmentationSequential(
+                RandAugment(n=2, m=9, policy=randaug_policy), random_apply_weights=[0.65]
+            )
         )
         self.target_transform = AugmentationSequential(
-            K.RandomResizedCrop(size=(192, 192), scale=(0.7, 1.3), ratio=(0.7, 1.3)),
-            K.RandomHorizontalFlip(),
-            K.RandomVerticalFlip(),
-            random_apply=True,
+            AugmentationSequential(
+                K.RandomHorizontalFlip(p=0.95),
+                K.RandomVerticalFlip(p=0.95),
+                random_apply=1,
+            )
         )
 
     def __call__(self, source_data, target_data):
@@ -86,8 +92,10 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
         input_segmentation_mask: (B, H, W)
     """
 
-    input_data.image = input_data.image[None]
-    input_data.segmentation = input_data.segmentation[None]
+    # input_data.image = input_data.image[None]
+    # input_data.segmentation = input_data.segmentation[None]
+
+    # print(input_data.image)
 
     B, _, H, W = input_data.image.shape
     keypoints = get_keypoints(B, H, W)
@@ -110,8 +118,8 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
         output_keypoints_viz = aug(keypoints_viz, data_keys=["keypoints"], params=aug._params)
         viz(input_image, keypoints_viz, output_data.image, output_keypoints_viz)
 
-    output_data.image = output_data.image.squeeze(0)
-    output_data.segmentation = output_data.segmentation.squeeze(0)
+    # output_data.image = output_data.image.squeeze(0)
+    # output_data.segmentation = output_data.segmentation.squeeze(0)
 
     return output_data
 
