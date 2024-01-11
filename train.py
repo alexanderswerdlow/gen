@@ -104,7 +104,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
         case ModelType.CONTROLNET:
             vae, unet, text_encoder, controlnet = pre_train_setup_controlnet(weight_dtype, cfg, accelerator, vae, unet, text_encoder, controlnet)
         case ModelType.BASE_MAPPER:
-            model.pre_train_setup_base_mapper(weight_dtype, accelerator)
+            model.prepare_for_training(weight_dtype, accelerator)
             noise_scheduler, vae, unet, text_encoder = model.noise_scheduler, model.vae, model.unet, model.text_encoder
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.

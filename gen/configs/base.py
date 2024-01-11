@@ -60,8 +60,8 @@ exp_store(
 mode_store(
     name="fast",
     debug=True,
-    trainer=dict(num_train_epochs=1, eval_every_n_steps=2),
-    dataset=dict(train_dataset=dict(batch_size=2, random_subset=8, num_workers=0), validation_dataset=dict(batch_size=1, random_subset=2, num_workers=0)),
+    trainer=dict(num_train_epochs=1, eval_every_n_epochs=1, eval_every_n_steps=None),
+    dataset=dict(train_dataset=dict(batch_size=8, random_subset=16, num_workers=0), validation_dataset=dict(batch_size=1, random_subset=2, num_workers=0)),
 )
 
 mode_store(
@@ -75,6 +75,16 @@ mode_store(
     ),
     dataset=dict(
         train_dataset=dict(batch_size=4, random_subset=8, num_workers=0),
+        overfit=True,
+    ),
+)
+
+mode_store(
+    name="overfit_movi",
+    debug=True,
+    trainer=dict(gradient_accumulation_steps=1),
+    dataset=dict(
+        train_dataset=dict(batch_size=4, random_subset=8, num_workers=0, subset=('video_0000',)),
         overfit=True,
     ),
 )

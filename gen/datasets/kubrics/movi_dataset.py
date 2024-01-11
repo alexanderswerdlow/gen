@@ -41,6 +41,7 @@ class MoviDataset(AbstractDataset, Dataset):
         num_objects: int = 23,
         legacy_transforms: bool = False,
         augmentation: Optional[Augmentation] = Augmentation(),
+        subset: Optional[tuple[str]] = None,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -50,8 +51,12 @@ class MoviDataset(AbstractDataset, Dataset):
         self.resolution = resolution
         self.legacy_transforms = legacy_transforms
         self.root_dir = self.root / self.dataset / ("train" if self.split == Split.TRAIN else "validation")
-        self.files = os.listdir(self.root_dir)
-        self.files.sort()
+
+        if subset is not None:
+            self.files = subset
+        else:
+            self.files = os.listdir(self.root_dir)
+            self.files.sort()
 
         self.num_dataset_frames = num_dataset_frames
         self.num_frames = num_frames

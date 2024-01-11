@@ -9,10 +9,12 @@ from torch import nn
 from gen.configs.base import BaseConfig
 from gen.models.neti.decoder import DecoderTransformer
 
-from gen.models.neti.positional_encoding import (BasicEncoder,
+from gen.models.neti.positional_encoding import (BasicEncoder, FixedPositionalEncoding,
                                                  NeTIPositionalEncoding)
 
 import hydra
+
+from gen.models.utils import SinusoidalPosEmb
 
 @dataclass
 class PESigmas:
@@ -48,7 +50,9 @@ class NeTIMapper(nn.Module):
             output_dim *= 2  # Output two vectors
 
         self.use_positional_encoding = use_positional_encoding
-        if self.use_positional_encoding:
+        if self.cfg.model.use_fixed_position_encoding:
+            self.encoder = SinusoidalPosEmb(dim=num_pe_time_anchors * len(unet_layers)).cuda()
+        elif self.use_positional_encoding:
             self.encoder = NeTIPositionalEncoding(sigma_t=pe_sigmas.sigma_t, sigma_l=pe_sigmas.sigma_l).cuda()
             self.input_dim = num_pe_time_anchors * len(unet_layers)
         else:
@@ -110,6 +114,10 @@ class NeTIMapper(nn.Module):
         return self.encoder.encode(timestep, unet_layer)
 
     def extract_hidden_representation(self, timestep: torch.Tensor, unet_layer: torch.Tensor) -> torch.Tensor:
+        if self.cfg.model.use_fixed_position_encoding:
+            encoded_input = self.encoder(timestep) + self.encoder(unet_layer)
+        else:
+            encoded_input = self.encoder.encode(timestep, unet_layer)
         encoded_input = self.get_encoded_input(timestep, unet_layer)
         embedding = self.net(encoded_input)
         return embedding

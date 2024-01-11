@@ -13,6 +13,7 @@ from gen.models.neti.neti_mapper import NeTIMapper
 from gen.models.neti.positional_encoding import BasicEncoder, NeTIPositionalEncoding
 from gen.utils.decoupled_utils import module_hash, tensor_hash
 
+
 class CheckpointHandler:
     def __init__(self, cfg: BaseConfig, save_root: Path):
         self.cfg = cfg
@@ -20,43 +21,46 @@ class CheckpointHandler:
         self.save_root.mkdir(exist_ok=True, parents=True)
 
     def save_model(
-            self, 
-            model: BaseMapper,
-            accelerator: Accelerator,
-            save_name: str,
-        ):
+        self,
+        model: BaseMapper,
+        accelerator: Accelerator,
+        save_name: str,
+    ):
         self.save_learned_embeds(model, accelerator, save_name)
         self.save_mapper(accelerator, model, save_name)
-        print(f'Saved checkpoint at step: {save_name} in {self.save_root}')
-        
+        print(f"Saved checkpoint at step: {save_name} in {self.save_root}")
+
     def save_learned_embeds(self, model: BaseMapper, accelerator: Accelerator, save_name: str):
         """
         Save learned embeddings. This embedding isn't really learned, but we'll add it to the tokenizer at inference
         to take the place of our placeholder token.
         """
         learned_embeds = accelerator.unwrap_model(model.text_encoder).get_input_embeddings().weight[self.cfg.model.placeholder_token_id]
-        print(f'learned_embeds Hash: {tensor_hash(learned_embeds)}')
+        print(f"learned_embeds Hash: {tensor_hash(learned_embeds)}")
         learned_embeds = learned_embeds.detach().cpu()
         learned_embeds_dict = {self.cfg.model.placeholder_token: learned_embeds}
         torch.save(learned_embeds_dict, self.save_root / f"learned_embeds-steps-{save_name}.bin")
 
     def save_mapper(self, accelerator: Accelerator, model: BaseMapper, save_name: str):
-        """ Save the mapper and config to be used at inference. """
+        """Save the mapper and config to be used at inference."""
         state_dict = {
             "state_dict": accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.state_dict(),
             "encoder": accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.encoder,
             "cfg": OmegaConf.to_container(self.cfg),
             "clip_state_dict": accelerator.unwrap_model(model.clip).state_dict(),
         }
-    
+
         print(f'mapper param Hash: {module_hash(state_dict=state_dict["state_dict"])}')
         torch.save(state_dict, self.save_root / f"mapper-steps-{save_name}.pt")
 
     @staticmethod
     def load_mapper(mapper_path: Path) -> Tuple[BaseConfig, NeTIMapper]:
         mapper_ckpt = torch.load(mapper_path, map_location="cpu")
-        clip_state_dict = mapper_ckpt['clip_state_dict']
-        cfg: BaseConfig = OmegaConf.create(mapper_ckpt['cfg'])
+        clip_state_dict = None
+        if "clip_state_dict" in mapper_ckpt:
+            clip_state_dict = mapper_ckpt["clip_state_dict"]
+
+        cfg: BaseConfig = OmegaConf.create(mapper_ckpt["cfg"])
         neti_mapper = NeTIMapper(
             output_dim=768,
             use_nested_dropout=cfg.model.use_nested_dropout,
@@ -69,13 +73,13 @@ class CheckpointHandler:
             cfg=cfg,
         )
         print(f'mapper param Hash: {module_hash(state_dict=mapper_ckpt["state_dict"])}')
-        neti_mapper.load_state_dict(mapper_ckpt['state_dict'], strict=True)
-        encoder = mapper_ckpt['encoder']
+        neti_mapper.load_state_dict(mapper_ckpt["state_dict"], strict=True)
+        encoder = mapper_ckpt["encoder"]
         if isinstance(encoder, NeTIPositionalEncoding):
-            encoder.w = nn.Parameter(mapper_ckpt['encoder'].w.cuda())
+            encoder.w = nn.Parameter(mapper_ckpt["encoder"].w.cuda())
         elif isinstance(encoder, BasicEncoder):
-            encoder.normalized_timesteps = mapper_ckpt['encoder'].normalized_timesteps.cuda()
-            encoder.normalized_unet_layers = mapper_ckpt['encoder'].normalized_unet_layers.cuda()
+            encoder.normalized_timesteps = mapper_ckpt["encoder"].normalized_timesteps.cuda()
+            encoder.normalized_unet_layers = mapper_ckpt["encoder"].normalized_unet_layers.cuda()
         neti_mapper.encoder = encoder.cuda()
         neti_mapper.cuda()
         neti_mapper.eval()
@@ -96,8 +100,9 @@ class CheckpointHandler:
         # add the tokens in tokenizer
         num_added_tokens = tokenizer.add_tokens(trained_tokens)
         if num_added_tokens == 0:
-            raise ValueError(f"The tokenizer already contains the token {trained_tokens[0]}. "
-                             f"Please pass a different `token` that is not already in the tokenizer.")
+            raise ValueError(
+                f"The tokenizer already contains the token {trained_tokens[0]}. " f"Please pass a different `token` that is not already in the tokenizer."
+            )
 
         # resize the token embeddings
         text_encoder.resize_token_embeddings(len(tokenizer))
@@ -110,6 +115,6 @@ class CheckpointHandler:
 
         assert len(trained_tokens) == 1, "Only one placeholder token is supported"
         placeholder_token = trained_tokens[0]
-        print(f'learned_embeds Hash: {tensor_hash(embeds[0])}')
+        print(f"learned_embeds Hash: {tensor_hash(embeds[0])}")
         placeholder_token_id = placeholder_token_ids[0]
         return placeholder_token, placeholder_token_id

@@ -48,6 +48,10 @@ class ModelConfig:
     freeze_clip: bool = True
     unfreeze_last_n_clip_layers: Optional[int] = None
     dropout_masks: Optional[float] = None
+    freeze_text_encoder: bool = True
+    controlnet: bool = False
+    use_fixed_position_encoding: bool = True
+    enable_norm_scale: bool = False
 
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
 

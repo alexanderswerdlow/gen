@@ -41,7 +41,7 @@ def stored_child_config(cls: Any, group: str, parent: str, child: str, **kwargs)
 
 auto_store = store(group=lambda cfg: cfg.name)
 exp_store = partial(global_store, group="experiment")
-mode_store = partial(global_store, group="mode")
+mode_store = partial(global_store, group="modes")
 
 
 def inherit_parent_args(cls):
