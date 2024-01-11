@@ -52,8 +52,6 @@ python -m accelerate.commands.launch --num_processes 1 main.py run_inference=tru
 python -m accelerate.commands.launch --num_processes 1 main.py +experiment=demo_exp exp=inference dataset=movi_e dataset.train_dataset.batch_size=8 dataset.train_dataset.random_subset=64 trainer.eval_every_n_steps=null trainer.eval_every_n_epochs=1 trainer.num_train_epochs=1
 ```
 
-# /home/aswerdlo/repos/gen/outputs/train/example_exp_name_2024-01-08_15-14-50
-
 outputs/train/inference_2024-01-09_18-48-55/checkpoints
 
 python -m accelerate.commands.launch --num_processes 1 main.py run_inference=true inference.input_dir=outputs/train/inference_2024-01-09_18-48-55 inference.iteration=last

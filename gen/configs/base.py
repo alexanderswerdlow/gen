@@ -31,7 +31,6 @@ class BaseConfig:
     logging_dir: Optional[Path] = Path("logs")  # Folder inside the experiment folder
     exp: Optional[str] = None
     debug: bool = False
-    tracker_project_name: str = "controlnet"  # wandb project name
     tags: Optional[tuple[str]] = None
     attach: bool = False
     profile: bool = False
@@ -48,8 +47,8 @@ class BaseConfig:
 store(get_hydra_config(), group="hydra", name="default")
 
 exp_store(
-    name="demo_exp",
-    trainer=dict(num_train_epochs=1000, checkpointing_steps=1000, gradient_accumulation_steps=4, learning_rate=5e-5, eval_every_n_epochs=None, eval_every_n_steps=1000),
+    name="gen",
+    trainer=dict(num_train_epochs=1000, checkpointing_steps=1000, gradient_accumulation_steps=4, learning_rate=5e-5, eval_every_n_epochs=None, eval_every_n_steps=1000, tracker_project_name='gen'),
     dataset=dict(num_validation_images=1, train_dataset=dict(batch_size=8), validation_dataset=dict(batch_size=1, random_subset=4)),
     model=dict(unfreeze_last_n_clip_layers=6, dropout_masks=0.2),
     hydra_defaults=[

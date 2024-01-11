@@ -102,7 +102,7 @@ def main(cfg: BaseConfig):
         if original_output_dir.exists():
             shutil.move(original_output_dir, cfg.output_dir)
         accelerator.init_trackers(
-            cfg.tracker_project_name,
+            cfg.trainer.tracker_project_name + ('_inference' if cfg.run_inference else ''),
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
             init_kwargs=dict(
                 wandb=dict(

@@ -11,11 +11,8 @@ from kornia.augmentation.auto.base import SUBPLOLICY_CONFIG
 from kornia.augmentation.auto.rand_augment.rand_augment import RandAugment
 from kornia.augmentation.container import AugmentationSequential
 
-from gen.datasets.augmentation.utils import (get_keypoints, get_viz_keypoints,
-                                             process_output_keypoints,
-                                             process_output_segmentation, viz)
-from gen.datasets.utils import (get_open_clip_transforms_v2,
-                                get_stable_diffusion_transforms)
+from gen.datasets.augmentation.utils import get_keypoints, get_viz_keypoints, process_output_keypoints, process_output_segmentation, viz
+from gen.datasets.utils import get_open_clip_transforms_v2, get_stable_diffusion_transforms
 
 randaug_policy: List[SUBPLOLICY_CONFIG] = [
     [("auto_contrast", 0, 1)],
@@ -45,27 +42,30 @@ class Data:
 
 
 class Augmentation:
-    def __init__(self, target_resolution: int = 512):
+    def __init__(self, source_resolution: int = 224, target_resolution: int = 512, source_only: bool = True):
+        self.source_resolution = source_resolution
         self.source_normalization = get_open_clip_transforms_v2()
         self.target_normalization = get_stable_diffusion_transforms(resolution=target_resolution)
 
         self.source_transform = AugmentationSequential(
-            K.RandomResizedCrop(size=(192, 192), scale=(0.7, 1.3), ratio=(0.7, 1.3), p=1.0), # Difficult to handle variable resolutions
-            AugmentationSequential(
-                K.RandomHorizontalFlip(p=0.95),
-                K.RandomVerticalFlip(p=0.95),
-                random_apply=1,
+            K.RandomResizedCrop(
+                size=(source_resolution, source_resolution), scale=(0.7, 1.3), ratio=(0.7, 1.3), p=1.0 # For logistical reasons
             ),
-            AugmentationSequential(
-                RandAugment(n=2, m=9, policy=randaug_policy), random_apply_weights=[0.65]
-            )
+            K.RandomHorizontalFlip(p=0.95),
+            AugmentationSequential(RandAugment(n=2, m=9, policy=randaug_policy), random_apply_weights=[0.65]),
         )
-        self.target_transform = AugmentationSequential(
-            AugmentationSequential(
+
+        self.target_transform = AugmentationSequential(K.Resize(size=(target_resolution, target_resolution)))
+        if not source_only:
+            self.target_transform = AugmentationSequential(
                 K.RandomHorizontalFlip(p=0.95),
-                K.RandomVerticalFlip(p=0.95),
-                random_apply=1,
             )
+
+    def set_validation(self):
+        self.source_transform = AugmentationSequential(
+            K.RandomResizedCrop(
+                size=(self.source_resolution, self.source_resolution), scale=(0.7, 1.3), ratio=(0.7, 1.3), p=1.0 # For logistical reasons
+            ),
         )
 
     def __call__(self, source_data, target_data):
@@ -92,11 +92,6 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
         input_segmentation_mask: (B, H, W)
     """
 
-    # input_data.image = input_data.image[None]
-    # input_data.segmentation = input_data.segmentation[None]
-
-    # print(input_data.image)
-
     B, _, H, W = input_data.image.shape
     keypoints = get_keypoints(B, H, W)
 
@@ -117,9 +112,6 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
         keypoints_viz = get_viz_keypoints(B, H, W)
         output_keypoints_viz = aug(keypoints_viz, data_keys=["keypoints"], params=aug._params)
         viz(input_image, keypoints_viz, output_data.image, output_keypoints_viz)
-
-    # output_data.image = output_data.image.squeeze(0)
-    # output_data.segmentation = output_data.segmentation.squeeze(0)
 
     return output_data
 

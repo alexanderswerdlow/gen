@@ -10,6 +10,7 @@ from gen.configs.utils import auto_store
 @dataclass
 class TrainerConfig:
     name: ClassVar[str] = "trainer"
+    tracker_project_name: str = "controlnet"  # wandb project name
     mixed_precision: PrecisionType = PrecisionType.BF16
     gradient_accumulation_steps: int = 1
     log_with: Optional[LoggerType] = LoggerType.WANDB

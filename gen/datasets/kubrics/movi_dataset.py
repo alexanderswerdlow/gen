@@ -63,6 +63,8 @@ class MoviDataset(AbstractDataset, Dataset):
             self.disc_image_transforms = get_open_clip_transforms_v2()
         else:
             self.augmentation = augmentation
+            if self.split == Split.VALIDATION:
+                self.augmentation.set_validation()
 
         self.override_text = override_text
         if self.override_text:
@@ -149,9 +151,9 @@ class MoviDataset(AbstractDataset, Dataset):
 
             # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
             source_data.image = source_data.image.squeeze(0)
-            source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1,  num_classes=self.num_classes + 1)[..., 1:]
+            source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
             target_data.image = target_data.image.squeeze(0)
-            target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1,  num_classes=self.num_classes + 1)[..., 1:]
+            target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
 
             ret = {
                 "gen_pixel_values": target_data.image,
