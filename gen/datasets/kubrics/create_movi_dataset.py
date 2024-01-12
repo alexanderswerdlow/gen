@@ -11,19 +11,24 @@ import typer
 
 from gen import MOVI_DATASET_PATH
 
+typer.main.get_command_name = lambda name: name
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
 
 @app.command()
 def main(
-    dataset_dir: Path = MOVI_DATASET_PATH,
+    input_path: str = "gs://kubric-public/tfds",
+    output_path: Path = MOVI_DATASET_PATH,
     dataset_name: str = "movi_e",
     specific_split: Optional[str] = None,
 ):  
     splits = (specific_split, ) if specific_split else ("train", "validation")
     for split in splits:
-        out_dir = dataset_dir / dataset_name / split
-        ds, info = tfds.load(dataset_name, data_dir="gs://kubric-public/tfds", with_info=True)
+        out_dir = output_path / dataset_name / split
+        ds, info = tfds.load(dataset_name, data_dir=input_path, with_info=True)
+        if split not in ds:
+            print(f"Split {split} not found in dataset {dataset_name}")
+            continue
         train_iter = iter(tfds.as_numpy(ds[split]))
 
         example = next(train_iter)
@@ -79,7 +84,7 @@ def main(
                 example = next(train_iter)
             except StopIteration:
                 print(f"Finished split {split}")
-                continue
+                break
 
 
 if __name__ == "__main__":
