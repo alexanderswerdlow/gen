@@ -9,7 +9,7 @@ import warnings
 
 
 def get_keypoints(B, H, W):
-    warnings.warn("Kornia uses XY order for Keypoints. Be Careful.")
+    # warnings.warn("Kornia uses XY order for Keypoints. Be Careful.")
     y_coords, x_coords = torch.meshgrid(torch.arange(W), torch.arange(H), indexing="ij")
     coords = torch.stack((x_coords, y_coords), dim=-1).unsqueeze(0).repeat(B, 1, 1, 1).reshape(B, -1, 2)
     keypoints = Keypoints(coords.float())
@@ -34,7 +34,7 @@ def process_output_keypoints(keypoints: Keypoints, B: int, input_H: int, input_W
     coords_arr = coords[keypoints.valid_mask]  # Coordinates for the source image
 
     inverted_arr = torch.full((B, output_H, output_W, 2), fill_value, dtype=torch.long)
-    warnings.warn("Kornia uses XY order for Keypoints. Be Careful.")
+    # warnings.warn("Kornia uses XY order for Keypoints. Be Careful.")
     inverted_arr[torch.nonzero(keypoints.valid_mask)[:, 0], arr[:, 1], arr[:, 0]] = coords_arr
     inverted_arr = torch.flip(inverted_arr, dims=(-1,))
 

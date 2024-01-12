@@ -14,7 +14,7 @@ from einops import rearrange
 from ipdb import set_trace as st
 from torch.utils.data import Dataset
 
-from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH
+from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
@@ -41,6 +41,7 @@ class MoviDataset(AbstractDataset, Dataset):
         num_objects: int = 23,
         legacy_transforms: bool = False,
         augmentation: Optional[Augmentation] = Augmentation(),
+        custom_split: Optional[str] = None,
         subset: Optional[tuple[str]] = None,
         **kwargs,
     ):
@@ -50,7 +51,9 @@ class MoviDataset(AbstractDataset, Dataset):
         self.dataset = dataset  # str of dataset name (e.g. "movi_a")
         self.resolution = resolution
         self.legacy_transforms = legacy_transforms
-        self.root_dir = self.root / self.dataset / ("train" if self.split == Split.TRAIN else "validation")
+        local_split = ("train" if self.split == Split.TRAIN else "validation")
+        local_split = local_split if custom_split is None else custom_split
+        self.root_dir = self.root / self.dataset / local_split
 
         if subset is not None:
             self.files = subset
@@ -184,7 +187,7 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
     dataset = MoviDataset(
         cfg=None,
-        split=Split.VALIDATION,
+        split=Split.TRAIN,
         num_workers=0,
         batch_size=2,
         shuffle=True,
@@ -193,7 +196,12 @@ if __name__ == "__main__":
         augment=False,
         num_frames=24,
         tokenizer=tokenizer,
+        path=MOVI_OVERFIT_DATASET_PATH,
+        num_objects=1,
+        augmentation=Augmentation(minimal_source_augmentation=True)
     )
     dataloader = dataset.get_dataloader()
     for batch in dataloader:
         print(batch)
+        from image_utils import library_ops, Im, get_layered_image_from_binary_mask, ChannelRange
+        Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][0]), channel_range=ChannelRange.UINT8).save()

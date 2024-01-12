@@ -44,11 +44,7 @@ class ValidationHandler:
         vae: AutoencoderKL,
         num_images_per_prompt: int,
         global_step: int,
-        seeds: Optional[List[int]] = None,
     ):
-        if seeds is None:
-            seeds = list(range(num_images_per_prompt))
-
         """ Runs inference during our training scheme. """
         pipeline = self.load_stable_diffusion_model(accelerator, tokenizer, text_encoder, unet, vae)
         prompt_manager = PromptManager(

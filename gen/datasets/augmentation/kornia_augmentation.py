@@ -42,29 +42,43 @@ class Data:
 
 
 class Augmentation:
-    def __init__(self, source_resolution: int = 224, target_resolution: int = 512, source_only: bool = True):
+    def __init__(
+        self,
+        source_resolution: int = 224,
+        target_resolution: int = 512,
+        source_only_augmentation: bool = True,
+        minimal_source_augmentation: bool = False,
+        enable_crop: bool = True,
+        enable_horizontal_flip: bool = True,
+    ):
         self.source_resolution = source_resolution
         self.source_normalization = get_open_clip_transforms_v2()
         self.target_normalization = get_stable_diffusion_transforms(resolution=target_resolution)
 
-        self.source_transform = AugmentationSequential(
-            K.RandomResizedCrop(
-                size=(source_resolution, source_resolution), scale=(0.7, 1.3), ratio=(0.7, 1.3), p=1.0 # For logistical reasons
-            ),
-            K.RandomHorizontalFlip(p=0.95),
-            AugmentationSequential(RandAugment(n=2, m=9, policy=randaug_policy), random_apply_weights=[0.65]),
-        )
+        source_transforms = []
 
-        self.target_transform = AugmentationSequential(K.Resize(size=(target_resolution, target_resolution)))
-        if not source_only:
-            self.target_transform = AugmentationSequential(
+        if enable_crop:
+            source_transforms.append(K.RandomResizedCrop(size=(source_resolution, source_resolution), scale=(0.7, 1.3), ratio=(0.7, 1.3), p=1.0))  # For logistical reasons
+
+        if enable_horizontal_flip:
+            source_transforms.append(K.RandomHorizontalFlip(p=0.95))
+
+        if not minimal_source_augmentation:
+            source_transforms.append(RandAugment(n=2, m=10, policy=randaug_policy))
+
+        target_transforms = [K.Resize(size=(target_resolution, target_resolution))]
+        if not source_only_augmentation:
+            target_transforms.append(
                 K.RandomHorizontalFlip(p=0.95),
             )
+
+        self.source_transform = AugmentationSequential(*source_transforms)
+        self.target_transform = AugmentationSequential(*target_transforms)
 
     def set_validation(self):
         self.source_transform = AugmentationSequential(
             K.RandomResizedCrop(
-                size=(self.source_resolution, self.source_resolution), scale=(0.7, 1.3), ratio=(0.7, 1.3), p=1.0 # For logistical reasons
+                size=(self.source_resolution, self.source_resolution), scale=(0.7, 1.3), ratio=(0.7, 1.3), p=1.0  # For logistical reasons
             ),
         )
 

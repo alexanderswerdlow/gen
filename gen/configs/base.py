@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Union
 
 from hydra_zen import MISSING, store
+from gen import MOVI_OVERFIT_DATASET_PATH
 
 from gen.configs.datasets import DatasetConfig
 from gen.configs.hydra import get_hydra_config
@@ -91,13 +92,29 @@ mode_store(
     ),
 )
 
+
+def get_override_dict(**kwargs):
+    return dict(
+        train_dataset=dict(**kwargs),
+        validation_dataset=dict(**kwargs),
+    )
+
+
+shared_overfit_movi_args = dict(
+    subset=("video_0006",),
+    custom_split="train",
+    path=MOVI_OVERFIT_DATASET_PATH,
+    num_objects=1,
+    augmentation=dict(minimal_source_augmentation=True, enable_crop=False),
+)
 mode_store(
     name="overfit_movi",
     debug=True,
-    trainer=dict(gradient_accumulation_steps=1),
+    trainer=dict(gradient_accumulation_steps=1, num_train_epochs=10000),
     dataset=dict(
-        train_dataset=dict(batch_size=4, random_subset=8, num_workers=0, subset=("video_0000",)),
-        overfit=True,
+        train_dataset=dict(batch_size=8, random_subset=None, **shared_overfit_movi_args),
+        validation_dataset=dict(random_subset=8, **shared_overfit_movi_args),
+        overfit=False,
     ),
 )
 

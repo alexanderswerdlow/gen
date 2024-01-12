@@ -60,7 +60,7 @@ class PromptManager:
         # Compute embeddings for each timestep and each U-Net layer
         print(f"Computing embeddings over {len(self.timesteps)} timesteps and {len(self.unet_layers)} U-Net layers.")
         hidden_states_per_timestep = []
-        for timestep in tqdm(self.timesteps, leave=False):
+        for timestep in tqdm(self.timesteps, leave=False, disable=True):
             _hs = {"this_idx": 0}.copy()
             for layer_idx, unet_layer in enumerate(self.unet_layers):
                 neti_batch = NeTIBatch(

@@ -359,10 +359,7 @@ def get_net_attn_map(image_size, batch_size=2, instance_or_negative=False, detac
 
 
 
-def get_all_net_attn_maps(net_attn_maps, dir_name, tokens):
-    if not os.path.exists(dir_name):
-        os.makedirs(dir_name)
-    
+def get_all_net_attn_maps(net_attn_maps, tokens):
     total_attn_scores = 0
     attn_maps_img = []
     for i, (token, attn_map) in enumerate(zip(tokens, net_attn_maps)):

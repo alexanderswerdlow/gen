@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Optional
 
 from hydra_zen import builds, make_config
+from gen import MOVI_OVERFIT_DATASET_PATH
 
 from gen.configs.utils import auto_store, stored_child_config
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
@@ -25,23 +26,26 @@ class HuggingFaceControlNetConfig(DatasetConfig):
     _target_: str = "gen.datasets.controlnet_dataset"
 
 
-def get_train(cls, **kwargs):
+def get_dataset(cls, **kwargs):
     return builds(cls, populate_full_signature=True, zen_partial=True, **kwargs)
 
 
-def get_val(cls, **kwargs):
-    return builds(cls, populate_full_signature=True, zen_partial=True, **kwargs)
+def get_override_dict(**kwargs):
+    return dict(
+        train_dataset=dict(**kwargs),
+        validation_dataset=dict(**kwargs),
+    )
 
 
-auto_store(DatasetConfig, train_dataset=get_train(ControlnetDataset), validation_dataset=get_val(ControlnetDataset), name="controlnet")
+auto_store(DatasetConfig, train_dataset=get_dataset(ControlnetDataset), validation_dataset=get_dataset(ControlnetDataset), name="controlnet")
 
-auto_store(DatasetConfig, train_dataset=get_train(CocoCaptions), validation_dataset=get_val(CocoCaptions), name="coco_captions")
+auto_store(DatasetConfig, train_dataset=get_dataset(CocoCaptions), validation_dataset=get_dataset(CocoCaptions), name="coco_captions")
 
 stored_child_config(DatasetConfig, "dataset", "coco_captions", "coco_captions_test")
 
 auto_store(
     DatasetConfig,
-    train_dataset=get_train(
+    train_dataset=get_dataset(
         ControlnetDataset,
         num_workers=2,
         batch_size=2,
@@ -50,7 +54,7 @@ auto_store(
         dataset_config_name="2m_random_5k",
         dataset_name="poloclub/diffusiondb",
     ),
-    validation_dataset=get_val(
+    validation_dataset=get_dataset(
         ControlnetDataset,
         num_workers=2,
         batch_size=2,
@@ -62,5 +66,11 @@ auto_store(
     name="diffusiondb",
 )
 
-augmentation = builds(Augmentation, populate_full_signature=True)
-auto_store(DatasetConfig, train_dataset=get_train(MoviDataset, augmentation=augmentation), validation_dataset=get_val(MoviDataset, augmentation=augmentation), name="movi_e")
+augmentation = builds(Augmentation, minimal_source_augmentation=True, source_only_augmentation=True, populate_full_signature=True)
+
+auto_store(
+    DatasetConfig,
+    train_dataset=get_dataset(MoviDataset, augmentation=augmentation),
+    validation_dataset=get_dataset(MoviDataset, augmentation=augmentation),
+    name="movi_e",
+)

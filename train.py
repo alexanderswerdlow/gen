@@ -235,7 +235,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                             if cfg.dataset.validation_prompt:
                                 image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
                         case ModelType.BASE_MAPPER:
-                            validator.infer(accelerator, validation_dataloader, model, tokenizer, text_encoder, unet, vae, cfg.dataset.num_validation_images, global_step)
+                            validator.infer(accelerator, validation_dataloader, model, tokenizer, text_encoder, unet, vae, cfg.dataset, global_step)
                     logger.info(f'Finished validation at step {global_step}, epoch {epoch}')
 
                 progress_bar.update(1)
