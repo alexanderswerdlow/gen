@@ -5,12 +5,13 @@ from diffusers.models.attention_processor import Attention
 
 
 class XTIAttenProc:
-
-    def __call__(self, attn: Attention,
-                 hidden_states: torch.Tensor,
-                 encoder_hidden_states: Optional[Dict[str, torch.Tensor]] = None,
-                 attention_mask: Optional[torch.Tensor] = None):
-
+    def __call__(
+        self,
+        attn: Attention,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: Optional[Dict[str, torch.Tensor]] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+    ):
         _ehs_bypass = None
         if encoder_hidden_states is not None:
             if isinstance(encoder_hidden_states, dict):
@@ -25,7 +26,7 @@ class XTIAttenProc:
         else:
             _ehs = None
 
-        batch_size, sequence_length, _ = (hidden_states.shape if _ehs is None else _ehs.shape)
+        batch_size, sequence_length, _ = hidden_states.shape if _ehs is None else _ehs.shape
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
         query = attn.to_q(hidden_states)
 

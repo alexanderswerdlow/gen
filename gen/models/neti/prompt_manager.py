@@ -1,3 +1,4 @@
+from gc import disable
 from typing import Optional, List, Dict, Any
 
 import torch
@@ -42,7 +43,8 @@ class PromptManager:
             self, 
             batch: dict,
             truncation_idx: Optional[int] = None,
-            num_images_per_prompt: int = 1
+            num_images_per_prompt: int = 1,
+            disable_conditioning: bool = False,
         ) -> List[Dict[str, Any]]:
         """
         Compute the conditioning vectors for the given prompt. We assume that the prompt is defined using `{}`
@@ -55,7 +57,7 @@ class PromptManager:
 
         model_.placeholder_token_id = model_.tokenizer.convert_tokens_to_ids(model_.cfg.model.placeholder_token)
         model_.weight_dtype = self.dtype
-        input_ids, text_encoder_dict, input_prompt = model_.get_hidden_state(batch, timesteps=self.timesteps, device=batch['gen_pixel_values'].device, dtype=self.dtype, per_timestep=True)
+        input_ids, text_encoder_dict, input_prompt = model_.get_hidden_state(batch, timesteps=self.timesteps, device=batch['gen_pixel_values'].device, dtype=self.dtype, per_timestep=True, disable_conditioning=disable_conditioning)
 
         # Compute embeddings for each timestep and each U-Net layer
         print(f"Computing embeddings over {len(self.timesteps)} timesteps and {len(self.unet_layers)} U-Net layers.")

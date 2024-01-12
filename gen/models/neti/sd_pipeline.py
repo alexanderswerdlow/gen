@@ -11,7 +11,7 @@ def sd_pipeline_call(
     height: Optional[int] = None,
     width: Optional[int] = None,
     guidance_scale: float = 7.5,
-    negative_prompt: Optional[Union[str, List[str]]] = None,
+    negative_prompt_embeds: Optional[torch.FloatTensor] = None,
     num_images_per_prompt: Optional[int] = 1,
     eta: float = 0.0,
     generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -33,12 +33,13 @@ def sd_pipeline_call(
     batch_size = 1
     device = pipeline._execution_device
 
-    neg_prompt = get_neg_prompt_input_ids(pipeline, negative_prompt)
-    negative_prompt_embeds, _ = pipeline.text_encoder(
-        input_ids=neg_prompt.input_ids.to(device),
-        attention_mask=None,
-    )
-    negative_prompt_embeds = negative_prompt_embeds[0].to(pipeline.unet.dtype)
+    neg_prompt = get_neg_prompt_input_ids(pipeline, None)
+    if negative_prompt_embeds is None:
+        negative_prompt_embeds, _ = pipeline.text_encoder(
+            input_ids=neg_prompt.input_ids.to(device),
+            attention_mask=None,
+        )
+        negative_prompt_embeds = negative_prompt_embeds[0].to(pipeline.unet.dtype)
 
     # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
     # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
@@ -73,11 +74,13 @@ def sd_pipeline_call(
                 latent_model_input = latents
                 latent_model_input = pipeline.scheduler.scale_model_input(latent_model_input, t)
 
+                negative_prompt_embed = negative_prompt_embeds[i] if type(negative_prompt_embeds) == list else negative_prompt_embeds
+
                 # predict the noise residual
                 noise_pred_uncond = pipeline.unet(
                     latent_model_input,
                     t,
-                    encoder_hidden_states=negative_prompt_embeds.repeat(num_images_per_prompt, 1, 1),
+                    encoder_hidden_states=negative_prompt_embed,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
 

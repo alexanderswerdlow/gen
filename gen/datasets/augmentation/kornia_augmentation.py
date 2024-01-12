@@ -76,11 +76,7 @@ class Augmentation:
         self.target_transform = AugmentationSequential(*target_transforms)
 
     def set_validation(self):
-        self.source_transform = AugmentationSequential(
-            K.RandomResizedCrop(
-                size=(self.source_resolution, self.source_resolution), scale=(0.7, 1.3), ratio=(0.7, 1.3), p=1.0  # For logistical reasons
-            ),
-        )
+        pass
 
     def __call__(self, source_data, target_data):
         if self.source_transform is not None:

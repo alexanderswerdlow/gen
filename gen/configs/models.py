@@ -40,7 +40,7 @@ class ModelConfig:
     output_bypass: bool = True
 
     model_type: ModelType = ModelType.BASE_MAPPER
-    placeholder_token: str = "placeholder"
+    placeholder_token: str = "place"
     placeholder_token_id: Optional[int] = None
     super_category_token: str = "object"
     mask_cross_attn: bool = True
@@ -52,6 +52,7 @@ class ModelConfig:
     controlnet: bool = False
     use_fixed_position_encoding: bool = False
     enable_norm_scale: bool = True
+    enable_neti: bool = False
 
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
 

@@ -2,24 +2,22 @@ from typing import List, Optional
 
 import numpy as np
 import torch
-from PIL import Image
+import torch.distributed as dist
 from accelerate import Accelerator
 from accelerate.utils import set_seed
-from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler, UNet2DConditionModel, AutoencoderKL
+from diffusers import (AutoencoderKL, DPMSolverMultistepScheduler,
+                       StableDiffusionPipeline, UNet2DConditionModel)
 from diffusers.utils import is_wandb_available
+from image_utils import Im
+from PIL import Image
 from tqdm import tqdm
 from transformers import CLIPTokenizer
+
 from gen.configs.base import BaseConfig
 from gen.models.base_mapper_model import BaseMapper
-import torch.distributed as dist
-
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.prompt_manager import PromptManager
 from gen.models.neti.xti_attention_processor import XTIAttenProc
-from gen.models.neti.sd_pipeline import sd_pipeline_call
-from image_utils import Im
-from torch.nn.parallel import DistributedDataParallel
-
 from gen.utils.trainer_utils import every_n_steps
 from inference import run_inference_batch, run_inference_dataloader
 
@@ -45,7 +43,7 @@ class ValidationHandler:
         num_images_per_prompt: int,
         global_step: int,
     ):
-        """ Runs inference during our training scheme. """
+        """Runs inference during our training scheme."""
         pipeline = self.load_stable_diffusion_model(accelerator, tokenizer, text_encoder, unet, vae)
         prompt_manager = PromptManager(
             tokenizer=pipeline.tokenizer,
@@ -62,7 +60,7 @@ class ValidationHandler:
             pipeline=pipeline,
             prompt_manager=prompt_manager,
             dataloader=validation_dataloader,
-            output_path=self.cfg.output_dir / 'images',
+            output_path=self.cfg.output_dir / "images",
             global_step=global_step,
             inference_cfg=self.cfg.inference,
         )

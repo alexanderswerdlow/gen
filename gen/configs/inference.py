@@ -32,6 +32,8 @@ class InferenceConfig:
     num_masks_to_remove: Optional[int] = 4
     visualize_attention_map: bool = False
     num_denoising_steps: int = 50
+    
+    guidance_scale: float = 2.0
 
 
 auto_store(InferenceConfig, name="basemapper")

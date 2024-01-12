@@ -1,5 +1,6 @@
-load_time = __import__('time').time()
+load_time = __import__("time").time()
 
+import itertools
 import math
 import os
 
@@ -21,15 +22,26 @@ from torch.utils.data import DataLoader, Dataset
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
-from gen.models.controlnet_model import (controlnet_forward,
-                                         get_controlnet_model, log_validation,
-                                         pre_train_setup_controlnet)
+from gen.models.controlnet_model import controlnet_forward, get_controlnet_model, log_validation, pre_train_setup_controlnet
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
 from gen.utils.decoupled_utils import Profiler
 from gen.utils.trainer_utils import TrainingState, handle_checkpointing
 
 logger = get_logger(__name__)
+
+
+def get_params_to_optimize(accelerator: Accelerator, cfg: BaseConfig, model: BaseMapper):
+    match cfg.model.model_type:
+        case ModelType.CONTROLNET:
+            params_to_optimize = model.parameters()
+        case ModelType.BASE_MAPPER:
+            assert cfg.model.model_type == ModelType.BASE_MAPPER
+            params_to_optimize = [accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.parameters()]
+            params_to_optimize = itertools.chain.from_iterable(params_to_optimize)
+
+    return params_to_optimize
+
 
 def train(cfg: BaseConfig, accelerator: Accelerator):
     # TODO: Define a better interface for different models once we get a better idea of the requires inputs/outputs
@@ -47,36 +59,44 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     match cfg.model.model_type:
         case ModelType.CONTROLNET:
             tokenizer, noise_scheduler, text_encoder, vae, unet, controlnet = get_controlnet_model(cfg, accelerator)
-            params_to_optimize = controlnet.parameters
         case ModelType.BASE_MAPPER:
             assert cfg.model.model_type == ModelType.BASE_MAPPER
             model = BaseMapper(cfg)
-            params_to_optimize = model.text_encoder.text_model.embeddings.mapper.parameters
             tokenizer = model.tokenizer
-            if accelerator.is_local_main_process:
-                summary(model, col_names=("trainable",  "num_params"))
-            checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.output_dir / 'checkpoints')
+            checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.output_dir / "checkpoints")
             validator: ValidationHandler = ValidationHandler(cfg=cfg, weights_dtype=weight_dtype)
 
-    if accelerator.is_local_main_process:
-        if cfg.model.model_type == ModelType.CONTROLNET: summary(controlnet)
+    match cfg.model.model_type:
+        case ModelType.CONTROLNET:
+            vae, unet, text_encoder, controlnet = pre_train_setup_controlnet(weight_dtype, cfg, accelerator, vae, unet, text_encoder, controlnet)
+            summary(controlnet)
+        case ModelType.BASE_MAPPER:
+            model.prepare_for_training(weight_dtype, accelerator)
+            noise_scheduler, vae, unet, text_encoder = model.noise_scheduler, model.vae, model.unet, model.text_encoder
+            if accelerator.is_local_main_process:
+                summary(accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper, col_names=("trainable", "num_params"), verbose=2)
+                summary(model, col_names=("trainable", "num_params"), depth=3)
 
     optimizer_class = torch.optim.AdamW
     optimizer = optimizer_class(
-        params_to_optimize(),
+        get_params_to_optimize(accelerator, cfg, model),
         lr=cfg.trainer.learning_rate,
         betas=(cfg.trainer.adam_beta1, cfg.trainer.adam_beta2),
         weight_decay=cfg.trainer.adam_weight_decay,
         eps=cfg.trainer.adam_epsilon,
     )
 
-    train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=True)(cfg=cfg, split=Split.TRAIN, tokenizer=tokenizer, accelerator=accelerator).get_dataloader()
+    train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=True)(
+        cfg=cfg, split=Split.TRAIN, tokenizer=tokenizer, accelerator=accelerator
+    ).get_dataloader()
 
-    validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=True)(cfg=cfg ,split=Split.VALIDATION, tokenizer=tokenizer, accelerator=accelerator)
+    validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=True)(
+        cfg=cfg, split=Split.VALIDATION, tokenizer=tokenizer, accelerator=accelerator
+    )
 
     if cfg.dataset.overfit:
         validation_dataset_holder.get_dataset = lambda: train_dataloader.dataset
-    
+
     validation_dataloader = validation_dataset_holder.get_dataloader()
 
     # Scheduler and math around the number of training steps.
@@ -99,13 +119,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     optimizer, train_dataloader, validation_dataloader, lr_scheduler = accelerator.prepare(
         optimizer, train_dataloader, validation_dataloader, lr_scheduler
     )
-
-    match cfg.model.model_type:
-        case ModelType.CONTROLNET:
-            vae, unet, text_encoder, controlnet = pre_train_setup_controlnet(weight_dtype, cfg, accelerator, vae, unet, text_encoder, controlnet)
-        case ModelType.BASE_MAPPER:
-            model.prepare_for_training(weight_dtype, accelerator)
-            noise_scheduler, vae, unet, text_encoder = model.noise_scheduler, model.vae, model.unet, model.text_encoder
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / cfg.trainer.gradient_accumulation_steps)
@@ -141,9 +154,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             path = dirs[-1] if len(dirs) > 0 else None
 
         if path is None:
-            accelerator.print(
-                f"Checkpoint '{cfg.trainer.resume_from_checkpoint}' does not exist. Starting a new training run."
-            )
+            accelerator.print(f"Checkpoint '{cfg.trainer.resume_from_checkpoint}' does not exist. Starting a new training run.")
             cfg.trainer.resume_from_checkpoint = None
             initial_global_step = 0
         else:
@@ -159,9 +170,11 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     if cfg.profile:
         profiler = Profiler(output_dir=cfg.output_dir, active_steps=cfg.trainer.profiler_active_steps)
 
-    progress_bar = tqdm(range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not accelerator.is_local_main_process)
+    progress_bar = tqdm(
+        range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not accelerator.is_local_main_process
+    )
     if cfg.trainer.log_gradients is not None:
-        wandb.watch(model, log_freq=cfg.trainer.log_gradients)
+        wandb.watch(model, log="all", log_freq=cfg.trainer.log_gradients)
     print(f'load_time: {__import__("time").time() - load_time} seconds')
 
     image_logs = None
@@ -204,14 +217,12 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                     target = noise_scheduler.get_velocity(latents, noise, timesteps)
                 else:
                     raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    # TODO: WARNING: THIS MAY NOT WORK! IF THERE ARE ISSUES WITH OPTIMIZATION, THIS MAY BE THE CAUSE
-                    # params_to_optimize should be a function pointer
-                    params_to_clip = params_to_optimize()
-                    accelerator.clip_grad_norm_(params_to_clip, cfg.trainer.max_grad_norm)
+                    accelerator.clip_grad_norm_(get_params_to_optimize(accelerator, cfg, model), cfg.trainer.max_grad_norm)
 
                 optimizer.step()
                 lr_scheduler.step()
@@ -224,23 +235,33 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 if accelerator.is_main_process:
                     if global_step % cfg.trainer.checkpointing_steps == 0:
                         if cfg.model.model_type == ModelType.BASE_MAPPER:
-                            checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f'{global_step}')
+                            checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f"{global_step}")
                         else:
                             handle_checkpointing(cfg, accelerator, global_step)
-                    
-                if (cfg.trainer.eval_every_n_steps and global_step % cfg.trainer.eval_every_n_steps == 0) or (step == len(train_dataloader) - 1 and cfg.trainer.eval_every_n_epochs and (epoch + 1) % cfg.trainer.eval_every_n_epochs == 0):
-                    logger.info(f'Starting validation at step {global_step}, epoch {epoch}')
+
+                if (
+                    cfg.trainer.eval_every_n_steps
+                    and global_step % cfg.trainer.eval_every_n_steps == 0
+                    and (cfg.trainer.eval_at_start or global_step != 0)
+                ) or (step == len(train_dataloader) - 1 and cfg.trainer.eval_every_n_epochs and (epoch + 1) % cfg.trainer.eval_every_n_epochs == 0):
+                    logger.info(f"Starting validation at step {global_step}, epoch {epoch}")
                     match cfg.model.model_type:
                         case ModelType.CONTROLNET:
                             if cfg.dataset.validation_prompt:
-                                image_logs = log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
+                                image_logs = log_validation(
+                                    vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step
+                                )
                         case ModelType.BASE_MAPPER:
                             validator.infer(accelerator, validation_dataloader, model, tokenizer, text_encoder, unet, vae, cfg.dataset, global_step)
-                    logger.info(f'Finished validation at step {global_step}, epoch {epoch}')
+                    logger.info(f"Finished validation at step {global_step}, epoch {epoch}")
 
                 progress_bar.update(1)
                 global_step += 1
-                logs = {"loss": loss.detach().item() / cfg.trainer.gradient_accumulation_steps, "lr": lr_scheduler.get_last_lr()[0], f'gpu_memory_usage_gb': max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024 ** 3)}
+                logs = {
+                    "loss": loss.detach().item() / cfg.trainer.gradient_accumulation_steps,
+                    "lr": lr_scheduler.get_last_lr()[0],
+                    f"gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
+                }
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
 
@@ -253,20 +274,20 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             # TODO: Something weird happens with webdataset:
             # UserWarning: Length of IterableDataset <abc.WebDataset_Length object at 0x7f0748da4640> was reported to be 2 (when accessing len(dataloader)), but 3 samples have been fetched.
             if step >= len(train_dataloader) - 1:
-                break   
+                break
 
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         if cfg.profile:
-                profiler.finish()
-                exit()
+            profiler.finish()
+            exit()
 
         match cfg.model.model_type:
             case ModelType.CONTROLNET:
                 controlnet = accelerator.unwrap_model(controlnet)
                 controlnet.save_pretrained(cfg.output_dir)
             case ModelType.BASE_MAPPER:
-                checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name='last')
+                checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name="last")
 
     accelerator.end_training()

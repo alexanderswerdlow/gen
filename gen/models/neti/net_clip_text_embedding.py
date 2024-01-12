@@ -25,7 +25,7 @@ class PESigmas:
 
 
 class NeTICLIPTextEmbeddings(nn.Module):
-    """ Modification of CLIPTextEmbedding to allow for the use of a NeTIMapper to overwrite the concept token. """
+    """Modification of CLIPTextEmbedding to allow for the use of a NeTIMapper to overwrite the concept token."""
 
     def __init__(self, config: CLIPTextConfig):
         super().__init__()
@@ -37,11 +37,13 @@ class NeTICLIPTextEmbeddings(nn.Module):
     def set_mapper(self, mapper: NeTIMapper):
         self.mapper = mapper
 
-    def forward(self, input_ids: Optional[torch.LongTensor] = None,
-                position_ids: Optional[torch.LongTensor] = None,
-                inputs_embeds: Optional[torch.FloatTensor] = None,
-                batch: Optional[NeTIBatch] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        batch: Optional[NeTIBatch] = None,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         if batch is not None:
             input_ids = batch.input_ids
 
@@ -58,13 +60,11 @@ class NeTICLIPTextEmbeddings(nn.Module):
         ####################################################################
         bypass_outputs = None
         if batch is not None:
-            mapper_outputs = self.mapper(timestep=batch.timesteps.float(),
-                                         unet_layer=batch.unet_layers.float(),
-                                         truncation_idx=batch.truncation_idx)
+            mapper_outputs = self.mapper(timestep=batch.timesteps.float(), unet_layer=batch.unet_layers.float(), truncation_idx=batch.truncation_idx)
             mapper_outputs = mapper_outputs.to(dtype=inputs_embeds.dtype, device=inputs_embeds.device)
             if self.mapper.output_bypass:
-                bypass_outputs = mapper_outputs[:, mapper_outputs.shape[1] // 2:]
-                mapper_outputs = mapper_outputs[:, :mapper_outputs.shape[1] // 2]
+                bypass_outputs = mapper_outputs[:, mapper_outputs.shape[1] // 2 :]
+                mapper_outputs = mapper_outputs[:, : mapper_outputs.shape[1] // 2]
 
             # Overwrite the index of the placeholder token with the mapper output for each entry in the batch
             # We had to modify this since we now have multiple placeholders per prompt

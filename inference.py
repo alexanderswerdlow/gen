@@ -164,6 +164,7 @@ def run_inference_dataloader(
             pipeline=pipeline,
             prompt_manager=prompt_manager,
             visualize_attention_map=inference_cfg.visualize_attention_map,
+            inference_cfg=inference_cfg,
         )
         images.append(Im(prompt_image))
         if inference_cfg.visualize_attention_map:
@@ -202,6 +203,7 @@ def run_inference_dataloader(
                     batch=batch,
                     pipeline=pipeline,
                     prompt_manager=prompt_manager,
+                    inference_cfg=inference_cfg,
                 )
                 mask_image = Im(get_layered_image_from_binary_mask(gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
                 mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
@@ -242,6 +244,7 @@ def run_inference_batch(
     pipeline: StableDiffusionPipeline,
     prompt_manager: PromptManager,
     batch: dict,
+    inference_cfg: InferenceConfig,
     seed: int = 42,
     num_images_per_prompt: int = 1,
     truncation_idx: Optional[int] = None,
@@ -253,11 +256,14 @@ def run_inference_batch(
         pipeline.unet = register_cross_attention_hook(pipeline.unet)
     with torch.autocast("cuda"):
         with torch.no_grad():
+            negative_prompt_embeds, _ = prompt_manager.embed_prompt(
+                batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx, disable_conditioning=True 
+            )
             prompt_embeds, input_prompt = prompt_manager.embed_prompt(
                 batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx
             )
     generator = torch.Generator(device="cuda").manual_seed(seed)
-    images = sd_pipeline_call(pipeline, prompt_embeds=prompt_embeds, generator=generator, num_images_per_prompt=num_images_per_prompt).images[0]
+    images = sd_pipeline_call(pipeline, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_prompt_embeds, generator=generator, num_images_per_prompt=num_images_per_prompt, guidance_scale=inference_cfg.guidance_scale).images[0]
     return images, input_prompt
 
 

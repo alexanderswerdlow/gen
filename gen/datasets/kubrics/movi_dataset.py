@@ -43,6 +43,7 @@ class MoviDataset(AbstractDataset, Dataset):
         augmentation: Optional[Augmentation] = Augmentation(),
         custom_split: Optional[str] = None,
         subset: Optional[tuple[str]] = None,
+        return_video: bool = False,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -51,6 +52,7 @@ class MoviDataset(AbstractDataset, Dataset):
         self.dataset = dataset  # str of dataset name (e.g. "movi_a")
         self.resolution = resolution
         self.legacy_transforms = legacy_transforms
+        self.return_video = return_video
         local_split = ("train" if self.split == Split.TRAIN else "validation")
         local_split = local_split if custom_split is None else custom_split
         self.root_dir = self.root / self.dataset / local_split
@@ -175,6 +177,9 @@ class MoviDataset(AbstractDataset, Dataset):
                 ).input_ids.squeeze(0),
             }
 
+        if self.return_video:
+            ret["video"] = path
+
         return ret
 
     def __len__(self):
@@ -189,7 +194,7 @@ if __name__ == "__main__":
         cfg=None,
         split=Split.TRAIN,
         num_workers=0,
-        batch_size=2,
+        batch_size=1,
         shuffle=True,
         random_subset=None,
         dataset="movi_e",
@@ -198,10 +203,10 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         path=MOVI_OVERFIT_DATASET_PATH,
         num_objects=1,
-        augmentation=Augmentation(minimal_source_augmentation=True)
+        augmentation=Augmentation(minimal_source_augmentation=True, enable_crop=False),
+        return_video=True
     )
     dataloader = dataset.get_dataloader()
     for batch in dataloader:
-        print(batch)
-        from image_utils import library_ops, Im, get_layered_image_from_binary_mask, ChannelRange
-        Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][0]), channel_range=ChannelRange.UINT8).save()
+        from image_utils import Im
+        Im((batch['gen_pixel_values'][0] + 1) / 2).save(batch['video'][0])

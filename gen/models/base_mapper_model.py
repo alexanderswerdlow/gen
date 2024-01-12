@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 import open_clip
+from regex import R
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -85,7 +86,7 @@ class BaseMapper(nn.Module):
         if self.cfg.model.controlnet:
             self.controlnet: ControlNetModel = ControlNetModel.from_unet(self.unet)
 
-        self.token_embeds, self.placeholder_token_id = self._add_concept_token_to_tokenizer()
+        self.placeholder_token_id = self._add_concept_token_to_tokenizer()
         neti_mapper, self.loaded_iteration = self._init_neti_mapper()
         self.text_encoder.text_model.embeddings.set_mapper(neti_mapper)
 
@@ -93,7 +94,6 @@ class BaseMapper(nn.Module):
         self.weight_dtype = weight_dtype
 
         # Set train/eval and freeze/unfreeze
-
         self.vae.requires_grad_(False)
         self.unet.requires_grad_(False)
 
@@ -110,6 +110,7 @@ class BaseMapper(nn.Module):
 
         if self.cfg.trainer.enable_xformers_memory_efficient_attention:
             import xformers
+
             self.unet.enable_xformers_memory_efficient_attention()
             if self.cfg.model.controlnet:
                 self.controlnet.enable_xformers_memory_efficient_attention()
@@ -199,11 +200,11 @@ class BaseMapper(nn.Module):
         The super category token will also be used for computing the norm for rescaling the mapper output.
         """
         num_added_tokens = self.tokenizer.add_tokens(self.cfg.model.placeholder_token)
-        if num_added_tokens == 0:
-            raise ValueError(
-                f"The tokenizer already contains the token {self.cfg.model.placeholder_token}. "
-                f"Please pass a different `placeholder_token` that is not already in the tokenizer."
-            )
+        # if num_added_tokens == 0:
+        #     raise ValueError(
+        #         f"The tokenizer already contains the token {self.cfg.model.placeholder_token}. "
+        #         f"Please pass a different `placeholder_token` that is not already in the tokenizer."
+        #     )
 
         # Convert the super_category_token, placeholder_token to ids
         token_ids = self.tokenizer.encode(self.cfg.model.super_category_token, add_special_tokens=False)
@@ -215,6 +216,8 @@ class BaseMapper(nn.Module):
         super_category_token_id = token_ids[0]
         placeholder_token_id = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
         self.cfg.model.placeholder_token_id = placeholder_token_id
+        if not self.cfg.model.enable_neti:
+            return placeholder_token_id
 
         # Resize the token embeddings as we are adding new special tokens to the tokenizer
         self.text_encoder.resize_token_embeddings(len(self.tokenizer))
@@ -236,7 +239,7 @@ class BaseMapper(nn.Module):
             output_dim=768,
             use_nested_dropout=self.cfg.model.use_nested_dropout,
             nested_dropout_prob=self.cfg.model.nested_dropout_prob,
-            norm_scale=self.cfg.model.target_norm and self.cfg.model.enable_norm_scale,
+            norm_scale=self.cfg.model.target_norm if self.cfg.model.enable_norm_scale else None,
             use_positional_encoding=self.cfg.model.use_positional_encoding,
             num_pe_time_anchors=self.cfg.model.num_pe_time_anchors,
             pe_sigmas=self.cfg.model.pe_sigmas,
@@ -245,7 +248,7 @@ class BaseMapper(nn.Module):
         )
         return neti_mapper, loaded_iteration
 
-    def get_hidden_state(self, batch, timesteps, dtype, device, per_timestep: bool = False):
+    def get_hidden_state(self, batch, timesteps, dtype, device, per_timestep: bool = False, disable_conditioning: bool = False):
         bs: int = batch["disc_pixel_values"].shape[0]
 
         clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))["stage23"]
@@ -271,84 +274,83 @@ class BaseMapper(nn.Module):
             Im(get_layered_image_from_binary_mask(original.permute(1, 2, 0))).save("masks")
 
         # viz()
+        text_encoder_dict = dict()
+        if not disable_conditioning:
+            clip_feature_map = rearrange(clip_feature_map, "l b d -> b l d")
+            clip_feature_cls_token = clip_feature_map[:, 0, :]  # We take the cls token
+            clip_feature_map = clip_feature_map[:, 1:, :]
 
-        clip_feature_map = rearrange(clip_feature_map, "l b d -> b l d")
-        clip_feature_cls_token = clip_feature_map[:, 0, :]  # We take the cls token
-        clip_feature_map = clip_feature_map[:, 1:, :]
+            sam_input = rearrange(
+                (((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c"
+            )  # SAM requires NumPy [0, 255]
 
-        sam_input = rearrange(
-            (((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c"
-        )  # SAM requires NumPy [0, 255]
+            latent_dim = int(math.sqrt(clip_feature_map.shape[1]))
+            feature_map_masks = []
+            feature_map_batch_idxs = []
+            for i in range(bs):
+                if "gen_segmentation" in batch:  # We have gt masks
+                    original = batch["gen_segmentation"][i].permute(2, 0, 1).bool()
+                else:
+                    masks = self.hqsam.forward(sam_input[i])
+                    masks = masks[:24]  # We only have 77 tokens
+                    original = torch.from_numpy(np.array([masks[i]["segmentation"] for i in range(len(masks))]))
 
-        latent_dim = int(math.sqrt(clip_feature_map.shape[1]))
-        feature_map_masks = []
-        feature_map_batch_idxs = []
-        for i in range(bs):
-            if "gen_segmentation" in batch:  # We have gt masks
-                original = batch["gen_segmentation"][i].permute(2, 0, 1).bool()
-            else:
-                masks = self.hqsam.forward(sam_input[i])
-                masks = masks[:24]  # We only have 77 tokens
-                num_masks = len(masks)
-                if num_masks == 0:  # Hack to deal with images with no masks. We attend to a single token only
-                    tmp_ = torch.zeros((1, latent_dim, latent_dim), dtype=torch.bool)
-                    tmp_[:, 0, 0] = True
-                    feature_map_masks.append(tmp_)
-                    feature_map_batch_idxs.append(i * torch.ones((1), dtype=torch.long))
+                if self.cfg.model.dropout_masks is not None and self.text_encoder.text_model.embeddings.mapper.training:
+                    mask = torch.rand(original.size(0)) > self.cfg.model.dropout_masks
+                    original = original[mask]
+
+                if original.shape[0] == 0:
+                    print("Warning, no masks found for this image")
                     continue
 
-                original = torch.from_numpy(np.array([masks[i]["segmentation"] for i in range(num_masks)]))
+                assert batch["disc_pixel_values"].shape[-1] == batch["disc_pixel_values"].shape[-2]
+                feature_map_mask_ = find_true_indices_batched(original=original, dh=latent_dim, dw=latent_dim)
+                feature_map_masks.append(feature_map_mask_)
+                feature_map_batch_idxs.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
+                # batch_idx += 1
 
-            if self.cfg.model.dropout_masks is not None:
-                mask = torch.rand(original.size(0)) > self.cfg.model.dropout_masks
-                original = original[mask]
+            # If the 1st image has 5 masks and the 2nd has 3 masks, we will have an integer tensor of shape (total == 8,) for 8 different cross-attns. The sequence length for each is thus the number of valid "pixels" (KVs)
+            feature_map_masks = torch.cat(feature_map_masks, dim=0)  # feature_map_mask is a boolean mask of (total, h, w)
+            feature_map_masks = rearrange(feature_map_masks, "total h w -> total (h w)").to(device)
+            feature_map_batch_idxs = torch.cat(feature_map_batch_idxs, dim=0).to(device)
 
-            assert batch["disc_pixel_values"].shape[-1] == batch["disc_pixel_values"].shape[-2]
-            feature_map_mask_ = find_true_indices_batched(original=original, dh=latent_dim, dw=latent_dim)
-            feature_map_masks.append(feature_map_mask_)
-            feature_map_batch_idxs.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
+            # We sum the number of valid "pixels" in each mask
+            seqlens_k = feature_map_masks.sum(dim=-1)  # (total,)
+            max_seqlen_k = seqlens_k.max().item()
+            cu_seqlens_k = F.pad(torch.cumsum(seqlens_k, dim=0, dtype=torch.torch.int32), (1, 0))
 
-        # If the 1st image has 5 masks and the 2nd has 3 masks, we will have an integer tensor of shape (total == 8,) for 8 different cross-attns. The sequence length for each is thus the number of valid "pixels" (KVs)
-        feature_map_masks = torch.cat(feature_map_masks, dim=0)  # feature_map_mask is a boolean mask of (total, h, w)
-        feature_map_masks = rearrange(feature_map_masks, "total h w -> total (h w)").to(device)
-        feature_map_batch_idxs = torch.cat(feature_map_batch_idxs, dim=0).to(device)
+            flat_features = rearrange(clip_feature_map[feature_map_batch_idxs], "total (h w) d -> (total h w) d", h=latent_dim, w=latent_dim)
+            flat_mask = rearrange(feature_map_masks, "total (h w) -> (total h w)", h=latent_dim, w=latent_dim)
+            k_features = flat_features[flat_mask]
 
-        # We sum the number of valid "pixels" in each mask
-        seqlens_k = feature_map_masks.sum(dim=-1)  # (total,)
-        max_seqlen_k = seqlens_k.max().item()
-        cu_seqlens_k = F.pad(torch.cumsum(seqlens_k, dim=0, dtype=torch.torch.int32), (1, 0))
+            # The actual query is obtained from the timestep + layer encoding later
+            cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(device)
+            max_seqlen_q = 1  # We are doing attention pooling so we have one query per mask
 
-        flat_features = rearrange(clip_feature_map[feature_map_batch_idxs], "total (h w) d -> (total h w) d", h=latent_dim, w=latent_dim)
-        flat_mask = rearrange(feature_map_masks, "total (h w) -> (total h w)", h=latent_dim, w=latent_dim)
-        k_features = flat_features[flat_mask]
+            attn_dict = dict(x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
 
-        # The actual query is obtained from the timestep + layer encoding later
-        cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(device)
-        max_seqlen_q = 1  # We are doing attention pooling so we have one query per mask
+            placeholder_token_id = self.tokenizer(self.cfg.model.placeholder_token, add_special_tokens=False).input_ids[0]
+            mask_tokens_ids = self.tokenizer(f"{self.cfg.model.placeholder_token} and", add_special_tokens=False).input_ids
+            pad_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer._pad_token)
 
-        attn_dict = dict(x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
+            bs = batch["input_ids"].shape[0]
+            for b in range(bs):
+                # Everything after 1st pad token should also be a pad token
+                token_is_padding = (batch["input_ids"][b] == pad_token_id).nonzero()
+                assert (token_is_padding.shape[0] == (batch["input_ids"].shape[1] - token_is_padding[0])).item()
+                mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
+                assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0]  # We need at least as many pad tokens as we have masks
+                extent = len(batch["input_ids"][b, token_is_padding[0] : token_is_padding[0] + (mask_part_of_batch.shape[0] * len(mask_tokens_ids))])
+                repeated_tensor = torch.tensor(mask_tokens_ids * mask_part_of_batch.shape[0])[:extent]
+                batch["input_ids"][
+                    b, token_is_padding[0] : token_is_padding[0] + (mask_part_of_batch.shape[0] * len(mask_tokens_ids))
+                ] = repeated_tensor
 
-        placeholder_token_id = self.tokenizer(self.cfg.model.placeholder_token, add_special_tokens=False).input_ids[0]
-        mask_tokens_ids = self.tokenizer(f"{self.cfg.model.placeholder_token} and", add_special_tokens=False).input_ids
-        pad_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer._pad_token)
+            text_encoder_dict = dict(
+                attn_dict=attn_dict, placeholder_token=placeholder_token_id, pad_token=pad_token_id, feature_map_batch_idxs=feature_map_batch_idxs
+            )
 
-        bs = batch["input_ids"].shape[0]
-        for b in range(bs):
-            # Everything after 1st pad token should also be a pad token
-            token_is_padding = (batch["input_ids"][b] == pad_token_id).nonzero()
-            assert (token_is_padding.shape[0] == (batch["input_ids"].shape[1] - token_is_padding[0])).item()
-            mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
-            assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0]  # We need at least as many pad tokens as we have masks
-            extent = len(batch["input_ids"][b, token_is_padding[0] : token_is_padding[0] + (mask_part_of_batch.shape[0] * len(mask_tokens_ids))])
-            batch["input_ids"][b, token_is_padding[0] : token_is_padding[0] + (mask_part_of_batch.shape[0] * len(mask_tokens_ids))] = torch.tensor(
-                mask_tokens_ids * mask_part_of_batch.shape[0] # repeat
-            )[:extent]
-
-        input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if '<|' not in x] for y in range(bs)]
-
-        text_encoder_dict = dict(
-            attn_dict=attn_dict, placeholder_token=placeholder_token_id, pad_token=pad_token_id, feature_map_batch_idxs=feature_map_batch_idxs
-        )
+        input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
 
         if per_timestep:
             return batch["input_ids"], text_encoder_dict, input_prompt
@@ -375,9 +377,7 @@ class BaseMapper(nn.Module):
                 noisy_latents,
                 timesteps,
                 encoder_hidden_states=encoder_hidden_states,
-                down_block_additional_residuals=[
-                    sample.to(dtype=weight_dtype) for sample in down_block_res_samples
-                ],
+                down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
                 mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
             )
 

@@ -60,7 +60,7 @@ exp_store(
         tracker_project_name="gen",
     ),
     dataset=dict(num_validation_images=1, train_dataset=dict(batch_size=8), validation_dataset=dict(batch_size=1, random_subset=4)),
-    model=dict(unfreeze_last_n_clip_layers=None, dropout_masks=None, enable_norm_scale=False, use_fixed_position_encoding=True),
+    model=dict(unfreeze_last_n_clip_layers=None, dropout_masks=0.2, enable_norm_scale=False, use_fixed_position_encoding=True, nested_dropout_prob=0),
     hydra_defaults=[
         "_self_",
         {"override /dataset": "movi_e"},
@@ -110,10 +110,10 @@ shared_overfit_movi_args = dict(
 mode_store(
     name="overfit_movi",
     debug=True,
-    trainer=dict(gradient_accumulation_steps=1, num_train_epochs=10000),
+    trainer=dict(gradient_accumulation_steps=1, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-4, eval_at_start=False),
     dataset=dict(
         train_dataset=dict(batch_size=8, random_subset=None, **shared_overfit_movi_args),
-        validation_dataset=dict(random_subset=8, **shared_overfit_movi_args),
+        validation_dataset=dict(random_subset=4, evenly_spaced_subset=True, **shared_overfit_movi_args),
         overfit=False,
     ),
 )

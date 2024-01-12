@@ -117,12 +117,12 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         else:
             raise ValueError("You have to specify either batch or input_ids!")
         
-        if batch is not None:
-            feature_map_batch_idxs = kwargs.get('feature_map_batch_idxs')
+        enable_conditioning = batch is not None and len(feature_map_batch_idxs := kwargs.get('feature_map_batch_idxs', [])) > 0
+        if enable_conditioning:
             kwargs['attn_dict']['x'] = mapper_outputs[feature_map_batch_idxs] # Copy the NeTI output to the right masks based on batch idx
 
             # TODO: We should find a better place to put the cross-attn but this is the most convinient for now
-            output = self.embeddings.mapper.forward_cross_attn(**kwargs)
+            output = self.embeddings.mapper.cross_attn(**kwargs)
 
             learnable_idxs = (batch.input_ids == batch.placeholder_token_id).nonzero(as_tuple=True)
             # TODO: Is this residual for T/L what we want?
@@ -147,7 +147,7 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         last_hidden_state = encoder_outputs[0]
         last_hidden_state_with_bypass = last_hidden_state.clone()
 
-        if batch is not None:
+        if enable_conditioning:
             # TODO: Is this residual for T/L what we want?
             bypass_output = bypass_output[feature_map_batch_idxs] + output[:, 768:].to(encoder_outputs.last_hidden_state.dtype)
 
