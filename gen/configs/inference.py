@@ -30,6 +30,9 @@ class InferenceConfig:
     truncation_idxs: Optional[Union[int, List[int]]] = field(default_factory=lambda: [None])
     # Whether to run with torch.float16 or torch.float32
     torch_dtype: str = "fp16"
+    num_masks_to_remove: Optional[int] = 4
+    visualize_attention_map: bool = False
+    num_denoising_steps: int = 50
 
 
 auto_store(InferenceConfig, name="basemapper")

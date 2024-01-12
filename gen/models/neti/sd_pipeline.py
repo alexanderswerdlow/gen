@@ -1,30 +1,30 @@
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
-from diffusers.pipelines.stable_diffusion import (
-    StableDiffusionPipeline, StableDiffusionPipelineOutput)
+from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline, StableDiffusionPipelineOutput
 
 
 @torch.no_grad()
 def sd_pipeline_call(
-        pipeline: StableDiffusionPipeline,
-        prompt_embeds: torch.FloatTensor,
-        height: Optional[int] = None,
-        width: Optional[int] = None,
-        num_inference_steps: int = 50,
-        guidance_scale: float = 7.5,
-        negative_prompt: Optional[Union[str, List[str]]] = None,
-        num_images_per_prompt: Optional[int] = 1,
-        eta: float = 0.0,
-        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-        latents: Optional[torch.FloatTensor] = None,
-        output_type: Optional[str] = "pil",
-        return_dict: bool = True,
-        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
-        callback_steps: int = 1,
-        cross_attention_kwargs: Optional[Dict[str, Any]] = None):
-    """ Modification of the standard SD pipeline call to support NeTI embeddings passed with prompt_embeds argument."""
-
+    pipeline: StableDiffusionPipeline,
+    prompt_embeds: torch.FloatTensor,
+    height: Optional[int] = None,
+    width: Optional[int] = None,
+    guidance_scale: float = 7.5,
+    negative_prompt: Optional[Union[str, List[str]]] = None,
+    num_images_per_prompt: Optional[int] = 1,
+    eta: float = 0.0,
+    generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+    latents: Optional[torch.FloatTensor] = None,
+    output_type: Optional[str] = "pil",
+    return_dict: bool = True,
+    callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+    callback_steps: int = 1,
+    cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+    num_inference_steps: int = 50,
+):
+    """Modification of the standard SD pipeline call to support NeTI embeddings passed with prompt_embeds argument."""
+    print(f"Running SD pipeline with {num_inference_steps} inference steps.")
     # 0. Default height and width to unet
     height = height or pipeline.unet.config.sample_size * pipeline.vae_scale_factor
     width = width or pipeline.unet.config.sample_size * pipeline.vae_scale_factor
@@ -69,13 +69,14 @@ def sd_pipeline_call(
     num_warmup_steps = len(timesteps) - num_inference_steps * pipeline.scheduler.order
     with pipeline.progress_bar(total=num_inference_steps) as progress_bar:
         for i, t in enumerate(timesteps):
-
             if do_classifier_free_guidance:
                 latent_model_input = latents
                 latent_model_input = pipeline.scheduler.scale_model_input(latent_model_input, t)
 
                 # predict the noise residual
-                noise_pred_uncond = pipeline.unet(latent_model_input, t,
+                noise_pred_uncond = pipeline.unet(
+                    latent_model_input,
+                    t,
                     encoder_hidden_states=negative_prompt_embeds.repeat(num_images_per_prompt, 1, 1),
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
@@ -84,7 +85,9 @@ def sd_pipeline_call(
                 # NeTI logic: use the prompt embedding for the current timestep
                 ###############################################################
                 embed = prompt_embeds[i] if type(prompt_embeds) == list else prompt_embeds
-                noise_pred_text = pipeline.unet(latent_model_input, t,
+                noise_pred_text = pipeline.unet(
+                    latent_model_input,
+                    t,
                     encoder_hidden_states=embed,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
@@ -125,8 +128,7 @@ def sd_pipeline_call(
     return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=None)
 
 
-def get_neg_prompt_input_ids(pipeline: StableDiffusionPipeline,
-                             negative_prompt: Optional[Union[str, List[str]]] = None):
+def get_neg_prompt_input_ids(pipeline: StableDiffusionPipeline, negative_prompt: Optional[Union[str, List[str]]] = None):
     if negative_prompt is None:
         negative_prompt = ""
     uncond_tokens = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt

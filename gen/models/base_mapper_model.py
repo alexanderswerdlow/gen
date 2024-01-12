@@ -341,22 +341,24 @@ class BaseMapper(nn.Module):
             assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0]  # We need at least as many pad tokens as we have masks
             extent = len(batch["input_ids"][b, token_is_padding[0] : token_is_padding[0] + (mask_part_of_batch.shape[0] * len(mask_tokens_ids))])
             batch["input_ids"][b, token_is_padding[0] : token_is_padding[0] + (mask_part_of_batch.shape[0] * len(mask_tokens_ids))] = torch.tensor(
-                mask_tokens_ids * mask_part_of_batch.shape[0]
+                mask_tokens_ids * mask_part_of_batch.shape[0] # repeat
             )[:extent]
+
+        input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if '<|' not in x] for y in range(bs)]
 
         text_encoder_dict = dict(
             attn_dict=attn_dict, placeholder_token=placeholder_token_id, pad_token=pad_token_id, feature_map_batch_idxs=feature_map_batch_idxs
         )
 
         if per_timestep:
-            return batch["input_ids"], text_encoder_dict
+            return batch["input_ids"], text_encoder_dict, input_prompt
 
         _hs = self.get_text_conditioning(input_ids=batch["input_ids"], timesteps=timesteps, device=device, **text_encoder_dict)
 
-        return _hs
+        return _hs, input_prompt
 
     def forward(self, batch, noisy_latents, timesteps, weight_dtype):
-        encoder_hidden_states = self.get_hidden_state(batch, timesteps, device=noisy_latents.device, dtype=weight_dtype)
+        encoder_hidden_states, input_prompt = self.get_hidden_state(batch, timesteps, device=noisy_latents.device, dtype=weight_dtype)
 
         if self.cfg.model.controlnet:
             controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)

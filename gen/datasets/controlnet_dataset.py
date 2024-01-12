@@ -8,6 +8,7 @@ from accelerate.logging import get_logger
 from datasets import load_dataset
 from torchvision import transforms
 import open_clip
+from gen import DEFAULT_PROMPT
 from gen.configs.utils import inherit_parent_args
 
 from gen.datasets.base_dataset import AbstractDataset, Split
@@ -144,7 +145,7 @@ class ControlnetDataset(AbstractDataset):
             captions = []
             for caption in examples[caption_column]:
                 if self.override_text:
-                    captions.append("A photo of")
+                    captions.append(DEFAULT_PROMPT)
                 elif random.random() < self.proportion_empty_prompts:
                     captions.append("")
                 elif isinstance(caption, str):

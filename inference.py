@@ -13,9 +13,12 @@ from accelerate.utils import PrecisionType
 from diffusers import DPMSolverMultistepScheduler, StableDiffusionPipeline
 from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
+from tqdm import tqdm
 from transformers import CLIPTokenizer
+from gen import DEFAULT_PROMPT
 
 from gen.configs.base import BaseConfig
+from gen.configs.inference import InferenceConfig
 from gen.datasets.base_dataset import Split
 from gen.models.base_mapper_model import BaseMapper
 from gen.models.neti.checkpoint_handler import CheckpointHandler
@@ -24,7 +27,7 @@ from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.prompt_manager import PromptManager
 from gen.models.neti.sd_pipeline import sd_pipeline_call
 from gen.models.neti.xti_attention_processor import XTIAttenProc
-
+from gen.utils.attention_visualization_utils import get_all_net_attn_maps, get_net_attn_map, resize_net_attn_map, cross_attn_init, register_cross_attention_hook
 
 def remove_row(tensor, row_index):
     return torch.cat((tensor[:row_index], tensor[row_index + 1 :]))
@@ -70,6 +73,7 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
         mapper=mapper,
         learned_embeds_path=inference_cfg.inference.learned_embeds_path,
         torch_dtype=torch_dtype,
+        num_denoising_steps=inference_cfg.inference.num_denoising_steps,
     )
 
     pipeline.text_encoder.text_model.embeddings.mapper.eval()
@@ -114,7 +118,7 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
         prompt_manager=prompt_manager,
         output_path=inference_cfg.output_dir,
         dataloader=validation_dataloader,
-        remove_masks_for_editing=True,
+        inference_cfg=inference_cfg.inference,
     )
 
 
@@ -124,8 +128,7 @@ def run_inference_dataloader(
     prompt_manager: PromptManager,
     output_path: Path,
     dataloader: torch.utils.data.DataLoader,
-    remove_masks_for_editing: bool = False,
-    num_masks_to_remove: int = 2,
+    inference_cfg: InferenceConfig,
     global_step: Optional[int] = None,
 ):
     output_path.mkdir(exist_ok=True, parents=True)
@@ -138,20 +141,53 @@ def run_inference_dataloader(
         gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
 
         batch["input_ids"] = orig_input_ids.clone()
-        prompt_image = run_inference_batch(
+        prompt_image, input_prompt = run_inference_batch(
             batch=batch,
             pipeline=pipeline,
             prompt_manager=prompt_manager,
+            visualize_attention_map=inference_cfg.visualize_attention_map,
         )
         images.append(Im(prompt_image))
+        if inference_cfg.visualize_attention_map:
+            dir_name = "attn_maps"
+            net_attn_maps = get_net_attn_map(prompt_image.size, chunk=False)
+            net_attn_maps = resize_net_attn_map(net_attn_maps, prompt_image.size)
+            tokens = [x.replace('</w>','') for x in input_prompt[0]]
+            attn_maps = get_all_net_attn_maps(net_attn_maps, dir_name, tokens)
+            mask_idx = 0
+            output_cols = []
+            for idx, (attn_map, token) in enumerate(zip(attn_maps, tokens)):
+                if token == 'placeholder':
 
-        if remove_masks_for_editing:
+                    mask_bool = batch['gen_segmentation'][..., mask_idx].squeeze(0).cpu().bool().numpy()
+                    orig_image_ = orig_image.np.copy()
+                    orig_image_[~mask_bool] = 0
+                    orig_image_ = Im(orig_image_, channel_range=ChannelRange.UINT8)
+
+                    output_col = Im.concat_vertical(Im(attn_map.convert('RGB')), orig_image_, spacing=5).write_text(f'mask: {mask_idx}')
+                    mask_idx += 1
+                else:
+                    orig_image_ = Im(255 * np.ones((512, 512, 3), dtype=np.uint8))
+                    output_col = Im.concat_vertical(Im(attn_map.convert('RGB')), orig_image_, spacing=5).write_text(f'{token}')
+
+                output_cols.append(output_col)
+            
+            Im.concat_horizontal(output_cols, spacing=5).save(output_path / f"step_{i}_attn.png")
+
+            # mask_image = Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][..., [mask_idx]].squeeze(0)), channel_range=ChannelRange.UINT8)
+            # mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
+            # mask_alpha = (batch['gen_segmentation'][..., [mask_idx]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+            # composited_image = orig_image_.pil.copy().convert("RGBA")
+            # composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
+            # composited_image = composited_image.convert("RGB")
+            
+        if inference_cfg.num_masks_to_remove is not None:
             gen_segmentation = batch["gen_segmentation"]
 
-            for j in range(gen_segmentation.shape[-1])[:num_masks_to_remove]:
+            for j in range(gen_segmentation.shape[-1])[:inference_cfg.num_masks_to_remove]:
                 batch["gen_segmentation"] = gen_segmentation[..., torch.arange(gen_segmentation.size(-1)) != j]
                 batch["input_ids"] = orig_input_ids.clone()
-                prompt_image = run_inference_batch(
+                prompt_image, input_prompt = run_inference_batch(
                     batch=batch,
                     pipeline=pipeline,
                     prompt_manager=prompt_manager,
@@ -180,21 +216,25 @@ def run_inference_batch(
     seed: int = 42,
     num_images_per_prompt: int = 1,
     truncation_idx: Optional[int] = None,
+    visualize_attention_map: bool = False,
 ) -> Image.Image:
     assert num_images_per_prompt == 1, "Only num_images_per_prompt=1 is supported for now"
+    if visualize_attention_map:
+        cross_attn_init()
+        pipeline.unet = register_cross_attention_hook(pipeline.unet)
     with torch.autocast("cuda"):
         with torch.no_grad():
-            prompt_embeds = prompt_manager.embed_prompt(batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx)
+            prompt_embeds, input_prompt = prompt_manager.embed_prompt(batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx)
     generator = torch.Generator(device="cuda").manual_seed(seed)
     images = sd_pipeline_call(pipeline, prompt_embeds=prompt_embeds, generator=generator, num_images_per_prompt=num_images_per_prompt).images[0]
-    return images
+    return images, input_prompt
 
 
 def load_stable_diffusion_model(
     pretrained_model_name_or_path: str,
     learned_embeds_path: Path,
+    num_denoising_steps: int,
     mapper: Optional[NeTIMapper] = None,
-    num_denoising_steps: int = 50,
     torch_dtype: torch.dtype = torch.bfloat16,
 ) -> Tuple[StableDiffusionPipeline, str, int]:
     tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")

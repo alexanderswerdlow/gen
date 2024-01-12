@@ -51,7 +51,7 @@ class NeTIMapper(nn.Module):
 
         self.use_positional_encoding = use_positional_encoding
         if self.cfg.model.use_fixed_position_encoding:
-            self.encoder = SinusoidalPosEmb(dim=num_pe_time_anchors * len(unet_layers)).cuda()
+            self.encoder = SinusoidalPosEmb(dim=768*2).cuda()
         elif self.use_positional_encoding:
             self.encoder = NeTIPositionalEncoding(sigma_t=pe_sigmas.sigma_t, sigma_l=pe_sigmas.sigma_l).cuda()
             self.input_dim = num_pe_time_anchors * len(unet_layers)
@@ -69,7 +69,6 @@ class NeTIMapper(nn.Module):
             nn.Linear(self.orig_output_dim, 1024),
             nn.LayerNorm(1024)
         )
-        
         self.decoder = hydra.utils.instantiate(self.cfg.model.decoder_transformer, _recursive_=False)
         self.cross_attn_proj = nn.Sequential(
             nn.Linear(1024, 768 * 2),
@@ -78,11 +77,12 @@ class NeTIMapper(nn.Module):
 
 
     def set_net(self, num_unet_layers: int, num_time_anchors: int, output_dim: int = 768):
-        self.input_layer = self.set_input_layer(num_unet_layers, num_time_anchors)
-        self.net = nn.Sequential(self.input_layer,
-                                 nn.Linear(self.input_dim, 128), nn.LayerNorm(128), nn.LeakyReLU(),
-                                 nn.Linear(128, 128), nn.LayerNorm(128), nn.LeakyReLU())
-        self.output_layer = nn.Sequential(nn.Linear(128, output_dim))
+        if not self.cfg.model.use_fixed_position_encoding:
+            self.input_layer = self.set_input_layer(num_unet_layers, num_time_anchors)
+            self.net = nn.Sequential(self.input_layer,
+                                    nn.Linear(self.input_dim, 128), nn.LayerNorm(128), nn.LeakyReLU(),
+                                    nn.Linear(128, 128), nn.LayerNorm(128), nn.LeakyReLU())
+            self.output_layer = nn.Sequential(nn.Linear(128, output_dim))
 
     def set_input_layer(self, num_unet_layers: int, num_time_anchors: int) -> nn.Module:
         if self.use_positional_encoding:
@@ -115,11 +115,10 @@ class NeTIMapper(nn.Module):
 
     def extract_hidden_representation(self, timestep: torch.Tensor, unet_layer: torch.Tensor) -> torch.Tensor:
         if self.cfg.model.use_fixed_position_encoding:
-            encoded_input = self.encoder(timestep) + self.encoder(unet_layer)
+            embedding = self.encoder(timestep) + self.encoder(unet_layer)
         else:
-            encoded_input = self.encoder.encode(timestep, unet_layer)
-        encoded_input = self.get_encoded_input(timestep, unet_layer)
-        embedding = self.net(encoded_input)
+            encoded_input = self.get_encoded_input(timestep, unet_layer)
+            embedding = self.net(encoded_input)
         return embedding
 
     def apply_nested_dropout(self, embedding: torch.Tensor, truncation_idx: int = None) -> torch.Tensor:
@@ -134,7 +133,8 @@ class NeTIMapper(nn.Module):
         return embedding
 
     def get_output(self, embedding: torch.Tensor) -> torch.Tensor:
-        embedding = self.output_layer(embedding)
+        if not self.cfg.model.use_fixed_position_encoding:
+            embedding = self.output_layer(embedding)
         if self.norm_scale is not None:
             embedding = F.normalize(embedding, dim=-1) * self.norm_scale
         return embedding

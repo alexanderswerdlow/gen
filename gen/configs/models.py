@@ -50,8 +50,8 @@ class ModelConfig:
     dropout_masks: Optional[float] = None
     freeze_text_encoder: bool = True
     controlnet: bool = False
-    use_fixed_position_encoding: bool = True
-    enable_norm_scale: bool = False
+    use_fixed_position_encoding: bool = False
+    enable_norm_scale: bool = True
 
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
 

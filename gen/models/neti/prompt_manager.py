@@ -55,7 +55,7 @@ class PromptManager:
 
         model_.placeholder_token_id = model_.tokenizer.convert_tokens_to_ids(model_.cfg.model.placeholder_token)
         model_.weight_dtype = self.dtype
-        input_ids, text_encoder_dict = model_.get_hidden_state(batch, timesteps=self.timesteps, device=batch['gen_pixel_values'].device, dtype=self.dtype, per_timestep=True)
+        input_ids, text_encoder_dict, input_prompt = model_.get_hidden_state(batch, timesteps=self.timesteps, device=batch['gen_pixel_values'].device, dtype=self.dtype, per_timestep=True)
 
         # Compute embeddings for each timestep and each U-Net layer
         print(f"Computing embeddings over {len(self.timesteps)} timesteps and {len(self.unet_layers)} U-Net layers.")
@@ -77,4 +77,4 @@ class PromptManager:
                     layer_hidden_state_bypass = layer_hidden_state_bypass[0].to(dtype=self.dtype)
                     _hs[f"CONTEXT_TENSOR_BYPASS_{layer_idx}"] = layer_hidden_state_bypass.repeat(num_images_per_prompt, 1, 1)
             hidden_states_per_timestep.append(_hs)
-        return hidden_states_per_timestep
+        return hidden_states_per_timestep, input_prompt

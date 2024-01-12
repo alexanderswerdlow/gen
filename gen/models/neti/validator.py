@@ -67,9 +67,8 @@ class ValidationHandler:
             prompt_manager=prompt_manager,
             dataloader=validation_dataloader,
             output_path=self.cfg.output_dir / 'images',
-            remove_masks_for_editing=True,
-            num_masks_to_remove=6,
             global_step=global_step,
+            inference_cfg=self.cfg.inference,
         )
 
         del pipeline
@@ -91,7 +90,7 @@ class ValidationHandler:
         pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
         pipeline = pipeline.to(accelerator.device)
         pipeline.set_progress_bar_config(disable=True)
-        num_denoising_steps = 50
+        num_denoising_steps = self.cfg.inference.num_denoising_steps
         pipeline.scheduler.set_timesteps(num_denoising_steps, device=pipeline.device)
         pipeline.unet.set_attn_processor(XTIAttenProc())
         accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.eval()

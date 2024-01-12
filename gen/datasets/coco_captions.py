@@ -12,7 +12,7 @@ from ipdb import set_trace as st
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-from gen import COCO_CAPTIONS_FILES
+from gen import COCO_CAPTIONS_FILES, DEFAULT_PROMPT
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.base_dataset import AbstractDataset
 
@@ -43,7 +43,7 @@ class CocoCaptions(AbstractDataset):
         self.disc_image_transforms = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[-1]
         self.override_text = override_text
         if self.override_text:
-            warnings.warn("Overriding text captions with 'A photo of'")
+            warnings.warn(f"Overriding text captions with {DEFAULT_PROMPT}")
 
     def get_dataset(self):
         # See: https://github.com/rom1504/img2dataset/blob/main/dataset_examples/mscoco.md
@@ -64,6 +64,6 @@ class CocoCaptions(AbstractDataset):
         return {"gen_pixel_values": pixel_values, "input_ids": input_ids, "disc_pixel_values": disc_pixel_values}
 
     def make_sample(self, sample, val=False):
-        input_text = 'A photo of' if self.override_text else sample['txt']
+        input_text = DEFAULT_PROMPT if self.override_text else sample['txt']
         inputs = self.tokenizer(input_text, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt")
         return self.gen_image_transforms(sample["jpg"]), self.disc_image_transforms(sample["jpg"]), inputs.input_ids

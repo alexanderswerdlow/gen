@@ -14,7 +14,7 @@ from einops import rearrange
 from ipdb import set_trace as st
 from torch.utils.data import Dataset
 
-from gen import MOVI_DATASET_PATH
+from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
@@ -73,7 +73,7 @@ class MoviDataset(AbstractDataset, Dataset):
 
         self.override_text = override_text
         if self.override_text:
-            warnings.warn("Overriding text captions with 'A photo of'")
+            warnings.warn(f"Overriding text captions with {DEFAULT_PROMPT}")
 
     def get_dataset(self):
         return self
@@ -144,7 +144,7 @@ class MoviDataset(AbstractDataset, Dataset):
                 "disc_bbox": disc_bbx,
                 "disc_segmentation": disc_instance,
                 "input_ids": self.tokenizer(
-                    "A photo of", max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
+                    DEFAULT_PROMPT, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
                 ).input_ids.squeeze(0),
             }
 
@@ -168,7 +168,7 @@ class MoviDataset(AbstractDataset, Dataset):
                 "disc_grid": source_data.grid,
                 "disc_segmentation": source_data.segmentation,
                 "input_ids": self.tokenizer(
-                    "A photo of", max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
+                    DEFAULT_PROMPT, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
                 ).input_ids.squeeze(0),
             }
 

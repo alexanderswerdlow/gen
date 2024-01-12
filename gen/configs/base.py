@@ -48,9 +48,18 @@ store(get_hydra_config(), group="hydra", name="default")
 
 exp_store(
     name="gen",
-    trainer=dict(num_train_epochs=1000, checkpointing_steps=1000, gradient_accumulation_steps=4, learning_rate=5e-5, eval_every_n_epochs=None, eval_every_n_steps=1000, tracker_project_name='gen'),
+    inference=dict(visualize_attention_map=True),
+    trainer=dict(
+        num_train_epochs=1000,
+        checkpointing_steps=1000,
+        gradient_accumulation_steps=4,
+        learning_rate=5e-5,
+        eval_every_n_epochs=None,
+        eval_every_n_steps=1000,
+        tracker_project_name="gen",
+    ),
     dataset=dict(num_validation_images=1, train_dataset=dict(batch_size=8), validation_dataset=dict(batch_size=1, random_subset=4)),
-    model=dict(unfreeze_last_n_clip_layers=6, dropout_masks=0.2),
+    model=dict(unfreeze_last_n_clip_layers=None, dropout_masks=None, enable_norm_scale=False, use_fixed_position_encoding=True),
     hydra_defaults=[
         "_self_",
         {"override /dataset": "movi_e"},
@@ -61,12 +70,15 @@ mode_store(
     name="fast",
     debug=True,
     trainer=dict(num_train_epochs=1, eval_every_n_epochs=1, eval_every_n_steps=None),
-    dataset=dict(train_dataset=dict(batch_size=8, random_subset=16, num_workers=0), validation_dataset=dict(batch_size=1, random_subset=2, num_workers=0)),
+    dataset=dict(
+        train_dataset=dict(batch_size=8, random_subset=16, num_workers=0), validation_dataset=dict(batch_size=1, random_subset=2, num_workers=0)
+    ),
 )
 
 mode_store(
     name="overfit",
     debug=True,
+    inference=dict(num_masks_to_remove=2, num_denoising_steps=50),
     trainer=dict(
         num_train_epochs=1000,
         eval_every_n_epochs=10,
@@ -84,7 +96,7 @@ mode_store(
     debug=True,
     trainer=dict(gradient_accumulation_steps=1),
     dataset=dict(
-        train_dataset=dict(batch_size=4, random_subset=8, num_workers=0, subset=('video_0000',)),
+        train_dataset=dict(batch_size=4, random_subset=8, num_workers=0, subset=("video_0000",)),
         overfit=True,
     ),
 )
