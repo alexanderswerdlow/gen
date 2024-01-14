@@ -92,7 +92,7 @@ class BaseMapper(nn.Module):
         )
 
         if self.cfg.model.controlnet:
-            self.controlnet: ControlNetModel = ControlNetModel.from_unet(self.unet)
+            self.controlnet: ControlNetModel = ControlNetModel.from_unet(self.unet, conditioning_channels=2)
 
         neti_mapper, self.loaded_iteration = self._init_neti_mapper()
         self.text_encoder.text_model.set_mapper(mapper=neti_mapper, cfg=self.cfg)
@@ -128,6 +128,7 @@ class BaseMapper(nn.Module):
 
         if self.cfg.model.controlnet:
             self.controlnet: ControlNetModel = accelerator.prepare(self.controlnet)
+            accelerator.unwrap_model(self.controlnet).set_attn_processor(XTIAttenProc()) # TODO: Don't do this
 
         if self.cfg.trainer.gradient_checkpointing:
             self.text_encoder.enable_gradient_checkpointing()
@@ -380,7 +381,7 @@ class BaseMapper(nn.Module):
         encoder_hidden_states, input_prompt = self.get_hidden_state(batch, timesteps, device=noisy_latents.device, dtype=weight_dtype)
 
         if self.cfg.model.controlnet:
-            controlnet_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
+            controlnet_image = batch['gen_segmentation'].permute(0, 3, 1, 2).to(dtype=weight_dtype)
             down_block_res_samples, mid_block_res_sample = self.controlnet(
                 noisy_latents,
                 timesteps,
@@ -396,7 +397,7 @@ class BaseMapper(nn.Module):
                 encoder_hidden_states=encoder_hidden_states,
                 down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
                 mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
-            )
+            ).sample
         else:
             # Predict the noise residual
             model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample

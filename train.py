@@ -29,8 +29,6 @@ from gen.utils.decoupled_utils import Profiler, is_main_process
 from gen.utils.trainer_utils import TrainingState, handle_checkpointing
 
 
-
-
 def get_params_to_optimize(accelerator: Accelerator, cfg: BaseConfig, model: BaseMapper):
     match cfg.model.model_type:
         case ModelType.CONTROLNET:
@@ -171,15 +169,12 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     if cfg.profile:
         profiler = Profiler(output_dir=cfg.output_dir, active_steps=cfg.trainer.profiler_active_steps)
 
-    progress_bar = tqdm(
-        range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False
-    )
+    progress_bar = tqdm(range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False)
     if is_main_process() and cfg.trainer.log_gradients is not None:
         wandb.watch(model, log="all" if cfg.trainer.log_parameters else "gradients", log_freq=cfg.trainer.log_gradients)
 
     log_info(f'load_time: {__import__("time").time() - load_time} seconds')
 
-    image_logs = None
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnet if cfg.model.model_type == ModelType.CONTROLNET else text_encoder):
@@ -254,7 +249,16 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                                     vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step
                                 )
                         case ModelType.BASE_MAPPER:
-                            validator.infer(accelerator=accelerator, validation_dataloader=validation_dataloader, model=model, tokenizer=tokenizer, text_encoder=text_encoder, unet=unet, vae=vae, global_step=global_step)
+                            validator.infer(
+                                accelerator=accelerator,
+                                validation_dataloader=validation_dataloader,
+                                model=model,
+                                tokenizer=tokenizer,
+                                text_encoder=text_encoder,
+                                unet=unet,
+                                vae=vae,
+                                global_step=global_step,
+                            )
                     log_info(f"Finished validation at step {global_step}, epoch {epoch}")
 
                 progress_bar.update(1)

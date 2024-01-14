@@ -92,13 +92,15 @@ def main(cfg: BaseConfig):
 
     num_gpus = get_num_gpus()
     if cfg.trainer.enable_dynamic_grad_accum:
-        assert cfg.trainer.dynamic_grad_accum_default_gpus >= num_gpus
-        assert cfg.trainer.dynamic_grad_accum_default_gpus % num_gpus == 0
-        grad_accum_factor = int(cfg.trainer.dynamic_grad_accum_default_gpus / num_gpus)
-        cfg.trainer.gradient_accumulation_steps = cfg.trainer.gradient_accumulation_steps * grad_accum_factor
-        log_info(
-            f"Using dynamic gradient accumulation with {num_gpus} GPUs so scaling by {grad_accum_factor} to {cfg.trainer.gradient_accumulation_steps} gradient accumulation steps."
-        )
+        if num_gpus > cfg.trainer.dynamic_grad_accum_default_gpus:
+            log_warn(f"You are using more GPUs than {cfg.trainer.dynamic_grad_accum_default_gpus} GPUs. Disabling dynamic gradient accumulation")
+        else:
+            assert cfg.trainer.dynamic_grad_accum_default_gpus % num_gpus == 0
+            grad_accum_factor = int(cfg.trainer.dynamic_grad_accum_default_gpus / num_gpus)
+            cfg.trainer.gradient_accumulation_steps = cfg.trainer.gradient_accumulation_steps * grad_accum_factor
+            log_info(
+                f"Using dynamic gradient accumulation with {num_gpus} GPUs so scaling by {grad_accum_factor} to {cfg.trainer.gradient_accumulation_steps} gradient accumulation steps."
+            )
 
     if cfg.trainer.scale_lr_gpus_grad_accum:
         # For n GPUs, we have an effective xN batch size so we need to scale the learning rate.

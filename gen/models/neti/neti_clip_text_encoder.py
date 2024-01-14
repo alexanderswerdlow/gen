@@ -157,8 +157,6 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         last_hidden_state = encoder_outputs[0]
         last_hidden_state_with_bypass = last_hidden_state.clone()
 
-        bypass_output = None
-
         if enable_conditioning and bypass_output is not None:
             # TODO: Is this residual for T/L what we want?
             bypass_output = bypass_output[feature_map_batch_idxs] + output[:, token_embedding_dim:].to(encoder_outputs.last_hidden_state.dtype)

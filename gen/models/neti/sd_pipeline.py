@@ -2,13 +2,14 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 import torch
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline, StableDiffusionPipelineOutput
+from diffusers.pipelines.controlnet import StableDiffusionControlNetPipeline
 
 from gen.utils.logging_utils import log_info
 
 
 @torch.no_grad()
 def sd_pipeline_call(
-    pipeline: StableDiffusionPipeline,
+    pipeline: Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline],
     prompt_embeds: torch.FloatTensor,
     height: Optional[int] = None,
     width: Optional[int] = None,
@@ -72,33 +73,29 @@ def sd_pipeline_call(
     num_warmup_steps = len(timesteps) - num_inference_steps * pipeline.scheduler.order
     with pipeline.progress_bar(total=num_inference_steps) as progress_bar:
         for i, t in enumerate(timesteps):
+            latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+            latent_model_input = pipeline.scheduler.scale_model_input(latent_model_input, t)
+
+            ###############################################################
+            # NeTI logic: use the prompt embedding for the current timestep
+            ###############################################################
+            embed = prompt_embeds[i] if type(prompt_embeds) == list else prompt_embeds
             if do_classifier_free_guidance:
-                latent_model_input = latents
-                latent_model_input = pipeline.scheduler.scale_model_input(latent_model_input, t)
-
                 negative_prompt_embed = negative_prompt_embeds[i] if type(negative_prompt_embeds) == list else negative_prompt_embeds
+                for k in embed.keys():
+                    if 'CONTEXT_TENSOR' in k:
+                        embed[k] = torch.cat([negative_prompt_embed, embed[k]])
 
-                # predict the noise residual
-                noise_pred_uncond = pipeline.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=negative_prompt_embed,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                ).sample
-
-                ###############################################################
-                # NeTI logic: use the prompt embedding for the current timestep
-                ###############################################################
-                embed = prompt_embeds[i] if type(prompt_embeds) == list else prompt_embeds
-                noise_pred_text = pipeline.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=embed,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                ).sample
+            noise_pred = pipeline.unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=embed,
+                cross_attention_kwargs=cross_attention_kwargs,
+            ).sample
 
             # perform guidance
             if do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
             # compute the previous noisy sample x_t -> x_t-1

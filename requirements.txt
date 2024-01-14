@@ -27,7 +27,6 @@ debugpy
 torchinfo
 accelerate
 submitit
-diffusers
 segment-anything-hq
 tensorboardX
 torch-tb-profiler
@@ -36,5 +35,6 @@ transformers
 open_clip_torch
 webdataset
 rich
+diffusers==0.25.*
 git+https://github.com/alexanderswerdlow/image_utils.git
 git+https://github.com/alexanderswerdlow/kornia.git@keypoint_visibility

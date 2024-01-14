@@ -45,8 +45,6 @@ class BaseConfig:
     defaults: List[Any] = field(default_factory=lambda: defaults)
 
 
-
-
 store(get_hydra_config())
 
 exp_store(
@@ -105,11 +103,10 @@ def get_override_dict(**kwargs):
 
 
 shared_overfit_movi_args = dict(
-    subset=("video_0015",),
     custom_split="train",
     path=MOVI_OVERFIT_DATASET_PATH,
     num_objects=1,
-    legacy_transforms=True,
+    legacy_transforms=False,
     augmentation=dict(minimal_source_augmentation=True, enable_crop=False),
 )
 
@@ -118,7 +115,9 @@ mode_store(
     name="overfit_movi",
     debug=True,
     inference=dict(num_masks_to_remove=None, visualize_attention_map=False, empty_string_cfg=True, guidance_scale=7.5),
-    trainer=dict(gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=10),
+    trainer=dict(
+        gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=10
+    ),
     dataset=dict(
         train_dataset=dict(batch_size=8, random_subset=None, **shared_overfit_movi_args),
         validation_dataset=dict(random_subset=4, evenly_spaced_subset=False, **shared_overfit_movi_args),
@@ -129,8 +128,18 @@ mode_store(
 mode_store(
     name="overfit_movi_single_frame",
     dataset=dict(
-        train_dataset=dict(num_dataset_frames=1),
-        validation_dataset=dict(num_dataset_frames=1),
+        train_dataset=dict(num_dataset_frames=1, subset=("video_0015",)),
+        validation_dataset=dict(num_dataset_frames=1, subset=("video_0015",)),
+    ),
+)
+
+mode_store(
+    name="controlnet",
+    model=dict(controlnet=True),
+    trainer=dict(learning_rate=5e-6, scale_lr_batch_size=True),
+    dataset=dict(
+        train_dataset=dict(batch_size=4),
+        validation_dataset=dict(batch_size=4),
     ),
 )
 

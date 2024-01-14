@@ -35,7 +35,7 @@ class Dummy:
 
 def get_logger_(main_process_only: bool) -> logging.Logger:
     from gen.utils.decoupled_utils import get_rank, is_main_process
-    if is_main_process() or main_process_only:
+    if is_main_process() or not main_process_only:
         if logger is not None:
             return logger
         else:
