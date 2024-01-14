@@ -20,10 +20,6 @@ from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.trainer_utils import every_n_steps
 from inference import run_inference_batch, run_inference_dataloader
 
-if is_wandb_available():
-    import wandb
-
-
 class ValidationHandler:
     def __init__(self, cfg: BaseConfig, weights_dtype: torch.dtype):
         self.cfg = cfg
@@ -39,7 +35,6 @@ class ValidationHandler:
         text_encoder: NeTICLIPTextModel,
         unet: UNet2DConditionModel,
         vae: AutoencoderKL,
-        num_images_per_prompt: int,
         global_step: int,
     ):
         """Runs inference during our training scheme."""
@@ -73,7 +68,7 @@ class ValidationHandler:
     ) -> StableDiffusionPipeline:
         """Loads SD model given the current text encoder and our mapper."""
         pipeline = StableDiffusionPipeline.from_pretrained(
-            self.cfg.model.pretrained_model_name_or_path,
+            pretrained_model_name_or_path=self.cfg.model.pretrained_model_name_or_path,
             text_encoder=accelerator.unwrap_model(text_encoder),
             tokenizer=tokenizer,
             unet=unet,
@@ -87,5 +82,4 @@ class ValidationHandler:
         pipeline.scheduler.set_timesteps(num_denoising_steps, device=pipeline.device)
         pipeline.unet.set_attn_processor(XTIAttenProc())
         accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.eval()
-
         return pipeline

@@ -14,7 +14,8 @@ import glob
 import wandb
 from jaxtyping import BFloat16
 from gen.utils.logging_utils import log_info
-
+import ipdb
+import sys
 
 def get_info():
     return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE).stdout.decode("utf-8")
@@ -312,8 +313,34 @@ class Profiler:
             wandb.save(trace, base_path=self.profile_dir, policy="now")
 
 
+def get_rank():
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank() == 0
+    elif (rank := os.environ.get("RANK", None)) is not None:
+        return rank
+    else:
+        return 0
+    
 def is_main_process():
-    return not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank() == 0
+    elif (rank := os.environ.get("RANK", None)) is not None:
+        return rank == 0
+    else:
+        return True
 
 def get_num_gpus():
     return dist.get_world_size() if dist.is_available() and dist.is_initialized() else torch.cuda.device_count()
+
+def _breakpoint():
+    if is_main_process():
+        frame = sys._getframe().f_back
+        ipdb.set_trace(frame)
+    
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+
+def set_global_breakpoint():
+    import builtins
+    builtins.breakpoint = _breakpoint 
+    builtins.st = ipdb.set_trace # We import st everywhere

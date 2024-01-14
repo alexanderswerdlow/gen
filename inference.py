@@ -98,6 +98,7 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
         learned_embeds_path=inference_cfg.inference.learned_embeds_path,
         torch_dtype=torch_dtype,
         num_denoising_steps=inference_cfg.inference.num_denoising_steps,
+        cfg=train_cfg
     )
 
     pipeline.text_encoder.text_model.embeddings.mapper.eval()
@@ -282,8 +283,9 @@ def load_stable_diffusion_model(
     pretrained_model_name_or_path: str,
     learned_embeds_path: Path,
     num_denoising_steps: int,
-    mapper: Optional[NeTIMapper] = None,
-    torch_dtype: torch.dtype = torch.bfloat16,
+    mapper: NeTIMapper,
+    cfg: BaseConfig,
+    torch_dtype: torch.dtype,
 ) -> Tuple[StableDiffusionPipeline, str, int]:
     tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
     text_encoder = NeTICLIPTextModel.from_pretrained(
@@ -291,8 +293,7 @@ def load_stable_diffusion_model(
         subfolder="text_encoder",
         torch_dtype=torch_dtype,
     )
-    if mapper is not None:
-        text_encoder.text_model.embeddings.set_mapper(mapper)
+    text_encoder.text_model.set_mapper(mapper=mapper, cfg=cfg)
     placeholder_token, placeholder_token_id = CheckpointHandler.load_learned_embed_in_clip(
         learned_embeds_path=learned_embeds_path, text_encoder=text_encoder, tokenizer=tokenizer
     )

@@ -34,7 +34,7 @@ def global_store(name: str, group: str, hydra_defaults: Optional[list[Any]] = No
     )
 
 
-def stored_child_config(cls: Any, group: str, parent: str, child: str, **kwargs):
+def store_child_config(cls: Any, group: str, parent: str, child: str, **kwargs):
     store(builds(cls, builds_bases=(store[group][(group, parent)],)), group=group, name=child, **kwargs)
 
 

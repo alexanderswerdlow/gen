@@ -6,8 +6,10 @@ from torch import nn
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 from transformers.models.clip.modeling_clip import CLIPTextConfig, CLIPTextModel, CLIPEncoder
 from transformers.models.clip.modeling_clip import CLIPTextTransformer
+from gen.configs.base import BaseConfig
 
 from gen.models.neti.net_clip_text_embedding import NeTICLIPTextEmbeddings, NeTIBatch
+from gen.models.neti.neti_mapper import NeTIMapper
 
 # Copied from transformers.models.bart.modeling_bart._expand_mask
 def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
@@ -81,6 +83,10 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         self.encoder = CLIPEncoder(config)
         self.final_layer_norm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
 
+    def set_mapper(self, mapper: NeTIMapper, cfg: BaseConfig):
+        self.embeddings.mapper = mapper
+        self.cfg = cfg
+
     def forward(
         self, 
         input_ids: Optional[torch.Tensor] = None,
@@ -112,21 +118,25 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         elif batch is not None:
             input_shape = batch.input_ids.size()
             batch.input_ids = batch.input_ids.view(-1, input_shape[-1])
+            # embeddings holds the main NeTI code, mapping from Timestep + Layer -> Some embedding
             hidden_states, bypass_output, mapper_outputs = self.embeddings(batch=batch, position_ids=position_ids)
 
         else:
             raise ValueError("You have to specify either batch or input_ids!")
         
-        enable_conditioning = batch is not None and len(feature_map_batch_idxs := kwargs.get('feature_map_batch_idxs', [])) > 0
+        enable_conditioning = self.cfg.model.mask_cross_attn and batch is not None and len(feature_map_batch_idxs := kwargs.get('feature_map_batch_idxs', [])) > 0
         if enable_conditioning:
             token_embedding_dim = mapper_outputs.shape[-1]
-            kwargs['attn_dict']['x'] = mapper_outputs[feature_map_batch_idxs] # Copy the NeTI output to the right masks based on batch idx
+            queries = mapper_outputs[feature_map_batch_idxs] # Encoding of timestep + layer
+            kwargs['attn_dict']['x'] = queries
 
             # TODO: We should find a better place to put the cross-attn but this is the most convinient for now
             output = self.embeddings.mapper.cross_attn(**kwargs)
-
             learnable_idxs = (batch.input_ids == batch.placeholder_token_id).nonzero(as_tuple=True)
-            hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[:, :token_embedding_dim].to(hidden_states.dtype) + mapper_outputs[feature_map_batch_idxs]
+            if self.cfg.model.cross_attn_residual:
+                hidden_states[learnable_idxs[0], learnable_idxs[1]] = hidden_states[learnable_idxs[0], learnable_idxs[1]] + output[:, :token_embedding_dim].to(hidden_states.dtype)
+            else:
+                hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[:, :token_embedding_dim].to(hidden_states.dtype)
 
         # CLIP's causal mask, prepare it here: https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
         causal_attention_mask = _make_causal_mask(input_shape, hidden_states.dtype, device=hidden_states.device)

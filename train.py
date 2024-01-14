@@ -234,7 +234,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             # This is different from "step" which only counts the number of forward passes
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                if accelerator.is_main_process:
+                if is_main_process():
                     if global_step % cfg.trainer.checkpointing_steps == 0:
                         if cfg.model.model_type == ModelType.BASE_MAPPER:
                             checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f"{global_step}")
@@ -244,7 +244,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 if (
                     cfg.trainer.eval_every_n_steps
                     and global_step % cfg.trainer.eval_every_n_steps == 0
-                    and (cfg.trainer.eval_at_start or global_step != 0)
+                    and (cfg.trainer.eval_on_start or global_step != 0)
                 ) or (step == len(train_dataloader) - 1 and cfg.trainer.eval_every_n_epochs and (epoch + 1) % cfg.trainer.eval_every_n_epochs == 0):
                     log_info(f"Starting validation at step {global_step}, epoch {epoch}")
                     match cfg.model.model_type:
@@ -254,7 +254,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                                     vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step
                                 )
                         case ModelType.BASE_MAPPER:
-                            validator.infer(accelerator, validation_dataloader, model, tokenizer, text_encoder, unet, vae, cfg.dataset, global_step)
+                            validator.infer(accelerator=accelerator, validation_dataloader=validation_dataloader, model=model, tokenizer=tokenizer, text_encoder=text_encoder, unet=unet, vae=vae, global_step=global_step)
                     log_info(f"Finished validation at step {global_step}, epoch {epoch}")
 
                 progress_bar.update(1)
@@ -281,7 +281,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
 
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
+    if is_main_process():
         if cfg.profile:
             profiler.finish()
             exit()

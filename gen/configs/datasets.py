@@ -4,7 +4,7 @@ from typing import ClassVar, Optional
 from hydra_zen import builds, make_config
 from gen import MOVI_OVERFIT_DATASET_PATH
 
-from gen.configs.utils import auto_store, stored_child_config
+from gen.configs.utils import auto_store, store_child_config
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
 from gen.datasets.base_dataset import AbstractDataset
 from gen.datasets.coco_captions import CocoCaptions
@@ -41,7 +41,7 @@ auto_store(DatasetConfig, train_dataset=get_dataset(ControlnetDataset), validati
 
 auto_store(DatasetConfig, train_dataset=get_dataset(CocoCaptions), validation_dataset=get_dataset(CocoCaptions), name="coco_captions")
 
-stored_child_config(DatasetConfig, "dataset", "coco_captions", "coco_captions_test")
+store_child_config(DatasetConfig, "dataset", "coco_captions", "coco_captions_test")
 
 auto_store(
     DatasetConfig,

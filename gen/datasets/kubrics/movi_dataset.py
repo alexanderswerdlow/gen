@@ -108,6 +108,10 @@ class MoviDataset(AbstractDataset, Dataset):
         # rand_id = random.randint(0, 24 - self.num_frames)
         # real_idx = [rand_id + j for j in range(self.num_frames)]
 
+        if self.num_dataset_frames == 1 and rgb.shape[0] > 1:
+            # Get middle frame
+            frame_idx = rgb.shape[0] // 2
+
         rgb = rgb[frame_idx]
         bbx = bbx[frame_idx]
         instance = instance[frame_idx]

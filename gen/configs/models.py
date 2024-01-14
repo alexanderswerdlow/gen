@@ -4,7 +4,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 
 from hydra_zen import builds
-from gen.configs.utils import auto_store
+from gen.configs.utils import auto_store, store_child_config
 from gen.models.neti.decoder import DecoderTransformer
 from hydra_zen.typing import Builds
 
@@ -50,7 +50,6 @@ class ModelConfig:
     placeholder_token_id: Optional[int] = None
     super_category_token: str = "object"
 
-    
     mask_cross_attn: bool = True
     freeze_clip: bool = True
     unfreeze_last_n_clip_layers: Optional[int] = None
@@ -60,8 +59,8 @@ class ModelConfig:
     use_fixed_position_encoding: bool = False
     enable_norm_scale: bool = True
     enable_neti: bool = False
+    cross_attn_residual: bool = True
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
-
 
 
 @dataclass
@@ -74,3 +73,25 @@ class ControlNetConfig(ModelConfig):
 
 auto_store(ControlNetConfig, name="controlnet")
 auto_store(ModelConfig, model_type=ModelType.BASE_MAPPER, name="basemapper")
+store_child_config(
+    cls=ModelConfig,
+    group="model",
+    parent="basemapper",
+    child="cross_attn",
+    unfreeze_last_n_clip_layers=None,
+    dropout_masks=0.2,
+    enable_norm_scale=False,
+    use_fixed_position_encoding=True,
+    nested_dropout_prob=0,
+)
+store_child_config(
+    cls=ModelConfig,
+    group="model",
+    parent="basemapper",
+    child="neti",
+    enable_norm_scale=False,
+    use_fixed_position_encoding=False,
+    nested_dropout_prob=0.5,
+    mask_cross_attn=False,
+    output_bypass=False,
+)

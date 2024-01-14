@@ -87,10 +87,10 @@ class NeTIMapper(nn.Module):
         if not self.cfg.model.use_fixed_position_encoding:
             self.set_net(num_unet_layers=len(unet_layers), num_time_anchors=num_pe_time_anchors, output_dim=output_dim)
 
-        self.cross_attn = CrossAttn(cfg=cfg, input_dim=self.orig_output_dim, output_dim=output_dim)
+        if self.cfg.model.mask_cross_attn:
+            self.cross_attn = CrossAttn(cfg=cfg, input_dim=self.orig_output_dim, output_dim=output_dim)
 
     def set_net(self, num_unet_layers: int, num_time_anchors: int, output_dim: int = 768):
-        assert False
         self.input_layer = self.set_input_layer(num_unet_layers, num_time_anchors)
         self.net = nn.Sequential(
             self.input_layer,
@@ -102,7 +102,6 @@ class NeTIMapper(nn.Module):
             nn.LeakyReLU(),
         )
         self.output_layer = nn.Sequential(nn.Linear(128, output_dim))
-        assert False
 
     def set_input_layer(self, num_unet_layers: int, num_time_anchors: int) -> nn.Module:
         if self.use_positional_encoding:
@@ -143,8 +142,7 @@ class NeTIMapper(nn.Module):
         return embedding
 
     def get_output(self, embedding: torch.Tensor) -> torch.Tensor:
-        if not self.cfg.model.use_fixed_position_encoding:
-            embedding = self.output_layer(embedding)
+        embedding = self.output_layer(embedding)
         if self.norm_scale is not None:
             embedding = F.normalize(embedding, dim=-1) * self.norm_scale
         return embedding

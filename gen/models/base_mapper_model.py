@@ -95,7 +95,7 @@ class BaseMapper(nn.Module):
             self.controlnet: ControlNetModel = ControlNetModel.from_unet(self.unet)
 
         neti_mapper, self.loaded_iteration = self._init_neti_mapper()
-        self.text_encoder.text_model.embeddings.set_mapper(neti_mapper)
+        self.text_encoder.text_model.set_mapper(mapper=neti_mapper, cfg=self.cfg)
 
     def prepare_for_training(self, weight_dtype: torch.dtype, accelerator: Accelerator, bypass_dtype_check: bool = False):
         self.weight_dtype = weight_dtype
@@ -181,7 +181,7 @@ class BaseMapper(nn.Module):
         num_images_per_prompt: int = 1,
         **kwargs,
     ) -> Dict:
-        log_info(f"Computing embeddings over {len(timesteps)} timesteps and {len(unet_layers)} U-Net layers.")
+        log_warn(f"Computing embeddings over {len(timesteps)} timesteps and {len(unet_layers)} U-Net layers.")
         hidden_states_per_timestep = []
         for timestep in tqdm(timesteps, leave=False, disable=not is_main_process()):
             _hs = {"this_idx": 0}.copy()

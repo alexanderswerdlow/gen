@@ -2,6 +2,7 @@ import os
 import numpy as np
 import torch
 import torch.utils.checkpoint
+from gen.utils.decoupled_utils import is_main_process
 from gen.utils.logging_utils import log_info
 from packaging import version
 from PIL import Image
@@ -83,7 +84,7 @@ def get_controlnet_model(cfg: BaseConfig, accelerator: Accelerator) -> tuple[Aut
 
     # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
     def save_model_hook(models, weights, output_dir):
-        if accelerator.is_main_process:
+        if is_main_process():
             i = len(weights) - 1
 
             while len(weights) > 0:

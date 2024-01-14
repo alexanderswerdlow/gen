@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 import torch
 from torch import nn
 from transformers import CLIPTextConfig
+from gen.configs.base import BaseConfig
 
 from gen.models.neti.neti_mapper import NeTIMapper
 
@@ -33,9 +34,6 @@ class NeTICLIPTextEmbeddings(nn.Module):
         self.token_embedding = nn.Embedding(config.vocab_size, embed_dim)
         self.position_embedding = nn.Embedding(config.max_position_embeddings, embed_dim)
         self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
-
-    def set_mapper(self, mapper: NeTIMapper):
-        self.mapper = mapper
 
     def forward(
         self,

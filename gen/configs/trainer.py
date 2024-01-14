@@ -40,7 +40,7 @@ class TrainerConfig:
     max_train_samples: Optional[int] = None
     eval_every_n_steps: Optional[int] = 100
     eval_every_n_epochs: Optional[int] = None
-    eval_at_start: bool = True
+    eval_on_start: bool = True
     enable_xformers_memory_efficient_attention: bool = True
     compile: bool = False
     profiler_active_steps: int = 2
