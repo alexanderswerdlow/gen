@@ -13,17 +13,18 @@ import subprocess
 import glob
 import wandb
 from jaxtyping import BFloat16
-from accelerate.logging import get_logger
+from gen.utils.logging_utils import log_info
 
-logger = get_logger(__name__)
 
 def get_info():
-    return subprocess.run(['nvidia-smi'], stdout=subprocess.PIPE).stdout.decode('utf-8')
-    
+    return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE).stdout.decode("utf-8")
+
+
 def print_params(model):
-    print(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Unfrozen Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
-    print(f"Frozen Parameters: {sum(p.numel() for p in model.parameters() if not p.requires_grad):,}")
+    log_info(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    log_info(f"Unfrozen Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+    log_info(f"Frozen Parameters: {sum(p.numel() for p in model.parameters() if not p.requires_grad):,}")
+
 
 def calculate_storage_size(obj, storage_view_sizes, count_views=False):
     if isinstance(obj, torch.Tensor):
@@ -41,8 +42,7 @@ def calculate_storage_size(obj, storage_view_sizes, count_views=False):
             print_size = 0 if not count_views or not obj._is_view() else view_size
 
         if count_views or not obj._is_view():
-            print(f"{'View' if obj._is_view() else 'Storage'} Tensor: "
-              f"shape {obj.size()}, size {print_size / (1024 ** 2):.2f} MB")
+            log_info(f"{'View' if obj._is_view() else 'Storage'} Tensor: " f"shape {obj.size()}, size {print_size / (1024 ** 2):.2f} MB")
 
         return print_size if count_views or not obj._is_view() else 0  # Count views only if requested
     elif isinstance(obj, dict):
@@ -59,22 +59,24 @@ def calculate_storage_size(obj, storage_view_sizes, count_views=False):
         # Non-Tensor, non-dict, non-list objects are not measured
         return 0
 
+
 def calculate_total_size(obj, count_views=False):
     storage_view_sizes = defaultdict(int)
     total_size = calculate_storage_size(obj, storage_view_sizes, count_views)
     total_unique_storage_size = sum(storage_view_sizes.values())
-    print(f"Total unique storage size: {total_unique_storage_size / (1024 ** 2):.2f} MB")
+    log_info(f"Total unique storage size: {total_unique_storage_size / (1024 ** 2):.2f} MB")
     if count_views:  # Only add view sizes to total if requested
         total_view_size = total_size - total_unique_storage_size
-        print(f"Total view size (if counted): {total_view_size / (1024 ** 2):.2f} MB")
+        log_info(f"Total view size (if counted): {total_view_size / (1024 ** 2):.2f} MB")
     else:
-        print(f"Total size (without counting views): {total_size / (1024 ** 2):.2f} MB")
+        log_info(f"Total size (without counting views): {total_size / (1024 ** 2):.2f} MB")
 
     return total_size
-    
+
+
 def save_tensor_dict(tensor_dict: dict, path: Path):
     output_dict = {}
-    for k,v in tensor_dict.items():
+    for k, v in tensor_dict.items():
         if isinstance(v, Tensor):
             if v.dtype == torch.float16 or v.dtype == torch.bfloat16:
                 output_dict[k] = v.to(dtype=torch.float32).detach().cpu().numpy()
@@ -84,27 +86,31 @@ def save_tensor_dict(tensor_dict: dict, path: Path):
             output_dict[k] = v
     np.savez_compressed(path, **output_dict)
 
+
 def load_tensor_dict(path: Path):
     tensor_dict = {}
     np_dict = np.load(path)
-    for k,v in np_dict.items():
+    for k, v in np_dict.items():
         if v.dtype == BFloat16:
             tensor_dict[k] = torch.from_numpy(v.astype(np.float32)).to(dtype=torch.bfloat16)
         else:
             tensor_dict[k] = torch.from_numpy(v)
     return tensor_dict
 
+
 def tensor_hash(tensor):
     """Computes a SHA256 hash of a tensor. Useful for debugging to check equality in different places."""
     tensor_bytes = tensor.detach().float().cpu().numpy().tobytes()
     return hashlib.sha256(tensor_bytes).hexdigest()
 
+
 def module_hash(module: Optional[dict] = None, state_dict: Optional[dict] = None):
     assert module is not None or state_dict is not None
     state_dict = module.state_dict() if module is not None else state_dict
     sorted_state_dict = {k: state_dict[k] for k in sorted(state_dict)}
-    params_cat = torch.cat([v.flatten() for _,v in sorted_state_dict.items()])
+    params_cat = torch.cat([v.flatten() for _, v in sorted_state_dict.items()])
     return tensor_hash(params_cat)
+
 
 def find_diff_params(state_dict_1, state_dict_2):
     diff_keys = set(state_dict_1.keys()) ^ set(state_dict_2.keys())  # Symmetric difference to find keys not in both
@@ -114,12 +120,13 @@ def find_diff_params(state_dict_1, state_dict_2):
     for key in matched_keys:
         if not torch.equal(state_dict_1[key], state_dict_2[key]):
             diff_keys.add(key)
-    
+
     return diff_keys
 
+
 def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=False, truncate=None, only_incl=None, verbose=True):
-    print(f"Loading {module.__class__.__name__} from checkpoint: {path}")
-    print(f"Strict Load: {strict}, Ignoring: {ignore_keys}, Unfreezing: {unfrozen_keys}, Truncating: {truncate}")
+    log_info(f"Loading {module.__class__.__name__} from checkpoint: {path}")
+    log_info(f"Strict Load: {strict}, Ignoring: {ignore_keys}, Unfreezing: {unfrozen_keys}, Truncating: {truncate}")
 
     if ignore_keys is None:
         ignore_keys = ()
@@ -131,8 +138,8 @@ def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=Fa
 
     if "state_dict" in sd.keys():
         sd = sd["state_dict"]
-    elif 'weight' in sd.keys():
-        sd = sd['weight']
+    elif "weight" in sd.keys():
+        sd = sd["weight"]
 
     num_deleted = defaultdict(int)
     for k in list(sd):
@@ -142,12 +149,12 @@ def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=Fa
                 del sd[k]
 
     for k, v in num_deleted.items():
-        print(f'Deleted {v} keys due to ignore_key: {k}')
+        log_info(f"Deleted {v} keys due to ignore_key: {k}")
 
     if truncate is not None:
         for k in list(sd):
             if k.startswith(truncate):
-                sd[k.replace(truncate, '')] = sd[k]
+                sd[k.replace(truncate, "")] = sd[k]
             del sd[k]
 
     num_ignored = defaultdict(int)
@@ -157,7 +164,7 @@ def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=Fa
                 if ik in n:
                     num_ignored[ik] += 1
                 else:
-                    print(f'Missing {n}')
+                    log_info(f"Missing {n}")
 
     if only_incl is not None:
         for k in list(sd):
@@ -169,19 +176,19 @@ def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=Fa
                 del sd[k]
 
     for k, v in num_ignored.items():
-        print(f'Missing {v} keys due to ignore_key: {k}')
+        log_info(f"Missing {v} keys due to ignore_key: {k}")
 
     for n in sd.keys():
         if n not in module.state_dict().keys():
-            print(f'Unexpected {n}')
+            log_info(f"Unexpected {n}")
 
     checkpoint_keys = set(sd.keys())
     current_keys = set(module.state_dict().keys())
-    
+
     if verbose:
-        print(f'Loading: {checkpoint_keys.intersection(current_keys)}')
+        log_info(f"Loading: {checkpoint_keys.intersection(current_keys)}")
     else:
-        print(f'Loading {len(checkpoint_keys.intersection(current_keys))} keys into the model: {str(module.__class__)}')
+        log_info(f"Loading {len(checkpoint_keys.intersection(current_keys))} keys into the model: {str(module.__class__)}")
 
     module.load_state_dict(sd, strict=strict)
 
@@ -191,9 +198,10 @@ def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=Fa
             for unfrozen_name in unfrozen_keys:
                 if unfrozen_name in n:
                     p.requires_grad_ = True
-                    print(f'Unfreezing: {n}')
+                    log_info(f"Unfreezing: {n}")
 
-    print(f"Restored from {path}")
+    log_info(f"Restored from {path}")
+
 
 def check_gpu_memory_usage():
     allocated = torch.cuda.memory_allocated()
@@ -208,12 +216,13 @@ def check_gpu_memory_usage():
     allocated_percent = (allocated / total_memory) * 100
     reserved_percent = (reserved / total_memory) * 100
 
-    logger.info(f"Allocated memory: {allocated_percent:.2f}%")
-    logger.info(f"Reserved memory: {reserved_percent:.2f}%")
-    logger.info(f'Available devices (CUDA_VISIBLE_DEVICES): {os.environ.get("CUDA_VISIBLE_DEVICES")}')
+    log_info(f"Allocated memory: {allocated_percent:.2f}%")
+    log_info(f"Reserved memory: {reserved_percent:.2f}%")
+    log_info(f'Available devices (CUDA_VISIBLE_DEVICES): {os.environ.get("CUDA_VISIBLE_DEVICES")}')
 
     assert allocated_percent <= 25
     assert reserved_percent <= 25
+
 
 def load_checkpoint_from_url(url: str, file_path: Optional[str] = None) -> Path:
     if file_path is None:
@@ -222,19 +231,18 @@ def load_checkpoint_from_url(url: str, file_path: Optional[str] = None) -> Path:
         if file_path is not None:
             filename = file_path
 
-        file_path = Path.home() / '.cache' / 'pretrained_weights' / filename
+        file_path = Path.home() / ".cache" / "pretrained_weights" / filename
 
     file_path.parent.mkdir(parents=True, exist_ok=True)
     if not os.path.exists(file_path):
-        print(f'Downloading: "{url}" to {file_path}\n')
+        log_info(f'Downloading: "{url}" to {file_path}\n')
         torch.hub.download_url_to_file(url, file_path, progress=True)
-    
+
     return file_path
 
+
 # Copied from torch.profiler.profiler
-def tensorboard_trace_handler(
-    dir_name: str, worker_name: Optional[str] = None, use_gzip: bool = True
-):
+def tensorboard_trace_handler(dir_name: str, worker_name: Optional[str] = None, use_gzip: bool = True):
     """
     Outputs tracing files to directory of ``dir_name``, then that directory can be
     directly delivered to tensorboard as logdir.
@@ -265,9 +273,10 @@ def tensorboard_trace_handler(
 
     return handler_fn
 
-class Profiler():
+
+class Profiler:
     def __init__(self, output_dir, active_steps: int = 2, record_separate_memory=True):
-        self.profile_dir = Path(output_dir) / 'profile'
+        self.profile_dir = Path(output_dir) / "profile"
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         wait, warmup, active, repeat = 0, 0, active_steps, 0
         self.total_steps = (wait + warmup + active) * (1 + repeat)
@@ -279,7 +288,7 @@ class Profiler():
             with_modules=True,
             with_flops=True,
             profile_memory=True,
-            with_stack=True
+            with_stack=True,
         )
         self.profiler.start()
 
@@ -292,12 +301,19 @@ class Profiler():
 
         torch.cuda.memory._dump_snapshot(f"{self.profile_dir}/memory_snapshot.pickle")
         torch.cuda.memory._record_memory_history(enabled=None)
-        os.system(f'python -m torch.cuda._memory_viz trace_plot {self.profile_dir}/memory_snapshot.pickle -o {self.profile_dir}/memory_snapshot.html')
+        os.system(f"python -m torch.cuda._memory_viz trace_plot {self.profile_dir}/memory_snapshot.pickle -o {self.profile_dir}/memory_snapshot.html")
 
-        print(f'Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle')
-        print(f'Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008')
+        log_info(f"Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle")
+        log_info(f"Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008")
 
         traces = glob.glob(f"{self.profile_dir}/*.pt.trace.json*")
         for trace in traces:
-            print(f'Adding {trace}')
-            wandb.save(trace, base_path=self.profile_dir, policy='now')
+            log_info(f"Adding {trace}")
+            wandb.save(trace, base_path=self.profile_dir, policy="now")
+
+
+def is_main_process():
+    return not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+
+def get_num_gpus():
+    return dist.get_world_size() if dist.is_available() and dist.is_initialized() else torch.cuda.device_count()

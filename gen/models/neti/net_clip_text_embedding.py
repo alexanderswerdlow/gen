@@ -44,11 +44,12 @@ class NeTICLIPTextEmbeddings(nn.Module):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         batch: Optional[NeTIBatch] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        
         if batch is not None:
             input_ids = batch.input_ids
-
+        
         seq_length = input_ids.shape[-1] if input_ids is not None else inputs_embeds.shape[-2]
-
+        
         if position_ids is None:
             position_ids = self.position_ids[:, :seq_length]
 

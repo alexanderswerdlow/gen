@@ -34,6 +34,8 @@ from gen.utils.attention_visualization_utils import (
     register_cross_attention_hook,
     resize_net_attn_map,
 )
+from gen.utils.decoupled_utils import is_main_process
+from gen.utils.logging_utils import log_info
 
 def gather(accelerator: Accelerator, device: torch.device, img: Im):
     if isinstance(img, Iterable):
@@ -42,7 +44,14 @@ def gather(accelerator: Accelerator, device: torch.device, img: Im):
         tensor = img.torch.to(device).unsqueeze(0)
         
     concat_tensor = accelerator.gather(tensor)
-    return [Im(concat_tensor[i]) for i in range(concat_tensor.shape[0])]
+    try:
+        ret = [Im(concat_tensor[i]) for i in range(concat_tensor.shape[0])]
+    except:
+        print(concat_tensor.shape)
+        print(concat_tensor.dtype)
+        print(concat_tensor.device)
+        raise
+    return ret
 
 def remove_row(tensor, row_index):
     return torch.cat((tensor[:row_index], tensor[row_index + 1 :]))
@@ -149,9 +158,9 @@ def run_inference_dataloader(
     output_path.mkdir(exist_ok=True, parents=True)
     all_output_images = []
     all_output_attn_viz = []
-    print(f"Running inference. Dataloder size: {len(dataloader)}")
-    for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not accelerator.is_local_main_process):
-        print(f"Generating with batch {i}")
+    log_info(f"Running inference. Dataloder size: {len(dataloader)}")
+    for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
+        log_info(f"Generating with batch {i}")
         orig_input_ids = batch["input_ids"].clone()
 
         images = []
@@ -184,7 +193,7 @@ def run_inference_dataloader(
                     output_col = Im.concat_vertical(Im(attn_map.convert("RGB")), orig_image_, spacing=5).write_text(f"mask: {mask_idx}")
                     mask_idx += 1
                 else:
-                    orig_image_ = Im(255 * np.ones((512, 512, 3), dtype=np.uint8))
+                    orig_image_ = Im(255 * np.ones((inference_cfg.resolution, inference_cfg.resolution, 3), dtype=np.uint8))
                     output_col = Im.concat_vertical(Im(attn_map.convert("RGB")), orig_image_, spacing=5).write_text(f"{token}")
 
                 output_cols.append(output_col)
@@ -196,7 +205,7 @@ def run_inference_dataloader(
             gen_segmentation = batch["gen_segmentation"]
 
             for j in range(gen_segmentation.shape[-1])[: inference_cfg.num_masks_to_remove]:
-                print(f"Generating with removed mask {j}")
+                log_info(f"Generating with removed mask {j}")
                 batch["gen_segmentation"] = gen_segmentation[..., torch.arange(gen_segmentation.size(-1)) != j]
                 batch["input_ids"] = orig_input_ids.clone()
                 prompt_image, input_prompt = run_inference_batch(
@@ -237,7 +246,7 @@ def run_inference_dataloader(
             global_step=(global_step if global_step is not None else i),
         )
 
-    print(f"Saved to {output_path}")
+    log_info(f"Saved to {output_path}")
 
 
 def run_inference_batch(
@@ -254,14 +263,16 @@ def run_inference_batch(
     if visualize_attention_map:
         cross_attn_init()
         pipeline.unet = register_cross_attention_hook(pipeline.unet)
-    with torch.autocast("cuda"):
-        with torch.no_grad():
+
+    negative_prompt_embeds = None
+    with torch.no_grad():
+        if not inference_cfg.empty_string_cfg:
             negative_prompt_embeds, _ = prompt_manager.embed_prompt(
                 batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx, disable_conditioning=True 
             )
-            prompt_embeds, input_prompt = prompt_manager.embed_prompt(
-                batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx
-            )
+        prompt_embeds, input_prompt = prompt_manager.embed_prompt(
+            batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx
+        )
     generator = torch.Generator(device="cuda").manual_seed(seed)
     images = sd_pipeline_call(pipeline, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_prompt_embeds, generator=generator, num_images_per_prompt=num_images_per_prompt, guidance_scale=inference_cfg.guidance_scale).images[0]
     return images, input_prompt

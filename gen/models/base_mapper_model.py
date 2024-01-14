@@ -10,7 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate import Accelerator
-from accelerate.logging import get_logger
+from gen.utils.decoupled_utils import is_main_process
+from gen.utils.logging_utils import log_info, log_warn
 from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, UNet2DConditionModel
 from diffusers.utils.import_utils import is_xformers_available
 from einops import rearrange
@@ -26,8 +27,9 @@ from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.models.sam import HQSam, find_true_indices_batched
 from gen.utils.encoder_utils import ClipFeatureExtractor
+from gen.utils.trainer_utils import custom_ddp_unwrap
 
-logger = get_logger(__name__)
+
 
 
 def image_grid(imgs, rows, cols):
@@ -49,16 +51,22 @@ class BaseMapper(nn.Module):
             self.initialize_model()
 
         self.initialize_pretrained_models()
+        self._add_concept_token_to_tokenizer()
 
     def initialize_pretrained_models(self):
         self.clip = ClipFeatureExtractor()
-        self.clip.train()
 
         if self.cfg.model.freeze_clip:
             self.clip.requires_grad_(False)
-            warnings.warn("Warning, CLIP is frozen for debugging!!!!!")
+            self.clip.eval()
+            log_warn("Warning, CLIP is frozen for debugging")
+        else:
+            log_warn("Warning, CLIP is unfrozen")
+            self.clip.requires_grad_(True)
+            self.clip.train()
 
         if self.cfg.model.unfreeze_last_n_clip_layers is not None:
+            log_warn(f"Warning, unfreezing last {self.cfg.model.unfreeze_last_n_clip_layers} CLIP layers")
             for block in self.clip.base_model.transformer.resblocks[-self.cfg.model.unfreeze_last_n_clip_layers :]:
                 block.requires_grad_(True)
 
@@ -86,7 +94,6 @@ class BaseMapper(nn.Module):
         if self.cfg.model.controlnet:
             self.controlnet: ControlNetModel = ControlNetModel.from_unet(self.unet)
 
-        self.placeholder_token_id = self._add_concept_token_to_tokenizer()
         neti_mapper, self.loaded_iteration = self._init_neti_mapper()
         self.text_encoder.text_model.embeddings.set_mapper(neti_mapper)
 
@@ -174,9 +181,9 @@ class BaseMapper(nn.Module):
         num_images_per_prompt: int = 1,
         **kwargs,
     ) -> Dict:
-        warnings.warn(f"Computing embeddings over {len(timesteps)} timesteps and {len(unet_layers)} U-Net layers.")
+        log_info(f"Computing embeddings over {len(timesteps)} timesteps and {len(unet_layers)} U-Net layers.")
         hidden_states_per_timestep = []
-        for timestep in tqdm(timesteps, leave=False):
+        for timestep in tqdm(timesteps, leave=False, disable=not is_main_process()):
             _hs = {"this_idx": 0}.copy()
             for layer_idx, unet_layer in enumerate(unet_layers):
                 neti_batch = NeTIBatch(
@@ -199,13 +206,18 @@ class BaseMapper(nn.Module):
         Adds the concept token to the tokenizer and initializes it with the embeddings of the super category token.
         The super category token will also be used for computing the norm for rescaling the mapper output.
         """
-        num_added_tokens = self.tokenizer.add_tokens(self.cfg.model.placeholder_token)
+        # num_added_tokens = self.tokenizer.add_tokens(self.cfg.model.placeholder_token)
         # if num_added_tokens == 0:
         #     raise ValueError(
         #         f"The tokenizer already contains the token {self.cfg.model.placeholder_token}. "
         #         f"Please pass a different `placeholder_token` that is not already in the tokenizer."
         #     )
 
+        self.placeholder_token_id = self.tokenizer.encode(self.cfg.model.placeholder_token, add_special_tokens=False)[0]
+        self.cfg.model.placeholder_token_id = self.placeholder_token_id
+        if not self.cfg.model.enable_neti:
+            return
+        
         # Convert the super_category_token, placeholder_token to ids
         token_ids = self.tokenizer.encode(self.cfg.model.super_category_token, add_special_tokens=False)
 
@@ -214,10 +226,6 @@ class BaseMapper(nn.Module):
             raise ValueError("The super category token must be a single token.")
 
         super_category_token_id = token_ids[0]
-        placeholder_token_id = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
-        self.cfg.model.placeholder_token_id = placeholder_token_id
-        if not self.cfg.model.enable_neti:
-            return placeholder_token_id
 
         # Resize the token embeddings as we are adding new special tokens to the tokenizer
         self.text_encoder.resize_token_embeddings(len(self.tokenizer))
@@ -236,7 +244,7 @@ class BaseMapper(nn.Module):
     def _init_neti_mapper(self) -> Tuple[NeTIMapper, Optional[int]]:
         loaded_iteration = None
         neti_mapper = NeTIMapper(
-            output_dim=768,
+            output_dim=self.cfg.model.token_embedding_dim,
             use_nested_dropout=self.cfg.model.use_nested_dropout,
             nested_dropout_prob=self.cfg.model.nested_dropout_prob,
             norm_scale=self.cfg.model.target_norm if self.cfg.model.enable_norm_scale else None,
@@ -251,18 +259,20 @@ class BaseMapper(nn.Module):
     def get_hidden_state(self, batch, timesteps, dtype, device, per_timestep: bool = False, disable_conditioning: bool = False):
         bs: int = batch["disc_pixel_values"].shape[0]
 
-        clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))["stage23"]
+        clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))["ln_post"].permute(1, 0, 2)
 
         def viz():
             from image_utils import Im, calculate_principal_components, get_layered_image_from_binary_mask, pca
 
-            principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]))
+            principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]).float())
+            bs_ = clip_feature_map.shape[1]
+            dim_ = clip_feature_map.shape[2]
             outmap = (
                 pca(
-                    clip_feature_map[1:, ...].permute(1, 2, 0).reshape(4, 1024, 16, 16).permute(0, 2, 3, 1).reshape(-1, 1024).float(),
+                    clip_feature_map[1:, ...].float().permute(1, 2, 0).reshape(bs_, dim_, 16, 16).permute(0, 2, 3, 1).reshape(-1, dim_).float(),
                     principal_components=principal_components,
                 )
-                .reshape(4, 16, 16, 3)
+                .reshape(bs_, 16, 16, 3)
                 .permute(0, 3, 1, 2)
             )
             outmap_min, _ = torch.min(outmap, dim=1, keepdim=True)
@@ -295,12 +305,15 @@ class BaseMapper(nn.Module):
                     masks = masks[:24]  # We only have 77 tokens
                     original = torch.from_numpy(np.array([masks[i]["segmentation"] for i in range(len(masks))]))
 
-                if self.cfg.model.dropout_masks is not None and self.text_encoder.text_model.embeddings.mapper.training:
+                if self.cfg.model.dropout_masks is not None and custom_ddp_unwrap(self.text_encoder).text_model.embeddings.mapper.training:
                     mask = torch.rand(original.size(0)) > self.cfg.model.dropout_masks
+                    mask[0] = True  # We always keep the background mask
                     original = original[mask]
 
+                original = original[torch.sum(original, dim=[1,2]) > 0] # Remove empty masks
+
                 if original.shape[0] == 0:
-                    print("Warning, no masks found for this image")
+                    log_info("Warning, no masks found for this image")
                     continue
 
                 assert batch["disc_pixel_values"].shape[-1] == batch["disc_pixel_values"].shape[-2]
@@ -340,14 +353,18 @@ class BaseMapper(nn.Module):
                 assert (token_is_padding.shape[0] == (batch["input_ids"].shape[1] - token_is_padding[0])).item()
                 mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
                 assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0]  # We need at least as many pad tokens as we have masks
-                extent = len(batch["input_ids"][b, token_is_padding[0] : token_is_padding[0] + (mask_part_of_batch.shape[0] * len(mask_tokens_ids))])
+                start_loc = token_is_padding[0]
+                number_of_added_tokens = (mask_part_of_batch.shape[0] * len(mask_tokens_ids)) - 1
+                replace_sl = slice(start_loc, start_loc + number_of_added_tokens)
+                extent = len(batch["input_ids"][b, replace_sl])
                 repeated_tensor = torch.tensor(mask_tokens_ids * mask_part_of_batch.shape[0])[:extent]
-                batch["input_ids"][
-                    b, token_is_padding[0] : token_is_padding[0] + (mask_part_of_batch.shape[0] * len(mask_tokens_ids))
-                ] = repeated_tensor
+                batch["input_ids"][b, replace_sl] = repeated_tensor
 
             text_encoder_dict = dict(
-                attn_dict=attn_dict, placeholder_token=placeholder_token_id, pad_token=pad_token_id, feature_map_batch_idxs=feature_map_batch_idxs
+                attn_dict=attn_dict, 
+                placeholder_token=placeholder_token_id,
+                pad_token=pad_token_id,
+                feature_map_batch_idxs=feature_map_batch_idxs
             )
 
         input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
@@ -380,7 +397,6 @@ class BaseMapper(nn.Module):
                 down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
                 mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
             )
-
         else:
             # Predict the noise residual
             model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample

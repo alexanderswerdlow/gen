@@ -45,6 +45,13 @@ class TrainerConfig:
     compile: bool = False
     profiler_active_steps: int = 2
     log_gradients: Optional[int] = None
+    log_parameters: bool = False
+
+    dynamic_grad_accum_default_gpus: int = 4
+    enable_dynamic_grad_accum: bool = False
+
+    # Set in code
+    num_gpus: Optional[int] = None
 
 
 auto_store(TrainerConfig, name="base")

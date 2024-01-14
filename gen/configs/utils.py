@@ -7,7 +7,7 @@ from dataclasses import is_dataclass
 from omegaconf import OmegaConf
 import inspect
 from typing import Optional, get_type_hints
-
+from omegaconf import DictConfig, OmegaConf
 
 def destructure(x):
     x = default_to_config(x)  # apply the default auto-config logic of `store`
@@ -21,13 +21,12 @@ def destructure(x):
 
 destructure_store = store(to_config=destructure)
 
-
 def global_store(name: str, group: str, hydra_defaults: Optional[list[Any]] = None, **kwargs):
     from gen.configs.base import BaseConfig
 
     destructure_store(
         make_config(
-            hydra_defaults=hydra_defaults if hydra_defaults is not None else ["_self_"], bases=(BaseConfig,), zen_dataclass={"kw_only": True}, **kwargs
+            hydra_defaults=hydra_defaults if hydra_defaults is not None else ["_self_"], bases=(BaseConfig,), zen_dataclass={"kw_only": True}, **kwargs,
         ),
         group=group,
         package="_global_",

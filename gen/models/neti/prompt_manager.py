@@ -1,14 +1,16 @@
 from gc import disable
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 import torch
+from torch.nn.parallel import DistributedDataParallel
 from tqdm import tqdm
 from transformers import CLIPTokenizer
-from gen.models.base_mapper_model import BaseMapper
 
+from gen.models.base_mapper_model import BaseMapper
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
-from torch.nn.parallel import DistributedDataParallel
+from gen.utils.decoupled_utils import is_main_process
+from gen.utils.trainer_utils import custom_ddp_unwrap
 
 UNET_LAYERS = ['IN01', 'IN02', 'IN04', 'IN05', 'IN07', 'IN08', 'MID',
                'OUT03', 'OUT04', 'OUT05', 'OUT06', 'OUT07', 'OUT08', 'OUT09', 'OUT10', 'OUT11']
@@ -50,19 +52,13 @@ class PromptManager:
         Compute the conditioning vectors for the given prompt. We assume that the prompt is defined using `{}`
         for indicating where to place the placeholder token string. See constants.VALIDATION_PROMPTS for examples.
         """
-        if isinstance(self.model, DistributedDataParallel):
-            model_ = self.model.module
-        else:
-            model_ = self.model
-
-        model_.placeholder_token_id = model_.tokenizer.convert_tokens_to_ids(model_.cfg.model.placeholder_token)
-        model_.weight_dtype = self.dtype
-        input_ids, text_encoder_dict, input_prompt = model_.get_hidden_state(batch, timesteps=self.timesteps, device=batch['gen_pixel_values'].device, dtype=self.dtype, per_timestep=True, disable_conditioning=disable_conditioning)
+        custom_ddp_unwrap(self.model).weight_dtype = self.dtype
+        input_ids, text_encoder_dict, input_prompt = custom_ddp_unwrap(self.model).get_hidden_state(batch, timesteps=self.timesteps, device=batch['gen_pixel_values'].device, dtype=self.dtype, per_timestep=True, disable_conditioning=disable_conditioning)
 
         # Compute embeddings for each timestep and each U-Net layer
         print(f"Computing embeddings over {len(self.timesteps)} timesteps and {len(self.unet_layers)} U-Net layers.")
         hidden_states_per_timestep = []
-        for timestep in tqdm(self.timesteps, leave=False, disable=True):
+        for timestep in tqdm(self.timesteps, leave=False, disable=not is_main_process()):
             _hs = {"this_idx": 0}.copy()
             for layer_idx, unet_layer in enumerate(self.unet_layers):
                 neti_batch = NeTIBatch(

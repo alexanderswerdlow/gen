@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from functools import wraps
 
 from accelerate import Accelerator
-from accelerate.logging import get_logger
+from gen.utils.logging_utils import log_info
 
 from gen.configs.base import BaseConfig
 
-logger = get_logger(__name__)
+
 
 
 def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step: int):
@@ -23,8 +23,8 @@ def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step:
             num_to_remove = len(checkpoints) - cfg.trainer.checkpoints_total_limit + 1
             removing_checkpoints = checkpoints[0:num_to_remove]
 
-            logger.info(f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints")
-            logger.info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+            log_info(f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints")
+            log_info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
             for removing_checkpoint in removing_checkpoints:
                 removing_checkpoint = os.path.join(cfg.output_dir, removing_checkpoint)
@@ -32,11 +32,7 @@ def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step:
 
     save_path = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
     accelerator.save_state(save_path)
-    logger.info(f"Saved state to {save_path}")
-
-
-
-
+    log_info(f"Saved state to {save_path}")
 
 @dataclass
 class TrainingState:
@@ -63,3 +59,11 @@ def every_n_epochs(func, n: int, except_first: bool = False, all_processes: bool
             return func(*args, **kwargs)
 
     return wrapper
+
+
+def custom_ddp_unwrap(model):
+    from torch.nn.parallel import DistributedDataParallel
+    if isinstance(model, DistributedDataParallel):
+        return model.module
+    else:
+       return model

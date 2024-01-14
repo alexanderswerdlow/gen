@@ -17,7 +17,13 @@ class ModelType(Enum):
 @dataclass
 class ModelConfig:
     name: ClassVar[str] = "model"
+    # pretrained_model_name_or_path: Optional[str] = "stabilityai/stable-diffusion-2-1"
+    # token_embedding_dim: int = 1024
+    # resolution: int = 768
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
+    token_embedding_dim: int = 768
+    resolution: int = 512
+
     revision: Optional[str] = None
     variant: Optional[str] = None
     model_type: Optional[ModelType] = None
@@ -43,8 +49,9 @@ class ModelConfig:
     placeholder_token: str = "place"
     placeholder_token_id: Optional[int] = None
     super_category_token: str = "object"
-    mask_cross_attn: bool = True
 
+    
+    mask_cross_attn: bool = True
     freeze_clip: bool = True
     unfreeze_last_n_clip_layers: Optional[int] = None
     dropout_masks: Optional[float] = None
@@ -53,8 +60,8 @@ class ModelConfig:
     use_fixed_position_encoding: bool = False
     enable_norm_scale: bool = True
     enable_neti: bool = False
-
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
+
 
 
 @dataclass

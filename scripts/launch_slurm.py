@@ -3,12 +3,12 @@ from typing import MutableMapping, Any, Dict
 
 import rich.tree
 import rich.syntax
-from accelerate.logging import get_logger
+from gen.utils.logging_utils import log_info
 from omegaconf import DictConfig, OmegaConf
 from pathlib import Path
 from omegaconf import OmegaConf, open_dict
 
-logger = get_logger(__name__)
+
 
 def nvidia_smi_gpu_memory_stats():
     """

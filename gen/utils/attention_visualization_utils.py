@@ -18,6 +18,8 @@ from diffusers.models.attention_processor import (
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 import math
 
+from gen.utils.logging_utils import log_info
+
 attn_maps = {}
 
 
@@ -290,7 +292,7 @@ def register_cross_attention_hook(unet):
         elif isinstance(module.processor, XTIAttenProc):
             module.processor.store_attn_map = True
 
-        # print(f'registering hook for {name}')
+        # log_info(f'registering hook for {name}')
 
         hook = module.register_forward_hook(hook_fn(name))
     
@@ -353,7 +355,8 @@ def get_net_attn_map(image_size, batch_size=2, instance_or_negative=False, detac
         net_attn_maps.append(attn_map) # (10,32*32,77) -> (77,64*64)
 
     net_attn_maps = torch.mean(torch.stack(net_attn_maps,dim=0),dim=0)
-    net_attn_maps = net_attn_maps.reshape(net_attn_maps.shape[0], 64,64) # (77,64*64) -> (77,64,64)
+    latent_size = int(math.sqrt(net_attn_maps.shape[1]))
+    net_attn_maps = net_attn_maps.reshape(net_attn_maps.shape[0], latent_size, latent_size) # (77,64*64) -> (77,64,64)
 
     return net_attn_maps
 
@@ -372,7 +375,7 @@ def get_all_net_attn_maps(net_attn_maps, tokens):
         image = get_attn_map_img(attn_map)
         attn_maps_img.append(image)
 
-    print(f'total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}')
+    log_info(f'total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}')
     return attn_maps_img
 
 def save_net_attn_map(net_attn_maps, dir_name, tokenizer, tokens):
@@ -395,7 +398,7 @@ def save_net_attn_map(net_attn_maps, dir_name, tokenizer, tokens):
             f'{token}:{attn_map_score:.2f}',
             f"{dir_name}/{i}_{token}:{int(attn_map_score*100)}.png"
         )
-    print(f'total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}')
+    log_info(f'total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}')
 
 
 def resize_net_attn_map(net_attn_maps, target_size):

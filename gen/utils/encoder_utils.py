@@ -202,6 +202,7 @@ class ClipFeatureExtractor(FeatureExtractorModel):
                 'transformer.resblocks.11': 'stage1',
                 'transformer.resblocks.17': 'stage17',
                 'transformer.resblocks.23': 'stage23',
+                'transformer': 'transformer',
                 'ln_post': 'ln_post',
             },
             **kwargs

@@ -12,6 +12,7 @@ from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import NeTIMapper
 from gen.models.neti.positional_encoding import BasicEncoder, NeTIPositionalEncoding
 from gen.utils.decoupled_utils import module_hash, tensor_hash
+from gen.utils.logging_utils import log_info
 
 
 class CheckpointHandler:
@@ -28,7 +29,7 @@ class CheckpointHandler:
     ):
         self.save_learned_embeds(model, accelerator, save_name)
         self.save_mapper(accelerator, model, save_name)
-        print(f"Saved checkpoint at step: {save_name} in {self.save_root}")
+        log_info(f"Saved checkpoint at step: {save_name} in {self.save_root}")
 
     def save_learned_embeds(self, model: BaseMapper, accelerator: Accelerator, save_name: str):
         """
@@ -62,7 +63,7 @@ class CheckpointHandler:
 
         cfg: BaseConfig = OmegaConf.create(mapper_ckpt["cfg"])
         neti_mapper = NeTIMapper(
-            output_dim=768,
+            output_dim=cfg.model.token_embedding_dim,
             use_nested_dropout=cfg.model.use_nested_dropout,
             nested_dropout_prob=cfg.model.nested_dropout_prob,
             norm_scale=cfg.model.target_norm,

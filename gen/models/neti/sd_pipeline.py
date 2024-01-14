@@ -3,6 +3,8 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import torch
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline, StableDiffusionPipelineOutput
 
+from gen.utils.logging_utils import log_info
+
 
 @torch.no_grad()
 def sd_pipeline_call(
@@ -24,7 +26,7 @@ def sd_pipeline_call(
     num_inference_steps: int = 50,
 ):
     """Modification of the standard SD pipeline call to support NeTI embeddings passed with prompt_embeds argument."""
-    print(f"Running SD pipeline with {num_inference_steps} inference steps.")
+    log_info(f"Running SD pipeline with {num_inference_steps} inference steps.")
     # 0. Default height and width to unet
     height = height or pipeline.unet.config.sample_size * pipeline.vae_scale_factor
     width = width or pipeline.unet.config.sample_size * pipeline.vae_scale_factor

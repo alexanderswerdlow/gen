@@ -119,14 +119,14 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         
         enable_conditioning = batch is not None and len(feature_map_batch_idxs := kwargs.get('feature_map_batch_idxs', [])) > 0
         if enable_conditioning:
+            token_embedding_dim = mapper_outputs.shape[-1]
             kwargs['attn_dict']['x'] = mapper_outputs[feature_map_batch_idxs] # Copy the NeTI output to the right masks based on batch idx
 
             # TODO: We should find a better place to put the cross-attn but this is the most convinient for now
             output = self.embeddings.mapper.cross_attn(**kwargs)
 
             learnable_idxs = (batch.input_ids == batch.placeholder_token_id).nonzero(as_tuple=True)
-            # TODO: Is this residual for T/L what we want?
-            hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[:, :768].to(hidden_states.dtype) + mapper_outputs[feature_map_batch_idxs]
+            hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[:, :token_embedding_dim].to(hidden_states.dtype) + mapper_outputs[feature_map_batch_idxs]
 
         # CLIP's causal mask, prepare it here: https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
         causal_attention_mask = _make_causal_mask(input_shape, hidden_states.dtype, device=hidden_states.device)
@@ -147,9 +147,11 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         last_hidden_state = encoder_outputs[0]
         last_hidden_state_with_bypass = last_hidden_state.clone()
 
-        if enable_conditioning:
+        bypass_output = None
+
+        if enable_conditioning and bypass_output is not None:
             # TODO: Is this residual for T/L what we want?
-            bypass_output = bypass_output[feature_map_batch_idxs] + output[:, 768:].to(encoder_outputs.last_hidden_state.dtype)
+            bypass_output = bypass_output[feature_map_batch_idxs] + output[:, token_embedding_dim:].to(encoder_outputs.last_hidden_state.dtype)
 
         ###############################################
         # NeTI logic - compute the scaled bypass output

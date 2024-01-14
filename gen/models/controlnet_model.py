@@ -2,7 +2,7 @@ import os
 import numpy as np
 import torch
 import torch.utils.checkpoint
-from accelerate.logging import get_logger
+from gen.utils.logging_utils import log_info
 from packaging import version
 from PIL import Image
 from transformers import AutoTokenizer, PretrainedConfig
@@ -20,7 +20,7 @@ from diffusers.utils.import_utils import is_xformers_available
 from gen.configs import BaseConfig
 import wandb
 
-logger = get_logger(__name__)
+
 
 def image_grid(imgs, rows, cols):
     assert len(imgs) == rows * cols
@@ -75,10 +75,10 @@ def get_controlnet_model(cfg: BaseConfig, accelerator: Accelerator) -> tuple[Aut
     )
 
     if cfg.model.controlnet_model_name_or_path:
-        logger.info("Loading existing controlnet weights")
+        log_info("Loading existing controlnet weights")
         controlnet = ControlNetModel.from_pretrained(cfg.model.controlnet_model_name_or_path)
     else:
-        logger.info("Initializing controlnet weights from unet")
+        log_info("Initializing controlnet weights from unet")
         controlnet = ControlNetModel.from_unet(unet)
 
     # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
@@ -172,7 +172,7 @@ def controlnet_forward(batch, noisy_latents, timesteps, weight_dtype, unet, text
     return model_pred
 
 def log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg: BaseConfig, accelerator, weight_dtype, step):
-    logger.info("Running validation... ")
+    log("Running validation... ")
 
     controlnet = accelerator.unwrap_model(controlnet)
 

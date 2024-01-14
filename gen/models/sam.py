@@ -4,9 +4,11 @@ import os
 import torch
 from einops import rearrange
 
+from gen.utils.logging_utils import log_info
+
 device_name = torch.cuda.get_device_name()
 if not device_name.startswith('NVIDIA A100'):
-    print("Warning: Custom flash attention kernels were written specifically for A100. Setting SEGMENT_ANYTHING_FAST_USE_FLASH_4=0")
+    log_info("Warning: Custom flash attention kernels were written specifically for A100. Setting SEGMENT_ANYTHING_FAST_USE_FLASH_4=0")
     os.environ['SEGMENT_ANYTHING_FAST_USE_FLASH_4'] = '0'
 
 import time
@@ -81,7 +83,7 @@ def run_timing_exps():
     for i in range(num_iters):
         masks = hqsam.forward(image)
     torch.cuda.synchronize()
-    print("Inference time auto masks: ", (time.time() - start_time) / num_iters)
+    log_info("Inference time auto masks: ", (time.time() - start_time) / num_iters)
 
     predictor = SamPredictor(hqsam.sam)
     predictor.set_image(image)
@@ -101,7 +103,7 @@ def run_timing_exps():
             hq_token_only=hq_token_only, 
         )
     torch.cuda.synchronize()
-    print("Inference time prompts: ", (time.time() - start_time) / num_iters)
+    log_info("Inference time prompts: ", (time.time() - start_time) / num_iters)
 
 def test_params():
     def dict_to_filename(d):
@@ -162,7 +164,7 @@ def test_params():
         max_memory_allocated_percentage = int(100 * (max_memory_allocated_bytes / total_memory))
         max_memory_allocated_bytes = max_memory_allocated_bytes >> 20
         filename = dict_to_filename(init_params)
-        print(f"{filename}: time: {(start_event.elapsed_time(end_event) / 1000.) / (num_iters - 1)}, memory(MiB): {max_memory_allocated_bytes} memory(%): {max_memory_allocated_percentage}")
+        log_info(f"{filename}: time: {(start_event.elapsed_time(end_event) / 1000.) / (num_iters - 1)}, memory(MiB): {max_memory_allocated_bytes} memory(%): {max_memory_allocated_percentage}")
 
         torch.cuda.empty_cache()
         show_anns(image, masks, (Path('outputs') / filename).with_suffix('.png'))

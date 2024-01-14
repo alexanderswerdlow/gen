@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional, Union
 
-from hydra_zen import MISSING, store
+from hydra_zen import MISSING, builds, hydrated_dataclass, store
 from gen import MOVI_OVERFIT_DATASET_PATH
 
 from gen.configs.datasets import DatasetConfig
@@ -45,7 +45,9 @@ class BaseConfig:
     defaults: List[Any] = field(default_factory=lambda: defaults)
 
 
-store(get_hydra_config(), group="hydra", name="default")
+
+
+store(get_hydra_config())
 
 exp_store(
     name="gen",
@@ -58,6 +60,7 @@ exp_store(
         eval_every_n_epochs=None,
         eval_every_n_steps=1000,
         tracker_project_name="gen",
+        enable_dynamic_grad_accum=True,
     ),
     dataset=dict(num_validation_images=1, train_dataset=dict(batch_size=8), validation_dataset=dict(batch_size=1, random_subset=4)),
     model=dict(unfreeze_last_n_clip_layers=None, dropout_masks=0.2, enable_norm_scale=False, use_fixed_position_encoding=True, nested_dropout_prob=0),
@@ -101,19 +104,21 @@ def get_override_dict(**kwargs):
 
 
 shared_overfit_movi_args = dict(
-    subset=("video_0006",),
+    # subset=("video_0015",),
     custom_split="train",
     path=MOVI_OVERFIT_DATASET_PATH,
     num_objects=1,
     augmentation=dict(minimal_source_augmentation=True, enable_crop=False),
 )
+
 mode_store(
     name="overfit_movi",
     debug=True,
-    trainer=dict(gradient_accumulation_steps=1, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-4, eval_at_start=False),
+    inference=dict(num_masks_to_remove=None),
+    trainer=dict(gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_at_start=False, log_gradients=10),
     dataset=dict(
         train_dataset=dict(batch_size=8, random_subset=None, **shared_overfit_movi_args),
-        validation_dataset=dict(random_subset=4, evenly_spaced_subset=True, **shared_overfit_movi_args),
+        validation_dataset=dict(random_subset=4, evenly_spaced_subset=False, **shared_overfit_movi_args),
         overfit=False,
     ),
 )

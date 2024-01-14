@@ -4,7 +4,6 @@ from typing import Any, Optional
 import numpy as np
 import torch
 import torch.utils.checkpoint
-from accelerate.logging import get_logger
 from datasets import load_dataset
 from torchvision import transforms
 import open_clip
@@ -13,7 +12,7 @@ from gen.configs.utils import inherit_parent_args
 
 from gen.datasets.base_dataset import AbstractDataset, Split
 
-logger = get_logger(__name__)
+
 
 def collate_fn(examples):
     pixel_values = torch.stack([example["gen_pixel_values"] for example in examples])
@@ -113,7 +112,7 @@ class ControlnetDataset(AbstractDataset):
         # 6. Get the column names for input/target.
         if self.image_column is None:
             image_column = column_names[0]
-            logger.info(f"image column defaulting to {image_column}")
+            log(f"image column defaulting to {image_column}")
         else:
             image_column = self.image_column
             if image_column not in column_names:
@@ -123,7 +122,7 @@ class ControlnetDataset(AbstractDataset):
 
         if self.caption_column is None:
             caption_column = column_names[1]
-            logger.info(f"caption column defaulting to {caption_column}")
+            log(f"caption column defaulting to {caption_column}")
         else:
             caption_column = self.caption_column
             if caption_column not in column_names:
@@ -133,7 +132,7 @@ class ControlnetDataset(AbstractDataset):
 
         if self.conditioning_image_column is None:
             conditioning_image_column = column_names[2]
-            logger.info(f"conditioning image column defaulting to {conditioning_image_column}")
+            log(f"conditioning image column defaulting to {conditioning_image_column}")
         else:
             conditioning_image_column = self.conditioning_image_column
             if conditioning_image_column not in column_names:

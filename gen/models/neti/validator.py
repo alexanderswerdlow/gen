@@ -10,7 +10,6 @@ from diffusers import (AutoencoderKL, DPMSolverMultistepScheduler,
 from diffusers.utils import is_wandb_available
 from image_utils import Im
 from PIL import Image
-from tqdm import tqdm
 from transformers import CLIPTokenizer
 
 from gen.configs.base import BaseConfig

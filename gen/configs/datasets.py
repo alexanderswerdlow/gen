@@ -66,11 +66,17 @@ auto_store(
     name="diffusiondb",
 )
 
-augmentation = builds(Augmentation, minimal_source_augmentation=True, source_only_augmentation=True, populate_full_signature=True)
+augmentation = builds(
+    Augmentation,
+    minimal_source_augmentation=True,
+    source_only_augmentation=True,
+    target_resolution="${model.resolution}",
+    populate_full_signature=True,
+)
 
 auto_store(
     DatasetConfig,
-    train_dataset=get_dataset(MoviDataset, augmentation=augmentation),
-    validation_dataset=get_dataset(MoviDataset, augmentation=augmentation),
+    train_dataset=get_dataset(MoviDataset, augmentation=augmentation, resolution="${model.resolution}"),
+    validation_dataset=get_dataset(MoviDataset, augmentation=augmentation, resolution="${model.resolution}"),
     name="movi_e",
 )

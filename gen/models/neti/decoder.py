@@ -44,7 +44,7 @@ def create_block(
     fused_mlp: bool = True,
     fused_dropout_add_ln: bool = False,
     use_flash_attn: bool = True,
-    **kwargs
+    **kwargs,
 ):
     mixer_cls = create_mixer_cls(
         num_heads,
@@ -56,7 +56,9 @@ def create_block(
     )
     mlp_cls = create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp)
     # TD [2022-10-15]: Force residual in fp32 in case of DeepSpeed
-    block = Block(embed_dim, mixer_cls, mlp_cls, norm_cls=norm_layer, prenorm=True, fused_dropout_add_ln=fused_dropout_add_ln, residual_in_fp32=True, **kwargs)
+    block = Block(
+        embed_dim, mixer_cls, mlp_cls, norm_cls=norm_layer, prenorm=True, fused_dropout_add_ln=fused_dropout_add_ln, residual_in_fp32=True, **kwargs
+    )
     return block
 
 
@@ -64,7 +66,7 @@ class DecoderTransformer(nn.Module):
     def __init__(
         self,
         embed_dim: int = 1024,
-        depth: int = 4,
+        depth: int = 1,
         num_heads: int = 8,
         mlp_ratio: float = 4.0,
         qkv_bias=True,
@@ -116,7 +118,29 @@ class DecoderTransformer(nn.Module):
 def create_decoder_block(embed_dim, num_heads, mlp_ratio, qkv_bias, attn_drop_rate, norm_layer, act_layer, use_flash_attn, **kwargs):
     return nn.ModuleList(
         [
-            create_block(embed_dim, num_heads, mlp_ratio, qkv_bias, attn_drop_rate, norm_layer, act_layer, use_flash_attn=use_flash_attn, cross_attn=True, **kwargs),
-            create_block(embed_dim, num_heads, mlp_ratio, qkv_bias, attn_drop_rate, norm_layer, act_layer, use_flash_attn=use_flash_attn, cross_attn=False, **kwargs),
+            create_block(
+                embed_dim,
+                num_heads,
+                mlp_ratio,
+                qkv_bias,
+                attn_drop_rate,
+                norm_layer,
+                act_layer,
+                use_flash_attn=use_flash_attn,
+                cross_attn=True,
+                **kwargs,
+            ),
+            create_block(
+                embed_dim,
+                num_heads,
+                mlp_ratio,
+                qkv_bias,
+                attn_drop_rate,
+                norm_layer,
+                act_layer,
+                use_flash_attn=use_flash_attn,
+                cross_attn=False,
+                **kwargs,
+            ),
         ]
     )

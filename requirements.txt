@@ -35,5 +35,6 @@ hydra_zen
 transformers
 open_clip_torch
 webdataset
+rich
 git+https://github.com/alexanderswerdlow/image_utils.git
 git+https://github.com/alexanderswerdlow/kornia.git@keypoint_visibility

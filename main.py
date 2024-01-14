@@ -16,7 +16,6 @@ import torch.utils.checkpoint
 import transformers
 import wandb
 from accelerate import Accelerator
-from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
 from diffusers.utils import check_min_version
 from hydra.utils import get_original_cwd
@@ -25,9 +24,10 @@ from image_utils import library_ops  # This overrides repr() for tensors
 from ipdb import set_trace
 from omegaconf import OmegaConf, open_dict
 from tqdm.auto import tqdm
-
+from accelerate.utils import GradientAccumulationPlugin
 from gen.configs.base import BaseConfig
-from gen.utils.decoupled_utils import check_gpu_memory_usage
+from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus
+from gen.utils.logging_utils import log_info, log_error, set_log_file, set_logger, log_warn
 from inference import inference
 from train import train
 
@@ -36,7 +36,7 @@ check_min_version("0.24.0")
 builtins.st = set_trace # We import st everywhere
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
-logger = get_logger(__name__)
+set_logger(__name__)
 
 @hydra.main(config_path=None, config_name="config", version_base=None)
 def main(cfg: BaseConfig):
@@ -53,7 +53,7 @@ def main(cfg: BaseConfig):
         from image_utils import library_ops
         subprocess.run("kill -9 $(lsof -i :5678 | grep $(whoami) | awk '{print $2}')", shell=True)
         debugpy.listen(5678)
-        print("Waiting for debugger attach")
+        log_info("Waiting for debugger attach")
         debugpy.wait_for_client()
 
     from datetime import datetime
@@ -68,17 +68,17 @@ def main(cfg: BaseConfig):
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
     log_file_path = logging_dir / "output.log"
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(log_file_path)
-    logger.logger.addHandler(file_handler)
+    set_log_file(log_file_path)
 
-    print(OmegaConf.to_yaml(cfg))
+    log_info(OmegaConf.to_yaml(cfg))
 
     if cfg.trainer.seed is not None:
         np.random.seed(cfg.trainer.seed)
         random.seed(cfg.trainer.seed)
         torch.manual_seed(cfg.trainer.seed)
+        torch.cuda.manual_seed_all(cfg.trainer.seed)
         cudnn.deterministic = False
-        warnings.warn('We are seeding training but disabling the CUDNN deterministic setting for performance reasons.')
+        log_warn('We are seeding training but disabling the CUDNN deterministic setting for performance reasons.')
         
     cudnn.enabled = True
     cudnn.benchmark = True
@@ -86,14 +86,35 @@ def main(cfg: BaseConfig):
     cuda.matmul.allow_tf32 = True
     torch.set_float32_matmul_precision("medium")
 
-    accelerator_project_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=logging_dir)
+    num_gpus = get_num_gpus()
+    if cfg.trainer.enable_dynamic_grad_accum:
+        assert cfg.trainer.dynamic_grad_accum_default_gpus >= num_gpus
+        assert cfg.trainer.dynamic_grad_accum_default_gpus % num_gpus == 0
+        grad_accum_factor = int(cfg.trainer.dynamic_grad_accum_default_gpus / num_gpus)
+        cfg.trainer.gradient_accumulation_steps = cfg.trainer.gradient_accumulation_steps * grad_accum_factor
+        log_info(f'Using dynamic gradient accumulation with {num_gpus} GPUs so scaling by {grad_accum_factor} to {cfg.trainer.gradient_accumulation_steps} gradient accumulation steps.')
 
+    if cfg.trainer.scale_lr_gpus_grad_accum:
+        # For n GPUs, we have an effective xN batch size so we need to scale the learning rate.
+        # Similarly, if we accumulate gradients (e.g., training on 1 GPU), we need to scale the learning rate.
+        scale_factor = num_gpus * cfg.trainer.gradient_accumulation_steps
+        cfg.trainer.learning_rate = cfg.trainer.learning_rate * scale_factor
+        log_info(f'Scaling learning rate by {scale_factor} for {num_gpus} GPUs and {cfg.trainer.gradient_accumulation_steps} gradient accumulation steps. Final LR: {cfg.trainer.learning_rate}.')
+
+    if cfg.trainer.scale_lr_batch_size:
+        cfg.trainer.learning_rate = cfg.trainer.learning_rate * cfg.dataset.train_dataset.batch_size
+        log_info(f'Scaling learning rate by {cfg.dataset.train_dataset.batch_size} to {cfg.trainer.learning_rate}.')
+
+    accelerator_project_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=logging_dir)
+    gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=cfg.trainer.gradient_accumulation_steps, adjust_scheduler=False)
     accelerator = Accelerator(
-        gradient_accumulation_steps=cfg.trainer.gradient_accumulation_steps,
         mixed_precision=cfg.trainer.mixed_precision,
         log_with=cfg.trainer.log_with,
         project_config=accelerator_project_config,
+        gradient_accumulation_plugin=gradient_accumulation_plugin,
     )
+    assert accelerator.num_processes == num_gpus
+    cfg.trainer.num_gpus = accelerator.num_processes
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -101,6 +122,7 @@ def main(cfg: BaseConfig):
         original_output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / '.hydra'
         if original_output_dir.exists():
             shutil.move(original_output_dir, cfg.output_dir)
+            # delete original dir
         accelerator.init_trackers(
             cfg.trainer.tracker_project_name + ('_inference' if cfg.run_inference else ''),
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
@@ -119,13 +141,8 @@ def main(cfg: BaseConfig):
 
     check_gpu_memory_usage()
 
-    # Make one log on every process with the configuration for debugging.
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
-    )
-    logger.info(accelerator.state, main_process_only=False)
+
+    log_info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         transformers.utils.logging.set_verbosity_warning()
         diffusers.utils.logging.set_verbosity_info()
@@ -133,22 +150,10 @@ def main(cfg: BaseConfig):
         transformers.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()
 
-    # If passed along, set the training seed now.
-    if cfg.trainer.seed is not None:
-        set_seed(cfg.trainer.seed)
-
     # Handle the repository creation
     if accelerator.is_main_process:
         if cfg.output_dir is not None:
             os.makedirs(cfg.output_dir, exist_ok=True)
-
-    if cfg.trainer.scale_lr_gpus_grad_accum:
-        # For n GPUs, we have an effective xN batch size so we need to scale the learning rate.
-        # Similarly, if we accumulate gradients (e.g., training on 1 GPU), we need to scale the learning rate.
-        cfg.trainer.learning_rate = cfg.trainer.learning_rate * accelerator.num_processes * cfg.trainer.gradient_accumulation_steps
-
-    if cfg.trainer.scale_lr_batch_size:
-        cfg.trainer.learning_rate = cfg.trainer.learning_rate * cfg.dataset.train_dataset.batch_size
 
     if cfg.profile:
         torch.cuda.memory._record_memory_history()
@@ -160,9 +165,9 @@ def main(cfg: BaseConfig):
             train(cfg, accelerator)
             
     except Exception as e:
-        logger.error(e)
+        log_error(e)
         if accelerator.is_main_process:
-            print('Exception...')
+            log_info('Exception...')
             import sys
             import traceback
 

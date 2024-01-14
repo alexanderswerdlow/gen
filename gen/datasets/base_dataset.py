@@ -4,6 +4,8 @@ from typing import Any, Optional
 
 from torch.utils.data import DataLoader, RandomSampler, Subset
 
+from gen.utils.logging_utils import log_info
+
 
 class Split(Enum):
     TRAIN = 0
@@ -64,5 +66,5 @@ class AbstractDataset(ABC):
         else: 
             dataset = orig_dataset
         dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=self.allow_shuffle and self.shuffle, collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=True)
-        print(f"Original dataset size: {len(orig_dataset)}, Final dataset size: {len(dataset)}, Dataloader size: {len(dataloader)}")
+        log_info(f"Original dataset size: {len(orig_dataset)}, Final dataset size: {len(dataset)}, Dataloader size: {len(dataloader)}")
         return dataloader

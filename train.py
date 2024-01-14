@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 import wandb
 from accelerate import Accelerator
-from accelerate.logging import get_logger
+from gen.utils.logging_utils import log_info
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version
 from diffusers.utils.import_utils import is_xformers_available
@@ -25,10 +25,10 @@ from gen.models.base_mapper_model import BaseMapper
 from gen.models.controlnet_model import controlnet_forward, get_controlnet_model, log_validation, pre_train_setup_controlnet
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
-from gen.utils.decoupled_utils import Profiler
+from gen.utils.decoupled_utils import Profiler, is_main_process
 from gen.utils.trainer_utils import TrainingState, handle_checkpointing
 
-logger = get_logger(__name__)
+
 
 
 def get_params_to_optimize(accelerator: Accelerator, cfg: BaseConfig, model: BaseMapper):
@@ -69,11 +69,12 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     match cfg.model.model_type:
         case ModelType.CONTROLNET:
             vae, unet, text_encoder, controlnet = pre_train_setup_controlnet(weight_dtype, cfg, accelerator, vae, unet, text_encoder, controlnet)
-            summary(controlnet)
+            if is_main_process():
+                summary(controlnet)
         case ModelType.BASE_MAPPER:
             model.prepare_for_training(weight_dtype, accelerator)
             noise_scheduler, vae, unet, text_encoder = model.noise_scheduler, model.vae, model.unet, model.text_encoder
-            if accelerator.is_local_main_process:
+            if is_main_process():
                 summary(accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper, col_names=("trainable", "num_params"), verbose=2)
                 summary(model, col_names=("trainable", "num_params"), depth=3)
 
@@ -131,14 +132,14 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     # Train!
     total_batch_size = cfg.dataset.train_dataset.batch_size * accelerator.num_processes * cfg.trainer.gradient_accumulation_steps
 
-    logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataloader.dataset)}")
-    logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
-    logger.info(f"  Num Epochs = {cfg.trainer.num_train_epochs}")
-    logger.info(f"  Instantaneous batch size per device = {cfg.dataset.train_dataset.batch_size}")
-    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
-    logger.info(f"  Gradient Accumulation steps = {cfg.trainer.gradient_accumulation_steps}")
-    logger.info(f"  Total optimization steps = {cfg.trainer.max_train_steps}")
+    log_info("***** Running training *****")
+    log_info(f"  Num examples = {len(train_dataloader.dataset)}")
+    log_info(f"  Num batches each epoch = {len(train_dataloader)}")
+    log_info(f"  Num Epochs = {cfg.trainer.num_train_epochs}")
+    log_info(f"  Instantaneous batch size per device = {cfg.dataset.train_dataset.batch_size}")
+    log_info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
+    log_info(f"  Gradient Accumulation steps = {cfg.trainer.gradient_accumulation_steps}")
+    log_info(f"  Total optimization steps = {cfg.trainer.max_train_steps}")
     global_step = 0
     first_epoch = 0
 
@@ -154,11 +155,11 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             path = dirs[-1] if len(dirs) > 0 else None
 
         if path is None:
-            accelerator.print(f"Checkpoint '{cfg.trainer.resume_from_checkpoint}' does not exist. Starting a new training run.")
+            log_info(f"Checkpoint '{cfg.trainer.resume_from_checkpoint}' does not exist. Starting a new training run.")
             cfg.trainer.resume_from_checkpoint = None
             initial_global_step = 0
         else:
-            accelerator.print(f"Resuming from checkpoint {path}")
+            log_info(f"Resuming from checkpoint {path}")
             accelerator.load_state(os.path.join(cfg.output_dir, path))
             global_step = int(path.split("-")[1])
 
@@ -171,11 +172,12 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
         profiler = Profiler(output_dir=cfg.output_dir, active_steps=cfg.trainer.profiler_active_steps)
 
     progress_bar = tqdm(
-        range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not accelerator.is_local_main_process
+        range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False
     )
-    if cfg.trainer.log_gradients is not None:
-        wandb.watch(model, log="all", log_freq=cfg.trainer.log_gradients)
-    print(f'load_time: {__import__("time").time() - load_time} seconds')
+    if is_main_process() and cfg.trainer.log_gradients is not None:
+        wandb.watch(model, log="all" if cfg.trainer.log_parameters else "gradients", log_freq=cfg.trainer.log_gradients)
+
+    log_info(f'load_time: {__import__("time").time() - load_time} seconds')
 
     image_logs = None
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
@@ -244,7 +246,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                     and global_step % cfg.trainer.eval_every_n_steps == 0
                     and (cfg.trainer.eval_at_start or global_step != 0)
                 ) or (step == len(train_dataloader) - 1 and cfg.trainer.eval_every_n_epochs and (epoch + 1) % cfg.trainer.eval_every_n_epochs == 0):
-                    logger.info(f"Starting validation at step {global_step}, epoch {epoch}")
+                    log_info(f"Starting validation at step {global_step}, epoch {epoch}")
                     match cfg.model.model_type:
                         case ModelType.CONTROLNET:
                             if cfg.dataset.validation_prompt:
@@ -253,7 +255,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                                 )
                         case ModelType.BASE_MAPPER:
                             validator.infer(accelerator, validation_dataloader, model, tokenizer, text_encoder, unet, vae, cfg.dataset, global_step)
-                    logger.info(f"Finished validation at step {global_step}, epoch {epoch}")
+                    log_info(f"Finished validation at step {global_step}, epoch {epoch}")
 
                 progress_bar.update(1)
                 global_step += 1
@@ -268,13 +270,14 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             if global_step >= cfg.trainer.max_train_steps:
                 break
             elif cfg.profile and profiler.step(global_step):
-                print(f"Profiling finished at step: {global_step}")
+                log_info(f"Profiling finished at step: {global_step}")
                 break
 
             # TODO: Something weird happens with webdataset:
             # UserWarning: Length of IterableDataset <abc.WebDataset_Length object at 0x7f0748da4640> was reported to be 2 (when accessing len(dataloader)), but 3 samples have been fetched.
-            if step >= len(train_dataloader) - 1:
-                break
+            # if step >= len(train_dataloader) - 1:
+            #     log_info(f"Exited early at step {global_step}")
+            #     break
 
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
