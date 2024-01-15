@@ -18,7 +18,6 @@ from accelerate.utils import GradientAccumulationPlugin, ProjectConfiguration
 from diffusers.utils import check_min_version
 from hydra.utils import get_original_cwd
 from image_utils import library_ops  # This overrides repr() for tensors
-from ipdb import set_trace
 from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig

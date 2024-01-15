@@ -11,23 +11,26 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 import wandb
 from accelerate import Accelerator
-from gen.utils.logging_utils import log_info
 from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version
 from diffusers.utils.import_utils import is_xformers_available
 from ipdb import set_trace
+from torch.utils.data import DataLoader, Dataset
 from torchinfo import summary
 from tqdm.auto import tqdm
-from torch.utils.data import DataLoader, Dataset
 
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
-from gen.models.controlnet_model import controlnet_forward, get_controlnet_model, log_validation, pre_train_setup_controlnet
+from gen.models.controlnet_model import (controlnet_forward,
+                                         get_controlnet_model, log_validation,
+                                         pre_train_setup_controlnet)
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
 from gen.utils.decoupled_utils import Profiler, is_main_process, write_to_file
-from gen.utils.trainer_utils import TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing
+from gen.utils.logging_utils import log_info
+from gen.utils.trainer_utils import (TrainingState, check_every_n_epochs,
+                                     check_every_n_steps, handle_checkpointing)
 
 
 def get_named_params_to_optimize(accelerator: Accelerator, cfg: BaseConfig, model: BaseMapper):
@@ -182,6 +185,9 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             with accelerator.accumulate(controlnet if cfg.model.model_type == ModelType.CONTROLNET else text_encoder):
+                if is_main_process() and global_step == 1:
+                    log_info(f'time to complete 1st step: {__import__("time").time() - load_time} seconds')
+
                 state: TrainingState = TrainingState(
                     epoch_step=step,
                     total_epoch_steps=len(train_dataloader),

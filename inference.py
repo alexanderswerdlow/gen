@@ -196,21 +196,26 @@ def run_inference_dataloader(
 
             if is_main_process():
                 embeds_ = torch.stack([v[1] for k,v in prompt_embeds[0].items() if 'CONTEXT_TENSOR' in k and 'BYPASS' not in k], dim=0)
-                bypass_embeds_ = torch.stack([v[1] for k,v in prompt_embeds[0].items() if 'CONTEXT_TENSOR' in k and 'BYPASS' in k], dim=0)
+                bypass_embeds_ = None
+                if any('BYPASS' in k for k in prompt_embeds[0].keys()):
+                    bypass_embeds_ = torch.stack([v[1] for k,v in prompt_embeds[0].items() if 'CONTEXT_TENSOR' in k and 'BYPASS' in k], dim=0)
                 
                 inputs_ = pipeline.tokenizer(" ".join([x.replace("</w>", "") for x in input_prompt[0]]), max_length=pipeline.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt")
                 inputs_['input_ids'] = inputs_['input_ids'].to(pipeline.text_encoder.device)
                 inputs_['attention_mask'] = inputs_['attention_mask'].to(pipeline.text_encoder.device)
                 regular_embeds_ = pipeline.text_encoder(**inputs_).last_hidden_state
-                embeds_, bypass_embeds_, regular_embeds_ = embeds_[:, :len(input_prompt[0])], bypass_embeds_[:, :len(input_prompt[0])], regular_embeds_[:, :len(input_prompt[0])]
+                embeds_, regular_embeds_ = embeds_[:, :len(input_prompt[0])], regular_embeds_[:, :len(input_prompt[0])]
+                if bypass_embeds_ is not None:
+                     bypass_embeds_ = bypass_embeds_[:, :len(input_prompt[0])]
 
                 output_path_ = output_path / 'tmp.png'
                 embeds_.plt.fig.savefig(output_path_)
-                log_with_accelerator(accelerator, [Im(output_path_)], global_step=i, name="embeds", save_folder=output_path)
-                bypass_embeds_.plt.fig.savefig(output_path_)
-                log_with_accelerator(accelerator, [Im(output_path_)], global_step=i, name="bypass_embeds", save_folder=output_path)
+                log_with_accelerator(accelerator, [Im(output_path_)], global_step=(global_step if global_step is not None else i), name="embeds", save_folder=output_path)
+                if bypass_embeds_ is not None:
+                    bypass_embeds_.plt.fig.savefig(output_path_)
+                    log_with_accelerator(accelerator, [Im(output_path_)], global_step=(global_step if global_step is not None else i), name="bypass_embeds", save_folder=output_path)
                 regular_embeds_.plt.fig.savefig(output_path_)
-                log_with_accelerator(accelerator, [Im(output_path_)], global_step=i, name="regular_embeds", save_folder=output_path)
+                log_with_accelerator(accelerator, [Im(output_path_)], global_step=(global_step if global_step is not None else i), name="regular_embeds", save_folder=output_path)
 
         if inference_cfg.num_masks_to_remove is not None:
             gen_segmentation = batch["gen_segmentation"]

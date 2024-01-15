@@ -356,6 +356,7 @@ class BaseMapper(nn.Module):
             clip_feature_cls_token = clip_feature_map[:, 0, :]  # We take the cls token
             clip_feature_map = clip_feature_map[:, 1:, :]
 
+            assert -1 <= batch["gen_pixel_values"].min().item() <= batch["gen_pixel_values"].max().item() <= 1
             sam_input = rearrange(
                 (((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c"
             )  # SAM requires NumPy [0, 255]

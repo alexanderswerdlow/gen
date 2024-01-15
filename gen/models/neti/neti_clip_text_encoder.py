@@ -147,7 +147,7 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
                     hidden_states[learnable_idxs[0], learnable_idxs[1]] = \
                     hidden_states[learnable_idxs[0], learnable_idxs[1]] + output[:, :token_embedding_dim].to(hidden_states.dtype)
                 else:
-                    hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[:, :token_embedding_dim].to(hidden_states.dtype) + position_embeddings.squeeze(0)[learnable_idxs[1]]
+                    hidden_states[learnable_idxs[0], learnable_idxs[1]] = position_embeddings.squeeze(0)[learnable_idxs[1]] + output[:, :token_embedding_dim].to(hidden_states.dtype)
 
         # CLIP's causal mask, prepare it here: https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
         causal_attention_mask = _make_causal_mask(input_shape, hidden_states.dtype, device=hidden_states.device)

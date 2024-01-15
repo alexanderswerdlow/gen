@@ -121,7 +121,7 @@ mode_store(
     debug=True,
     inference=dict(num_masks_to_remove=None, visualize_attention_map=True, empty_string_cfg=True, guidance_scale=7.5),
     trainer=dict(
-        gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=10
+        gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=50
     ),
     dataset=dict(
         train_dataset=dict(batch_size=8, random_subset=None, **shared_overfit_movi_args),
