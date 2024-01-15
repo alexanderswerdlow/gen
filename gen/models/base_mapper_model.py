@@ -299,19 +299,23 @@ class BaseMapper(nn.Module):
             feature_map_masks = []
             feature_map_batch_idxs = []
             for i in range(bs):
-                if "gen_segmentation" in batch:  # We have gt masks
+                if "gen_segmentation" in batch and self.cfg.model.use_dataset_segmentation:  # We have gt masks
                     original = batch["gen_segmentation"][i].permute(2, 0, 1).bool()
                 else:
                     masks = self.hqsam.forward(sam_input[i])
                     masks = masks[:24]  # We only have 77 tokens
                     original = torch.from_numpy(np.array([masks[i]["segmentation"] for i in range(len(masks))]))
 
+                if original.shape[0] == 0:
+                    log_info("Warning, no masks found for this image")
+                    continue
+                
                 if self.cfg.model.dropout_masks is not None and custom_ddp_unwrap(self.text_encoder).text_model.embeddings.mapper.training:
                     mask = torch.rand(original.size(0)) > self.cfg.model.dropout_masks
                     mask[0] = True  # We always keep the background mask
                     original = original[mask]
 
-                original = original[torch.sum(original, dim=[1,2]) > 0] # Remove empty masks
+                original = original[torch.sum(original, dim=[1, 2]) > 0] # Remove empty masks
 
                 if original.shape[0] == 0:
                     log_info("Warning, no masks found for this image")

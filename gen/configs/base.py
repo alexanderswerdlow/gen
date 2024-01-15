@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Union
 
 from hydra_zen import MISSING, builds, hydrated_dataclass, store
-from gen import MOVI_OVERFIT_DATASET_PATH
+from gen import IMAGENET_PATH, MOVI_OVERFIT_DATASET_PATH
 
 from gen.configs.datasets import DatasetConfig
 from gen.configs.hydra import get_hydra_config
@@ -125,6 +125,7 @@ mode_store(
     ),
 )
 
+
 mode_store(
     name="overfit_movi_single_frame",
     dataset=dict(
@@ -134,12 +135,25 @@ mode_store(
 )
 
 mode_store(
+    name="overfit_imagenet",
+    model=dict(use_dataset_segmentation=False),
+    dataset=dict(
+        train_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=True)),
+        validation_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=True), random_subset=6),
+        
+    ),
+    hydra_defaults=[
+        "_self_",
+        {"override /dataset": "imagenet"},
+    ],
+)
+
+mode_store(
     name="controlnet",
     model=dict(controlnet=True),
     trainer=dict(learning_rate=5e-6, scale_lr_batch_size=True),
     dataset=dict(
         train_dataset=dict(batch_size=4),
-        validation_dataset=dict(batch_size=4),
     ),
 )
 

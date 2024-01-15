@@ -9,6 +9,7 @@ from gen.datasets.augmentation.kornia_augmentation import Augmentation
 from gen.datasets.base_dataset import AbstractDataset
 from gen.datasets.coco_captions import CocoCaptions
 from gen.datasets.controlnet_dataset import ControlnetDataset
+from gen.datasets.imagenet_dataset import ImageNetCustomDataset
 from gen.datasets.kubrics.movi_dataset import MoviDataset
 
 
@@ -79,4 +80,11 @@ auto_store(
     train_dataset=get_dataset(MoviDataset, augmentation=augmentation, resolution="${model.resolution}"),
     validation_dataset=get_dataset(MoviDataset, augmentation=augmentation, resolution="${model.resolution}"),
     name="movi_e",
+)
+
+auto_store(
+    DatasetConfig,
+    train_dataset=get_dataset(ImageNetCustomDataset, augmentation=augmentation, resolution="${model.resolution}"),
+    validation_dataset=get_dataset(ImageNetCustomDataset, augmentation=augmentation, resolution="${model.resolution}"),
+    name="imagenet",
 )

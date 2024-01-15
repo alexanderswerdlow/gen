@@ -10,6 +10,7 @@ from gen.configs.base import BaseConfig
 
 from gen.models.neti.net_clip_text_embedding import NeTICLIPTextEmbeddings, NeTIBatch
 from gen.models.neti.neti_mapper import NeTIMapper
+from gen.utils.logging_utils import log_info
 
 # Copied from transformers.models.bart.modeling_bart._expand_mask
 def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
@@ -108,6 +109,7 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         bypass_output = None
 
         if input_ids is not None:  # Regular embedding logic
+            log_info("Using input_ids is not None pipeline")
             input_shape = input_ids.size()
             input_ids = input_ids.view(-1, input_shape[-1])
             hidden_states, _, mapper_outputs = self.embeddings(input_ids=input_ids, position_ids=position_ids)

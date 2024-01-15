@@ -230,7 +230,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 if is_main_process():
-                    if global_step % cfg.trainer.checkpointing_steps == 0:
+                    if global_step % cfg.trainer.checkpointing_steps == 0 and global_step > 0:
                         if cfg.model.model_type == ModelType.BASE_MAPPER:
                             checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f"{global_step}")
                         else:

@@ -212,5 +212,6 @@ if __name__ == "__main__":
     )
     dataloader = dataset.get_dataloader()
     for batch in dataloader:
+        breakpoint()
         from image_utils import Im
         Im((batch['gen_pixel_values'][0] + 1) / 2).save(batch['video'][0])

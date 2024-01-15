@@ -1,3 +1,4 @@
+from re import I
 import autoroot
 
 from typing import Any, List
@@ -39,6 +40,7 @@ class Data:
     segmentation: Optional[torch.Tensor] = None
     grid: Optional[torch.Tensor] = None
     mask: Optional[torch.Tensor] = None
+    image_only: bool = False
 
 
 class Augmentation:
@@ -102,20 +104,24 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
         input_segmentation_mask: (B, H, W)
     """
 
-    B, _, H, W = input_data.image.shape
-    keypoints = get_keypoints(B, H, W)
-
-    assert input_data.segmentation.ndim == 3
-    input_data.segmentation = input_data.segmentation.unsqueeze(1).float()
+    if not input_data.image_only:
+        B, _, H, W = input_data.image.shape
+        keypoints = get_keypoints(B, H, W)
+        assert input_data.segmentation.ndim == 3
+        input_data.segmentation = input_data.segmentation.unsqueeze(1).float()
 
     # output_tensor and output_segmentation are affected by resize but output_keypoints are not
-    output_data = Data()
-    output_data.image, output_data.segmentation, output_keypoints = aug(
-        input_data.image, input_data.segmentation, keypoints, data_keys=["image", "mask", "keypoints"], params=params
-    )
+    output_data = Data(image_only=input_data.image_only)
+    if input_data.image_only:
+        output_data.image = aug(input_data.image, data_keys=["image"], params=params)
+    else:
+        output_data.image, output_data.segmentation, output_keypoints = aug(
+            input_data.image, input_data.segmentation, keypoints, data_keys=["image", "mask", "keypoints"], params=params
+        )
 
-    output_data.grid, output_data.mask = process_output_keypoints(output_keypoints, B, H, W, output_data.image.shape[-2], output_data.image.shape[-1])
-    output_data.segmentation = process_output_segmentation(output_data.segmentation.squeeze(1), output_data.mask, H, W)
+    if not input_data.image_only:
+        output_data.grid, output_data.mask = process_output_keypoints(output_keypoints, B, H, W, output_data.image.shape[-2], output_data.image.shape[-1])
+        output_data.segmentation = process_output_segmentation(output_data.segmentation.squeeze(1), output_data.mask, H, W)
 
     if should_viz:
         Im(input_image.permute(0, 2, 3, 1)[:, output_data.grid[..., 0], output_data.grid[..., 1]][0]).save()

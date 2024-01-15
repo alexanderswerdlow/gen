@@ -61,6 +61,7 @@ class ModelConfig:
     enable_neti: bool = False
     cross_attn_residual: bool = True
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
+    use_dataset_segmentation: bool = True
 
 
 @dataclass
