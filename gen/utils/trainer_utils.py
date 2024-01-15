@@ -1,14 +1,14 @@
+import autoroot
 import os
 import shutil
 from dataclasses import dataclass
 from functools import wraps
 
 from accelerate import Accelerator
+from gen.utils.decoupled_utils import is_main_process
 from gen.utils.logging_utils import log_info
 
 from gen.configs.base import BaseConfig
-
-
 
 
 def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step: int):
@@ -34,28 +34,41 @@ def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step:
     accelerator.save_state(save_path)
     log_info(f"Saved state to {save_path}")
 
+
 @dataclass
 class TrainingState:
-    epoch_step: int
-    total_epoch_steps: int
-    global_step: int
+    epoch_step: int  # Step in the current epoch. Resets every epoch.
+    total_epoch_steps: int  # Total number of steps in the current epoch. [E.g., dataloader size on a single GPU]
+    global_step: int  # Current number of steps which does not reset.
     epoch: int
-    accelerator: Accelerator
 
 
-def every_n_steps(func, n: int, except_first: bool = False, all_processes: bool = False):
+def check_every_n_steps(state: TrainingState, n: int, run_first: bool = False, all_processes: bool = False):
+    return (state.global_step % n == 0 and (run_first or state.global_step > 0)) and (is_main_process() or all_processes)
+
+
+def check_every_n_epochs(state: TrainingState, n: int, run_first: bool = False, all_processes: bool = False):
+    # Check if the current step is the last one in the epoch. We always want to run on the last step of the epoch. If we have n=5, then we run at the end of epochs 0 [if except_first == False], 5, 10, 15, etc.
+    return (
+        (state.epoch_step == state.total_epoch_steps - 1)
+        and ((state.epoch + 1) % n == 0 or (state.epoch == 0 and run_first))
+        and (is_main_process() or all_processes)
+    )
+
+
+def every_n_steps(func, *wrapper_args, **wrapper_kwargs):
     @wraps(func)
     def wrapper(state: TrainingState, *args, **kwargs):
-        if (state.global_step % n == 0 and (not except_first or state.global_step > 0)) and (state.accelerator.is_local_main_process or not state.accelerator.use_distributed or all_processes):
+        if check_every_n_steps(state, *wrapper_args, **wrapper_kwargs):
             return func(*args, **kwargs)
 
     return wrapper
 
-def every_n_epochs(func, n: int, except_first: bool = False, all_processes: bool = False):
+
+def every_n_epochs(func, *wrapper_args, **wrapper_kwargs):
     @wraps(func)
     def wrapper(state: TrainingState, *args, **kwargs):
-        # Check if the current step is the last one in the epoch
-        if (state.epoch_step == state.total_epoch_steps - 1) and ((state.epoch + 1) % n == 0 or (not except_first)) and (state.accelerator.is_local_main_process or not state.accelerator.use_distributed or all_processes):
+        if check_every_n_epochs(state, *wrapper_args, **wrapper_kwargs):
             return func(*args, **kwargs)
 
     return wrapper
@@ -63,7 +76,18 @@ def every_n_epochs(func, n: int, except_first: bool = False, all_processes: bool
 
 def custom_ddp_unwrap(model):
     from torch.nn.parallel import DistributedDataParallel
+
     if isinstance(model, DistributedDataParallel):
         return model.module
     else:
-       return model
+        return model
+
+
+if __name__ == "__main__":
+    assert check_every_n_steps(TrainingState(epoch_step=0, total_epoch_steps=0, global_step=0, epoch=0), 10)
+    assert not check_every_n_steps(TrainingState(epoch_step=0, total_epoch_steps=0, global_step=0, epoch=0), 10, run_first=True)
+    assert check_every_n_steps(TrainingState(epoch_step=0, total_epoch_steps=0, global_step=10, epoch=0), 10)
+
+    assert check_every_n_epochs(TrainingState(epoch_step=9, total_epoch_steps=10, global_step=0, epoch=0), 1)
+    assert not check_every_n_epochs(TrainingState(epoch_step=9, total_epoch_steps=10, global_step=0, epoch=0), 1, run_first=True)
+    assert check_every_n_epochs(TrainingState(epoch_step=9, total_epoch_steps=10, global_step=0, epoch=5), 5)

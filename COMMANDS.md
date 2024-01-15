@@ -55,3 +55,9 @@ python -m accelerate.commands.launch --num_processes 1 main.py +experiment=gen e
 outputs/train/inference_2024-01-09_18-48-55/checkpoints
 
 python -m accelerate.commands.launch --num_processes 1 main.py run_inference=true inference.input_dir=outputs/train/inference_2024-01-09_18-48-55 inference.iteration=last
+
+## Imagenet
+
+```
+CUDA_VISIBLE_DEVICES=2,3,4,5,6,7 python -m accelerate.commands.launch --main_process_port 29511 --num_processes 6 main.py +experiment=gen exp=inference '+modes=[overfit_movi,overfit_imagenet]' trainer.eval_on_start=true dataset=imagenet
+```

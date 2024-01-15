@@ -112,7 +112,7 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
             log_info("Using input_ids is not None pipeline")
             input_shape = input_ids.size()
             input_ids = input_ids.view(-1, input_shape[-1])
-            hidden_states, _, mapper_outputs = self.embeddings(input_ids=input_ids, position_ids=position_ids)
+            hidden_states, _, mapper_outputs, _ = self.embeddings(input_ids=input_ids, position_ids=position_ids)
 
         ###########################
         # NeTI logic
@@ -120,25 +120,34 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         elif batch is not None:
             input_shape = batch.input_ids.size()
             batch.input_ids = batch.input_ids.view(-1, input_shape[-1])
-            # embeddings holds the main NeTI code, mapping from Timestep + Layer -> Some embedding
-            hidden_states, bypass_output, mapper_outputs = self.embeddings(batch=batch, position_ids=position_ids)
+            if self.cfg.model.use_cls_token_only:
+                hidden_states, _, mapper_outputs, position_embeddings = self.embeddings(input_ids=batch.input_ids, position_ids=position_ids)
+            else:
+                # embeddings holds the main NeTI code, mapping from Timestep + Layer -> Some embedding
+                hidden_states, bypass_output, mapper_outputs, position_embeddings = self.embeddings(batch=batch, position_ids=position_ids)
 
         else:
             raise ValueError("You have to specify either batch or input_ids!")
         
-        enable_conditioning = self.cfg.model.mask_cross_attn and batch is not None and len(feature_map_batch_idxs := kwargs.get('feature_map_batch_idxs', [])) > 0
+        feature_map_batch_idxs = kwargs.get('feature_map_batch_idxs', [])
+        enable_conditioning = (batch is not None) and (self.cfg.model.use_cls_token_only or (self.cfg.model.mask_cross_attn and len(feature_map_batch_idxs) > 0))
         if enable_conditioning:
-            token_embedding_dim = mapper_outputs.shape[-1]
-            queries = mapper_outputs[feature_map_batch_idxs] # Encoding of timestep + layer
-            kwargs['attn_dict']['x'] = queries
-
-            # TODO: We should find a better place to put the cross-attn but this is the most convinient for now
-            output = self.embeddings.mapper.cross_attn(**kwargs)
             learnable_idxs = (batch.input_ids == batch.placeholder_token_id).nonzero(as_tuple=True)
-            if self.cfg.model.cross_attn_residual:
-                hidden_states[learnable_idxs[0], learnable_idxs[1]] = hidden_states[learnable_idxs[0], learnable_idxs[1]] + output[:, :token_embedding_dim].to(hidden_states.dtype)
+            if self.cfg.model.use_cls_token_only:
+                clip_feature_cls_token = kwargs.pop('clip_feature_cls_token', None)
+                output = self.embeddings.mapper.mapper(clip_feature_cls_token)
+                hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[feature_map_batch_idxs] + position_embeddings.squeeze(0)[learnable_idxs[1]]
             else:
-                hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[:, :token_embedding_dim].to(hidden_states.dtype)
+                token_embedding_dim = mapper_outputs.shape[-1]
+                queries = mapper_outputs[feature_map_batch_idxs] # Encoding of timestep + layer
+                kwargs['attn_dict']['x'] = queries
+                output = self.embeddings.mapper.cross_attn(**kwargs) # TODO: Find a better place to put this
+                
+                if self.cfg.model.cross_attn_residual:
+                    hidden_states[learnable_idxs[0], learnable_idxs[1]] = \
+                    hidden_states[learnable_idxs[0], learnable_idxs[1]] + output[:, :token_embedding_dim].to(hidden_states.dtype)
+                else:
+                    hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[:, :token_embedding_dim].to(hidden_states.dtype) + position_embeddings.squeeze(0)[learnable_idxs[1]]
 
         # CLIP's causal mask, prepare it here: https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/model.py#L324
         causal_attention_mask = _make_causal_mask(input_shape, hidden_states.dtype, device=hidden_states.device)

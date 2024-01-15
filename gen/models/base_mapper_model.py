@@ -1,6 +1,6 @@
 import math
 import warnings
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import open_clip
@@ -30,6 +30,60 @@ from gen.utils.encoder_utils import ClipFeatureExtractor
 from gen.utils.trainer_utils import custom_ddp_unwrap
 
 
+# UNET_LAYERS = ["IN01", "IN02", "IN04", "IN05", "IN07", "IN08", "MID", "OUT03", "OUT04", "OUT05", "OUT06", "OUT07", "OUT08", "OUT09", "OUT10", "OUT11"]
+
+SD_INFERENCE_TIMESTEPS = [
+    999,
+    979,
+    959,
+    939,
+    919,
+    899,
+    879,
+    859,
+    839,
+    819,
+    799,
+    779,
+    759,
+    739,
+    719,
+    699,
+    679,
+    659,
+    639,
+    619,
+    599,
+    579,
+    559,
+    539,
+    519,
+    500,
+    480,
+    460,
+    440,
+    420,
+    400,
+    380,
+    360,
+    340,
+    320,
+    300,
+    280,
+    260,
+    240,
+    220,
+    200,
+    180,
+    160,
+    140,
+    120,
+    100,
+    80,
+    60,
+    40,
+    20,
+]
 
 
 def image_grid(imgs, rows, cols):
@@ -105,9 +159,7 @@ class BaseMapper(nn.Module):
         self.unet.requires_grad_(False)
 
         if self.cfg.model.freeze_text_encoder:
-            self.text_encoder.text_model.encoder.requires_grad_(False)
-            self.text_encoder.text_model.final_layer_norm.requires_grad_(False)
-            self.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
+            self.text_encoder.requires_grad_(False)
         else:
             warnings.warn("Warning, text encoder is unfrozen")
 
@@ -128,6 +180,7 @@ class BaseMapper(nn.Module):
 
         if self.cfg.model.controlnet:
             self.controlnet: ControlNetModel = accelerator.prepare(self.controlnet)
+            self.controlnet.train()
             accelerator.unwrap_model(self.controlnet).set_attn_processor(XTIAttenProc()) # TODO: Don't do this
 
         if self.cfg.trainer.gradient_checkpointing:
@@ -172,21 +225,33 @@ class BaseMapper(nn.Module):
                 _hs[f"CONTEXT_TENSOR_BYPASS_{layer_idx}"] = layer_hidden_state_bypass
         return _hs
 
-    def get_text_conditioning_per_timestep(
+    def embed_prompt(
         self,
-        unet_layers,
-        input_ids: torch.Tensor,
-        timesteps: torch.Tensor,
-        device: torch.device,
-        truncation_idx: Optional[int],
+        batch: dict,
+        truncation_idx: Optional[int] = None,
         num_images_per_prompt: int = 1,
-        **kwargs,
-    ) -> Dict:
-        log_warn(f"Computing embeddings over {len(timesteps)} timesteps and {len(unet_layers)} U-Net layers.")
+        disable_conditioning: bool = False,
+        timesteps: List[int] = SD_INFERENCE_TIMESTEPS,
+    ) -> List[Dict[str, Any]]:
+        """
+        Compute the conditioning vectors for the given prompt. We assume that the prompt is defined using `{}`
+        for indicating where to place the placeholder token string. See constants.VALIDATION_PROMPTS for examples.
+        """
+        input_ids, text_encoder_dict, input_prompt = self.get_hidden_state(
+            batch,
+            timesteps=timesteps,
+            device=batch["gen_pixel_values"].device,
+            dtype=self.weight_dtype,
+            per_timestep=True,
+            disable_conditioning=disable_conditioning,
+        )
+
+        # Compute embeddings for each timestep and each U-Net layer
+        print(f"Computing embeddings over {len(timesteps)} timesteps and {len(UNET_LAYERS)} U-Net layers.")
         hidden_states_per_timestep = []
         for timestep in tqdm(timesteps, leave=False, disable=not is_main_process()):
             _hs = {"this_idx": 0}.copy()
-            for layer_idx, unet_layer in enumerate(unet_layers):
+            for layer_idx, unet_layer in enumerate(UNET_LAYERS):
                 neti_batch = NeTIBatch(
                     input_ids=input_ids.to(device=self.text_encoder.device),
                     placeholder_token_id=self.placeholder_token_id,
@@ -194,13 +259,14 @@ class BaseMapper(nn.Module):
                     unet_layers=torch.tensor(layer_idx, device=self.text_encoder.device).unsqueeze(0),
                     truncation_idx=truncation_idx,
                 )
-                layer_hidden_state, layer_hidden_state_bypass = self.text_encoder(batch=neti_batch)
-                layer_hidden_state = layer_hidden_state[0].to(dtype=self.dtype)
+                layer_hidden_state, layer_hidden_state_bypass = self.text_encoder(batch=neti_batch, **text_encoder_dict)
+                layer_hidden_state = layer_hidden_state[0].to(dtype=self.weight_dtype)
                 _hs[f"CONTEXT_TENSOR_{layer_idx}"] = layer_hidden_state.repeat(num_images_per_prompt, 1, 1)
                 if layer_hidden_state_bypass is not None:
-                    layer_hidden_state_bypass = layer_hidden_state_bypass[0].to(dtype=self.dtype)
+                    layer_hidden_state_bypass = layer_hidden_state_bypass[0].to(dtype=self.weight_dtype)
                     _hs[f"CONTEXT_TENSOR_BYPASS_{layer_idx}"] = layer_hidden_state_bypass.repeat(num_images_per_prompt, 1, 1)
             hidden_states_per_timestep.append(_hs)
+        return hidden_states_per_timestep, input_prompt
 
     def _add_concept_token_to_tokenizer(self) -> Tuple[torch.Tensor, int]:
         """
@@ -260,8 +326,6 @@ class BaseMapper(nn.Module):
     def get_hidden_state(self, batch, timesteps, dtype, device, per_timestep: bool = False, disable_conditioning: bool = False):
         bs: int = batch["disc_pixel_values"].shape[0]
 
-        clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))["ln_post"].permute(1, 0, 2)
-
         def viz():
             from image_utils import Im, calculate_principal_components, get_layered_image_from_binary_mask, pca
 
@@ -287,6 +351,7 @@ class BaseMapper(nn.Module):
         # viz()
         text_encoder_dict = dict()
         if not disable_conditioning:
+            clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))["ln_post"].permute(1, 0, 2)
             clip_feature_map = rearrange(clip_feature_map, "l b d -> b l d")
             clip_feature_cls_token = clip_feature_map[:, 0, :]  # We take the cls token
             clip_feature_map = clip_feature_map[:, 1:, :]
@@ -299,7 +364,11 @@ class BaseMapper(nn.Module):
             feature_map_masks = []
             feature_map_batch_idxs = []
             for i in range(bs):
-                if "gen_segmentation" in batch and self.cfg.model.use_dataset_segmentation:  # We have gt masks
+                if self.cfg.model.use_cls_token_only:
+                    original = batch["gen_segmentation"][i].permute(2, 0, 1)
+                    original[:] = 1
+                    original = original.bool()[:1]
+                elif "gen_segmentation" in batch and self.cfg.model.use_dataset_segmentation:  # We have gt masks
                     original = batch["gen_segmentation"][i].permute(2, 0, 1).bool()
                 else:
                     masks = self.hqsam.forward(sam_input[i])
@@ -369,8 +438,12 @@ class BaseMapper(nn.Module):
                 attn_dict=attn_dict, 
                 placeholder_token=placeholder_token_id,
                 pad_token=pad_token_id,
-                feature_map_batch_idxs=feature_map_batch_idxs
+                feature_map_batch_idxs=feature_map_batch_idxs,
+                clip_feature_cls_token=clip_feature_cls_token,
             )
+
+            if self.cfg.model.use_cls_token_only:
+                text_encoder_dict['clip_feature_cls_token'] = self.clip.forward_base_model(batch["disc_pixel_values"].to(device=device, dtype=dtype))
 
         input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
 

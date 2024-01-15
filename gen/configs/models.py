@@ -62,6 +62,7 @@ class ModelConfig:
     cross_attn_residual: bool = True
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     use_dataset_segmentation: bool = True
+    use_cls_token_only: bool = False
 
 
 @dataclass

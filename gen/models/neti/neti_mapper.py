@@ -74,22 +74,26 @@ class NeTIMapper(nn.Module):
             output_dim *= 2  # Output two vectors
 
         self.use_positional_encoding = use_positional_encoding
-        if self.cfg.model.use_fixed_position_encoding:
-            self.encoder = FourierPositionalEncodingNDims(dim=output_dim, sigmas=[pe_sigmas.sigma_t, pe_sigmas.sigma_l])
-            self.learnable_token = nn.Parameter(torch.randn(output_dim))
-        elif self.use_positional_encoding:
-            self.encoder = NeTIPositionalEncoding(sigma_t=pe_sigmas.sigma_t, sigma_l=pe_sigmas.sigma_l).cuda()
-            self.input_dim = num_pe_time_anchors * len(unet_layers)
+
+        if self.cfg.model.use_cls_token_only:
+            self.mapper = nn.Sequential(nn.Linear(768, self.orig_output_dim))
         else:
-            self.encoder = BasicEncoder().cuda()
-            self.input_dim = 2
+            if self.cfg.model.use_fixed_position_encoding:
+                self.encoder = FourierPositionalEncodingNDims(dim=output_dim, sigmas=[pe_sigmas.sigma_t, pe_sigmas.sigma_l])
+                self.learnable_token = nn.Parameter(torch.randn(output_dim))
+            elif self.use_positional_encoding:
+                self.encoder = NeTIPositionalEncoding(sigma_t=pe_sigmas.sigma_t, sigma_l=pe_sigmas.sigma_l).cuda()
+                self.input_dim = num_pe_time_anchors * len(unet_layers)
+            else:
+                self.encoder = BasicEncoder().cuda()
+                self.input_dim = 2
 
-        if not self.cfg.model.use_fixed_position_encoding:
-            self.set_net(num_unet_layers=len(unet_layers), num_time_anchors=num_pe_time_anchors, output_dim=output_dim)
+            if not self.cfg.model.use_fixed_position_encoding:
+                self.set_net(num_unet_layers=len(unet_layers), num_time_anchors=num_pe_time_anchors, output_dim=output_dim)
 
-        if self.cfg.model.mask_cross_attn:
-            self.cross_attn = CrossAttn(cfg=cfg, input_dim=self.orig_output_dim, output_dim=output_dim)
-
+            if self.cfg.model.mask_cross_attn:
+                self.cross_attn = CrossAttn(cfg=cfg, input_dim=self.orig_output_dim, output_dim=output_dim)
+        
     def set_net(self, num_unet_layers: int, num_time_anchors: int, output_dim: int = 768):
         self.input_layer = self.set_input_layer(num_unet_layers, num_time_anchors)
         self.net = nn.Sequential(

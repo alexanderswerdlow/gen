@@ -3,7 +3,7 @@ import autoroot
 import math
 import warnings
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple, Union
 
 import hydra
 import numpy as np
@@ -11,7 +11,9 @@ import torch
 import wandb
 from accelerate import Accelerator
 from accelerate.utils import PrecisionType
-from diffusers import DPMSolverMultistepScheduler, StableDiffusionPipeline
+from diffusers import (AutoencoderKL, DPMSolverMultistepScheduler,
+                       StableDiffusionControlNetPipeline,
+                       StableDiffusionPipeline, UNet2DConditionModel)
 from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
 from tqdm import tqdm
@@ -24,34 +26,34 @@ from gen.models.base_mapper_model import BaseMapper
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
-from gen.models.neti.prompt_manager import PromptManager
 from gen.models.neti.sd_pipeline import sd_pipeline_call
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.attention_visualization_utils import (
-    cross_attn_init,
-    get_all_net_attn_maps,
-    get_net_attn_map,
-    register_cross_attention_hook,
-    resize_net_attn_map,
-)
-from gen.utils.decoupled_utils import is_main_process
+    cross_attn_init, get_all_net_attn_maps, get_net_attn_map,
+    register_cross_attention_hook, resize_net_attn_map)
+from gen.utils.decoupled_utils import get_rank, is_main_process
 from gen.utils.logging_utils import log_info
+from accelerate.utils import gather_object as accelerate_gather_object, gather as accelerate_gather
 
-def gather(accelerator: Accelerator, device: torch.device, img: Im):
-    if isinstance(img, Iterable):
-        tensor = torch.cat([img_.torch.to(device).unsqueeze(0) for img_ in img], dim=0)
+def gather(device: torch.device, img: Union[Im, Iterable[Im]], gather_different: bool = False):
+    if gather_different:
+        ret = accelerate_gather_object(img)
     else:
-        tensor = img.torch.to(device).unsqueeze(0)
-        
-    concat_tensor = accelerator.gather(tensor)
-    try:
-        ret = [Im(concat_tensor[i]) for i in range(concat_tensor.shape[0])]
-    except:
-        print(concat_tensor.shape)
-        print(concat_tensor.dtype)
-        print(concat_tensor.device)
-        raise
+        if isinstance(img, Iterable):
+            tensor = torch.cat([img_.torch.to(device).unsqueeze(0) for img_ in img], dim=0)
+        else:
+            tensor = img.torch.to(device).unsqueeze(0)
+
+        concat_tensor = accelerate_gather(tensor)
+
+        try:
+            ret = [Im(concat_tensor[i]) for i in range(concat_tensor.shape[0])]
+        except:
+            print(concat_tensor.shape, concat_tensor.dtype, concat_tensor.device)
+            raise
+
     return ret
+
 
 def remove_row(tensor, row_index):
     return torch.cat((tensor[:row_index], tensor[row_index + 1 :]))
@@ -91,18 +93,17 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
     torch_dtype = torch.bfloat16 if inference_cfg.trainer.mixed_precision == PrecisionType.BF16 else torch.float32
 
     train_cfg, mapper, clip_state_dict = CheckpointHandler.load_mapper(inference_cfg.inference.mapper_checkpoint_path)
+    train_cfg.inference = inference_cfg.inference
 
-    pipeline, placeholder_token, placeholder_token_id = load_stable_diffusion_model(
-        pretrained_model_name_or_path=train_cfg.model.pretrained_model_name_or_path,
-        mapper=mapper,
-        learned_embeds_path=inference_cfg.inference.learned_embeds_path,
+    pipeline = load_stable_diffusion_model(
+        accelerator=accelerator,
+        model=mapper,
         torch_dtype=torch_dtype,
-        num_denoising_steps=inference_cfg.inference.num_denoising_steps,
-        cfg=train_cfg
+        cfg=train_cfg,
     )
 
-    pipeline.text_encoder.text_model.embeddings.mapper.eval()
     model = BaseMapper(train_cfg, init_modules=False)
+
     if clip_state_dict is not None:
         model.clip.load_state_dict(clip_state_dict)
     else:
@@ -120,17 +121,6 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
 
     model.prepare_for_training(torch_dtype, accelerator, bypass_dtype_check=True)
 
-    prompt_manager = PromptManager(
-        tokenizer=pipeline.tokenizer,
-        text_encoder=pipeline.text_encoder,
-        timesteps=pipeline.scheduler.timesteps,
-        unet_layers=UNET_LAYERS,
-        placeholder_token=placeholder_token,
-        placeholder_token_id=placeholder_token_id,
-        torch_dtype=torch_dtype,
-        model=model,
-    )
-
     validation_dataloader = hydra.utils.instantiate(train_cfg.dataset.validation_dataset, _recursive_=False)(
         cfg=inference_cfg, split=Split.VALIDATION, tokenizer=pipeline.tokenizer, accelerator=accelerator
     ).get_dataloader()
@@ -139,8 +129,8 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
 
     run_inference_dataloader(
         accelerator=accelerator,
+        model=model,
         pipeline=pipeline,
-        prompt_manager=prompt_manager,
         output_path=inference_cfg.output_dir,
         dataloader=validation_dataloader,
         inference_cfg=inference_cfg.inference,
@@ -149,8 +139,8 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
 
 def run_inference_dataloader(
     accelerator: Accelerator,
-    pipeline: StableDiffusionPipeline,
-    prompt_manager: PromptManager,
+    model: BaseMapper,
+    pipeline: Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline],
     output_path: Path,
     dataloader: torch.utils.data.DataLoader,
     inference_cfg: InferenceConfig,
@@ -159,6 +149,7 @@ def run_inference_dataloader(
     output_path.mkdir(exist_ok=True, parents=True)
     all_output_images = []
     all_output_attn_viz = []
+
     log_info(f"Running inference. Dataloder size: {len(dataloader)}")
     for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
         log_info(f"Generating with batch {i}")
@@ -169,13 +160,14 @@ def run_inference_dataloader(
         gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
 
         batch["input_ids"] = orig_input_ids.clone()
-        prompt_image, input_prompt = run_inference_batch(
+        prompt_image, input_prompt, prompt_embeds = run_inference_batch(
             batch=batch,
+            model=model,
             pipeline=pipeline,
-            prompt_manager=prompt_manager,
             visualize_attention_map=inference_cfg.visualize_attention_map,
             inference_cfg=inference_cfg,
         )
+
         images.append(Im(prompt_image))
         if inference_cfg.visualize_attention_map:
             net_attn_maps = get_net_attn_map(prompt_image.size, chunk=False)
@@ -202,6 +194,24 @@ def run_inference_dataloader(
             output_attn_viz = Im.concat_horizontal(output_cols, spacing=5)
             all_output_attn_viz.append(output_attn_viz)
 
+            if is_main_process():
+                embeds_ = torch.stack([v[1] for k,v in prompt_embeds[0].items() if 'CONTEXT_TENSOR' in k and 'BYPASS' not in k], dim=0)
+                bypass_embeds_ = torch.stack([v[1] for k,v in prompt_embeds[0].items() if 'CONTEXT_TENSOR' in k and 'BYPASS' in k], dim=0)
+                
+                inputs_ = pipeline.tokenizer(" ".join([x.replace("</w>", "") for x in input_prompt[0]]), max_length=pipeline.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt")
+                inputs_['input_ids'] = inputs_['input_ids'].to(pipeline.text_encoder.device)
+                inputs_['attention_mask'] = inputs_['attention_mask'].to(pipeline.text_encoder.device)
+                regular_embeds_ = pipeline.text_encoder(**inputs_).last_hidden_state
+                embeds_, bypass_embeds_, regular_embeds_ = embeds_[:, :len(input_prompt[0])], bypass_embeds_[:, :len(input_prompt[0])], regular_embeds_[:, :len(input_prompt[0])]
+
+                output_path_ = output_path / 'tmp.png'
+                embeds_.plt.fig.savefig(output_path_)
+                log_with_accelerator(accelerator, [Im(output_path_)], global_step=i, name="embeds", save_folder=output_path)
+                bypass_embeds_.plt.fig.savefig(output_path_)
+                log_with_accelerator(accelerator, [Im(output_path_)], global_step=i, name="bypass_embeds", save_folder=output_path)
+                regular_embeds_.plt.fig.savefig(output_path_)
+                log_with_accelerator(accelerator, [Im(output_path_)], global_step=i, name="regular_embeds", save_folder=output_path)
+
         if inference_cfg.num_masks_to_remove is not None:
             gen_segmentation = batch["gen_segmentation"]
 
@@ -209,10 +219,10 @@ def run_inference_dataloader(
                 log_info(f"Generating with removed mask {j}")
                 batch["gen_segmentation"] = gen_segmentation[..., torch.arange(gen_segmentation.size(-1)) != j]
                 batch["input_ids"] = orig_input_ids.clone()
-                prompt_image, input_prompt = run_inference_batch(
+                prompt_image, input_prompt, prompt_embeds = run_inference_batch(
                     batch=batch,
+                    model=model,
                     pipeline=pipeline,
-                    prompt_manager=prompt_manager,
                     inference_cfg=inference_cfg,
                 )
                 mask_image = Im(get_layered_image_from_binary_mask(gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
@@ -226,9 +236,9 @@ def run_inference_dataloader(
         gen_results = Im.concat_horizontal(images, spacing=5, fill=(128, 128, 128))
         output_images = Im.concat_horizontal(gt_info, gen_results, spacing=50, fill=(255, 255, 255))
         all_output_images.append(output_images)
-    
+
     device = batch["gen_pixel_values"].device
-    output_images = gather(accelerator, device, all_output_images)
+    output_images = gather(device, all_output_images)
     log_with_accelerator(
         accelerator=accelerator,
         images=output_images,
@@ -238,7 +248,7 @@ def run_inference_dataloader(
     )
 
     if inference_cfg.visualize_attention_map:
-        output_attn_viz = gather(accelerator, device, all_output_attn_viz)
+        output_attn_viz = gather(device, all_output_attn_viz, gather_different=True)
         log_with_accelerator(
             accelerator=accelerator,
             images=output_attn_viz,
@@ -251,9 +261,9 @@ def run_inference_dataloader(
 
 
 def run_inference_batch(
-    pipeline: StableDiffusionPipeline,
-    prompt_manager: PromptManager,
     batch: dict,
+    model: BaseMapper,
+    pipeline: Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline],
     inference_cfg: InferenceConfig,
     seed: int = 42,
     num_images_per_prompt: int = 1,
@@ -268,43 +278,81 @@ def run_inference_batch(
     negative_prompt_embeds = None
     with torch.no_grad():
         if not inference_cfg.empty_string_cfg:
-            negative_prompt_embeds, _ = prompt_manager.embed_prompt(
-                batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx, disable_conditioning=True 
+            negative_prompt_embeds, _ = model.embed_prompt(
+                batch=batch,
+                num_images_per_prompt=num_images_per_prompt,
+                truncation_idx=truncation_idx,
+                disable_conditioning=True,
+                timesteps=pipeline.scheduler.timesteps,
             )
-        prompt_embeds, input_prompt = prompt_manager.embed_prompt(
-            batch=batch, num_images_per_prompt=num_images_per_prompt, truncation_idx=truncation_idx
+        prompt_embeds, input_prompt = model.embed_prompt(
+            batch=batch,
+            num_images_per_prompt=num_images_per_prompt,
+            truncation_idx=truncation_idx,
+            timesteps=pipeline.scheduler.timesteps,
         )
     generator = torch.Generator(device="cuda").manual_seed(seed)
-    images = sd_pipeline_call(pipeline, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_prompt_embeds, generator=generator, num_images_per_prompt=num_images_per_prompt, guidance_scale=inference_cfg.guidance_scale).images[0]
-    return images, input_prompt
+    images = sd_pipeline_call(
+        pipeline,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
+        generator=generator,
+        num_images_per_prompt=num_images_per_prompt,
+        guidance_scale=inference_cfg.guidance_scale,
+    ).images[0]
+    return images, input_prompt, prompt_embeds
 
 
 def load_stable_diffusion_model(
-    pretrained_model_name_or_path: str,
-    learned_embeds_path: Path,
-    num_denoising_steps: int,
-    mapper: NeTIMapper,
     cfg: BaseConfig,
+    accelerator: Accelerator,
+    model: BaseMapper,
     torch_dtype: torch.dtype,
-) -> Tuple[StableDiffusionPipeline, str, int]:
-    tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
-    text_encoder = NeTICLIPTextModel.from_pretrained(
-        pretrained_model_name_or_path,
-        subfolder="text_encoder",
-        torch_dtype=torch_dtype,
-    )
-    text_encoder.text_model.set_mapper(mapper=mapper, cfg=cfg)
-    placeholder_token, placeholder_token_id = CheckpointHandler.load_learned_embed_in_clip(
-        learned_embeds_path=learned_embeds_path, text_encoder=text_encoder, tokenizer=tokenizer
-    )
-    pipeline = StableDiffusionPipeline.from_pretrained(
-        pretrained_model_name_or_path, torch_dtype=torch_dtype, text_encoder=text_encoder, tokenizer=tokenizer
-    ).to("cuda")
-    pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
-    pipeline.scheduler.set_timesteps(num_denoising_steps, device=pipeline.device)
-    pipeline.unet.set_attn_processor(XTIAttenProc())
-    return pipeline, placeholder_token, placeholder_token_id
+    tokenizer: Optional[CLIPTokenizer] = None,
+    text_encoder: Optional[NeTICLIPTextModel] = None,
+    unet: Optional[UNet2DConditionModel] = None,
+    vae: Optional[AutoencoderKL] = None,
+) -> Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline]:
+    """Loads SD model given the current text encoder and our mapper."""
+    assert not cfg.model.controlnet or hasattr(model, "controlnet"), "You must pass a controlnet model to use controlnet."
+    cls = StableDiffusionControlNetPipeline if cfg.model.controlnet else StableDiffusionPipeline
+    pretrained_model_name_or_path=cfg.model.pretrained_model_name_or_path
 
+    kwargs = dict(pretrained_model_name_or_path=pretrained_model_name_or_path, torch_dtype=torch_dtype, unet=unet, vae=vae)
+
+    if cfg.model.controlnet:
+        kwargs['controlnet'] = model.controlnet
+
+    if tokenizer is None:
+        kwargs['tokenizer'] = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
+
+    if text_encoder is None:
+        kwargs['text_encoder'] = NeTICLIPTextModel.from_pretrained(
+            pretrained_model_name_or_path,
+            subfolder="text_encoder",
+            torch_dtype=torch_dtype,
+        )
+        text_encoder.text_model.set_mapper(mapper=model, cfg=cfg)
+
+    pipeline = cls.from_pretrained(**kwargs)
+    pipeline = pipeline.to(accelerator.device)
+
+    # placeholder_token, placeholder_token_id = CheckpointHandler.load_learned_embed_in_clip(
+    #     learned_embeds_path=learned_embeds_path, text_encoder=text_encoder, tokenizer=tokenizer
+    # )
+
+    pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
+    pipeline.set_progress_bar_config(disable=True)
+    pipeline.scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
+    pipeline.unet.set_attn_processor(XTIAttenProc())
+
+    accelerator.unwrap_model(text_encoder).eval()
+
+    if cfg.model.controlnet:
+        accelerator.unwrap_model(pipeline.controlnet).set_attn_processor(XTIAttenProc())
+        accelerator.unwrap_model(pipeline.controlnet).eval()
+
+    return pipeline
 
 def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], global_step: int, name: str, save_folder: Optional[Path] = None):
     save_folder.parent.mkdir(exist_ok=True)

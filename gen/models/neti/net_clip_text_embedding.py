@@ -75,4 +75,4 @@ class NeTICLIPTextEmbeddings(nn.Module):
         position_embeddings = self.position_embedding(position_ids)
         embeddings = inputs_embeds + position_embeddings
 
-        return embeddings, bypass_outputs, mapper_outputs
+        return embeddings, bypass_outputs, mapper_outputs, position_embeddings

@@ -214,7 +214,8 @@ class ClipFeatureExtractor(FeatureExtractorModel):
         
     def create_model(self): 
         base_model, self.preprocess_train, self.preprocess_val = open_clip.create_model_and_transforms(self.model_name, pretrained=self.weights)
-        model = super().create_model(base_model.visual)
+        self.base_model = base_model.visual
+        model = super().create_model(self.base_model)
         return model
     
     @functools.cached_property
@@ -222,6 +223,9 @@ class ClipFeatureExtractor(FeatureExtractorModel):
 
     def forward(self, image: ImArr, **kwargs):
         return self.model(image)
+    
+    def forward_base_model(self, image: ImArr, **kwargs):
+        return self.base_model(image)
        
 def run_all():
     import time

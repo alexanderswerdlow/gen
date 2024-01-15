@@ -3,6 +3,7 @@ load_time = __import__("time").time()
 import itertools
 import math
 import os
+from pathlib import Path
 
 import hydra
 import torch
@@ -25,18 +26,18 @@ from gen.models.base_mapper_model import BaseMapper
 from gen.models.controlnet_model import controlnet_forward, get_controlnet_model, log_validation, pre_train_setup_controlnet
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
-from gen.utils.decoupled_utils import Profiler, is_main_process
-from gen.utils.trainer_utils import TrainingState, handle_checkpointing
+from gen.utils.decoupled_utils import Profiler, is_main_process, write_to_file
+from gen.utils.trainer_utils import TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing
 
 
-def get_params_to_optimize(accelerator: Accelerator, cfg: BaseConfig, model: BaseMapper):
+def get_named_params_to_optimize(accelerator: Accelerator, cfg: BaseConfig, model: BaseMapper):
     match cfg.model.model_type:
         case ModelType.CONTROLNET:
-            params_to_optimize = model.parameters()
+            params_to_optimize = model.named_parameters()
         case ModelType.BASE_MAPPER:
             assert cfg.model.model_type == ModelType.BASE_MAPPER
-            params_to_optimize = [accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.parameters()]
-            params_to_optimize = itertools.chain.from_iterable(params_to_optimize)
+            params_to_optimize = [accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.named_parameters()]
+            params_to_optimize = dict(itertools.chain.from_iterable(params_to_optimize))
 
     return params_to_optimize
 
@@ -78,12 +79,14 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
 
     optimizer_class = torch.optim.AdamW
     optimizer = optimizer_class(
-        get_params_to_optimize(accelerator, cfg, model),
+        get_named_params_to_optimize(accelerator, cfg, model).values(),
         lr=cfg.trainer.learning_rate,
         betas=(cfg.trainer.adam_beta1, cfg.trainer.adam_beta2),
         weight_decay=cfg.trainer.adam_weight_decay,
         eps=cfg.trainer.adam_epsilon,
     )
+
+    assert len([p for p in model.parameters() if p.requires_grad]) == len(get_named_params_to_optimize(accelerator, cfg, model))
 
     train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=True)(
         cfg=cfg, split=Split.TRAIN, tokenizer=tokenizer, accelerator=accelerator
@@ -115,8 +118,8 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     )
 
     # Prepare everything with our `accelerator`.
-    optimizer, train_dataloader, validation_dataloader, lr_scheduler = accelerator.prepare(
-        optimizer, train_dataloader, validation_dataloader, lr_scheduler
+    optimizer, lr_scheduler, train_dataloader, validation_dataloader = accelerator.prepare(
+        optimizer, lr_scheduler, train_dataloader, validation_dataloader
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -138,6 +141,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     log_info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     log_info(f"  Gradient Accumulation steps = {cfg.trainer.gradient_accumulation_steps}")
     log_info(f"  Total optimization steps = {cfg.trainer.max_train_steps}")
+
     global_step = 0
     first_epoch = 0
 
@@ -183,7 +187,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                     total_epoch_steps=len(train_dataloader),
                     global_step=global_step,
                     epoch=epoch,
-                    accelerator=accelerator,
                 )
 
                 # Convert images to latent space
@@ -219,7 +222,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(get_params_to_optimize(accelerator, cfg, model), cfg.trainer.max_grad_norm)
+                    accelerator.clip_grad_norm_(get_named_params_to_optimize(accelerator, cfg, model).values(), cfg.trainer.max_grad_norm)
 
                 optimizer.step()
                 lr_scheduler.step()
@@ -229,25 +232,22 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             # This is different from "step" which only counts the number of forward passes
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                if is_main_process():
-                    if global_step % cfg.trainer.checkpointing_steps == 0 and global_step > 0:
+                if is_main_process() and check_every_n_steps(state, cfg.trainer.checkpointing_steps, run_first=False):
                         if cfg.model.model_type == ModelType.BASE_MAPPER:
                             checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f"{global_step}")
                         else:
                             handle_checkpointing(cfg, accelerator, global_step)
 
-                if (
-                    cfg.trainer.eval_every_n_steps
-                    and global_step % cfg.trainer.eval_every_n_steps == 0
-                    and (cfg.trainer.eval_on_start or global_step != 0)
-                ) or (step == len(train_dataloader) - 1 and cfg.trainer.eval_every_n_epochs and (epoch + 1) % cfg.trainer.eval_every_n_epochs == 0):
+                if check_every_n_steps(state, cfg.trainer.eval_every_n_steps, run_first=cfg.trainer.eval_on_start, all_processes=True) or check_every_n_epochs(
+                    state, cfg.trainer.eval_every_n_epochs, all_processes=True
+                ):
                     log_info(f"Starting validation at step {global_step}, epoch {epoch}")
+                    param_keys = get_named_params_to_optimize(accelerator, cfg, model).keys()
+                    write_to_file(path=Path(cfg.output_dir, cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
                     match cfg.model.model_type:
                         case ModelType.CONTROLNET:
                             if cfg.dataset.validation_prompt:
-                                image_logs = log_validation(
-                                    vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step
-                                )
+                                log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
                         case ModelType.BASE_MAPPER:
                             validator.infer(
                                 accelerator=accelerator,
@@ -259,7 +259,12 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                                 vae=vae,
                                 global_step=global_step,
                             )
+                    if cfg.dataset.reset_validation_dataset_every_epoch:
+                        validation_dataloader = validation_dataset_holder.get_dataloader()
+                        validation_dataloader = accelerator.prepare(validation_dataloader)
+
                     log_info(f"Finished validation at step {global_step}, epoch {epoch}")
+                    
 
                 progress_bar.update(1)
                 global_step += 1
@@ -273,6 +278,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
 
             if global_step >= cfg.trainer.max_train_steps:
                 break
+
             elif cfg.profile and profiler.step(global_step):
                 log_info(f"Profiling finished at step: {global_step}")
                 break

@@ -20,6 +20,7 @@ class DatasetConfig:
     validation_dataset: Optional[AbstractDataset]
     num_validation_images: int = 2
     overfit: bool = False
+    reset_validation_dataset_every_epoch: bool = False
 
 
 @dataclass

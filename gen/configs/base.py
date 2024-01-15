@@ -60,7 +60,12 @@ exp_store(
         tracker_project_name="gen",
         enable_dynamic_grad_accum=True,
     ),
-    dataset=dict(num_validation_images=1, train_dataset=dict(batch_size=8), validation_dataset=dict(batch_size=1, random_subset=4)),
+    dataset=dict(
+        num_validation_images=1,
+        train_dataset=dict(batch_size=8),
+        validation_dataset=dict(batch_size=1, random_subset=4),
+        reset_validation_dataset_every_epoch=True,
+    ),
     model=dict(),
     hydra_defaults=[
         "_self_",
@@ -114,7 +119,7 @@ shared_overfit_movi_args = dict(
 mode_store(
     name="overfit_movi",
     debug=True,
-    inference=dict(num_masks_to_remove=None, visualize_attention_map=False, empty_string_cfg=True, guidance_scale=7.5),
+    inference=dict(num_masks_to_remove=None, visualize_attention_map=True, empty_string_cfg=True, guidance_scale=7.5),
     trainer=dict(
         gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=10
     ),
@@ -139,8 +144,8 @@ mode_store(
     model=dict(use_dataset_segmentation=False),
     dataset=dict(
         train_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=True)),
-        validation_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=True), random_subset=6),
-        
+        validation_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=False, enable_horizontal_flip=False), random_subset=4),
+        overfit=False,
     ),
     hydra_defaults=[
         "_self_",
@@ -155,6 +160,11 @@ mode_store(
     dataset=dict(
         train_dataset=dict(batch_size=4),
     ),
+)
+
+mode_store(
+    name="cls_token_only",
+    model=dict(use_cls_token_only=True, mask_cross_attn=False),
 )
 
 destructure_store(BaseConfig, name="config")

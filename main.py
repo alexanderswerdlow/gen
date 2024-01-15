@@ -1,9 +1,7 @@
-import builtins
-import logging
 import os
 import random
 import shutil
-import warnings
+from datetime import datetime
 from pathlib import Path
 
 import diffusers
@@ -16,29 +14,27 @@ import torch.utils.checkpoint
 import transformers
 import wandb
 from accelerate import Accelerator
-from accelerate.utils import ProjectConfiguration, set_seed
+from accelerate.utils import GradientAccumulationPlugin, ProjectConfiguration
 from diffusers.utils import check_min_version
 from hydra.utils import get_original_cwd
-from hydra_zen import MISSING, ZenField, make_config, store
 from image_utils import library_ops  # This overrides repr() for tensors
 from ipdb import set_trace
 from omegaconf import OmegaConf, open_dict
-from tqdm.auto import tqdm
-from accelerate.utils import GradientAccumulationPlugin
+
 from gen.configs.base import BaseConfig
-from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, is_main_process, set_global_breakpoint
-from gen.utils.logging_utils import log_info, log_error, set_log_file, set_logger, log_warn
+from gen.utils.decoupled_utils import (check_gpu_memory_usage, get_num_gpus,
+                                       is_main_process, set_global_breakpoint)
+from gen.utils.logging_utils import (log_error, log_info, log_warn,
+                                     set_log_file, set_logger)
 from inference import inference
 from train import train
 
-check_min_version("0.24.0")
-
-set_global_breakpoint()
+check_min_version("0.25.0")
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
+set_global_breakpoint() # Overrides breakpoint() to use ipdb.set_trace() instead and handle distributed training
 set_logger(__name__)
-
 
 @hydra.main(config_path=None, config_name="config", version_base=None)
 def main(cfg: BaseConfig):
@@ -59,22 +55,18 @@ def main(cfg: BaseConfig):
         log_info("Waiting for debugger attach")
         debugpy.wait_for_client()
 
-    from datetime import datetime
-
     datetime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     exp_name = f"{cfg.exp}_" if cfg.exp else ""
     overfit_str = "overfit_" if cfg.overfit else ""
     debug_str = "debug_" if cfg.debug else ""
     cfg.run_name = f"{overfit_str}{debug_str}{exp_name}{datetime_str}"
     cfg.output_dir = cfg.top_level_output_path / ("debug" if cfg.debug else ("inference" if cfg.run_inference else "train")) / cfg.run_name
-    cfg.output_dir.mkdir(exist_ok=True, parents=True)
-
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
+
+    cfg.output_dir.mkdir(exist_ok=True, parents=True)
     log_file_path = logging_dir / "output.log"
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
     set_log_file(log_file_path)
-
-    log_info(OmegaConf.to_yaml(cfg))
 
     if cfg.trainer.seed is not None:
         np.random.seed(cfg.trainer.seed)
@@ -131,14 +123,16 @@ def main(cfg: BaseConfig):
     if is_main_process():
         original_output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / ".hydra"
         if original_output_dir.exists():
-            shutil.move(original_output_dir, cfg.output_dir)
-            # delete original dir
+            shutil.move(original_output_dir, cfg.output_dir)  # delete original dir
+        if cfg.output_dir is not None:
+            os.makedirs(cfg.output_dir, exist_ok=True)
         accelerator.init_trackers(
             cfg.trainer.tracker_project_name + ("_inference" if cfg.run_inference else ""),
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
             init_kwargs=dict(wandb=dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.top_level_output_path, sync_tensorboard=cfg.profile)),
         )
         wandb.run.log_code(include_fn=lambda path: any(path.endswith(f) for f in (".py", ".yaml", ".yml", ".txt", ".md")))
+        log_info(OmegaConf.to_yaml(cfg))
 
     check_gpu_memory_usage()
 
@@ -150,11 +144,6 @@ def main(cfg: BaseConfig):
     else:
         transformers.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()
-
-    # Handle the repository creation
-    if is_main_process():
-        if cfg.output_dir is not None:
-            os.makedirs(cfg.output_dir, exist_ok=True)
 
     if cfg.profile:
         torch.cuda.memory._record_memory_history()

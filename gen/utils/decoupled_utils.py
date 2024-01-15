@@ -329,7 +329,7 @@ def is_main_process():
     if dist.is_available() and dist.is_initialized():
         return dist.get_rank() == 0
     elif (rank := os.environ.get("RANK", None)) is not None:
-        return rank == 0
+        return int(rank) == 0
     else:
         return True
 
@@ -340,7 +340,8 @@ def get_num_gpus():
 
 def _breakpoint():
     if is_main_process():
-        frame = sys._getframe().f_back
+        frame = sys._getframe()
+        print("Breakpoint triggered. You may need to type \"up\" to get to the correct frame")
         ipdb.set_trace(frame)
 
     if dist.is_available() and dist.is_initialized():
@@ -352,3 +353,7 @@ def set_global_breakpoint():
 
     builtins.breakpoint = _breakpoint
     builtins.st = ipdb.set_trace  # We import st everywhere
+
+def write_to_file(path: Path, text: str):
+    with open(path, 'a') as file:
+        file.write(text + '\n')

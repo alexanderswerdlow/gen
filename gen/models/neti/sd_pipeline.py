@@ -24,7 +24,7 @@ def sd_pipeline_call(
     callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
     callback_steps: int = 1,
     cross_attention_kwargs: Optional[Dict[str, Any]] = None,
-    num_inference_steps: int = 50,
+    num_inference_steps: Optional[int] = None,
 ):
     """Modification of the standard SD pipeline call to support NeTI embeddings passed with prompt_embeds argument."""
     log_info(f"Running SD pipeline with {num_inference_steps} inference steps.")
@@ -38,7 +38,7 @@ def sd_pipeline_call(
 
     neg_prompt = get_neg_prompt_input_ids(pipeline, None)
     if negative_prompt_embeds is None:
-        negative_prompt_embeds, _ = pipeline.text_encoder(
+        negative_prompt_embeds = pipeline.text_encoder(
             input_ids=neg_prompt.input_ids.to(device),
             attention_mask=None,
         )
@@ -50,8 +50,13 @@ def sd_pipeline_call(
     do_classifier_free_guidance = guidance_scale > 1.0
 
     # 4. Prepare timesteps
-    pipeline.scheduler.set_timesteps(num_inference_steps, device=device)
+    num_inference_steps = 50
+    if num_inference_steps is not None:
+        pipeline.scheduler.set_timesteps(num_inference_steps, device=device)
+
     timesteps = pipeline.scheduler.timesteps
+    num_inference_steps = pipeline.scheduler.num_inference_steps
+    log_info(f"Running SD pipeline with {num_inference_steps} inference steps. and timesteps {timesteps}.")
 
     # 5. Prepare latent variables
     num_channels_latents = pipeline.unet.config.in_channels
@@ -83,15 +88,38 @@ def sd_pipeline_call(
             if do_classifier_free_guidance:
                 negative_prompt_embed = negative_prompt_embeds[i] if type(negative_prompt_embeds) == list else negative_prompt_embeds
                 for k in embed.keys():
-                    if 'CONTEXT_TENSOR' in k:
+                    if "CONTEXT_TENSOR" in k:
                         embed[k] = torch.cat([negative_prompt_embed, embed[k]])
 
-            noise_pred = pipeline.unet(
-                latent_model_input,
-                t,
-                encoder_hidden_states=embed,
-                cross_attention_kwargs=cross_attention_kwargs,
-            ).sample
+            if isinstance(pipeline, StableDiffusionControlNetPipeline):
+                log_info("Running ControlNet inference.")
+                down_block_res_samples, mid_block_res_sample = pipeline.controlnet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=embed,
+                    controlnet_cond=image,
+                    conditioning_scale=1.0,
+                    guess_mode=False,
+                    return_dict=False,
+                )
+
+                # predict the noise residual
+                noise_pred = pipeline.unet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=embed,
+                    timestep_cond=t,
+                    down_block_additional_residuals=down_block_res_samples,
+                    mid_block_additional_residual=mid_block_res_sample,
+                    return_dict=False,
+                )[0]
+            else:
+                noise_pred = pipeline.unet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=embed,
+                    cross_attention_kwargs=cross_attention_kwargs,
+                ).sample
 
             # perform guidance
             if do_classifier_free_guidance:
