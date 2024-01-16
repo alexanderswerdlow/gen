@@ -47,7 +47,6 @@ def main(cfg: BaseConfig):
         import subprocess
 
         import debugpy
-        from image_utils import library_ops
 
         subprocess.run("kill -9 $(lsof -i :5678 | grep $(whoami) | awk '{print $2}')", shell=True)
         debugpy.listen(5678)
@@ -159,10 +158,7 @@ def main(cfg: BaseConfig):
             log_info("Exception...")
             import sys
             import traceback
-
             import ipdb
-            import lovely_tensors
-
             traceback.print_exc()
             ipdb.post_mortem(e.__traceback__)
             sys.exit(1)

@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from clu import deterministic_data, preprocess_spec
 from einops import rearrange
-from image_utils import Im, library_ops
+from image_utils import Im
 from numpy.linalg import inv
 from torch.utils.data import Dataset
 

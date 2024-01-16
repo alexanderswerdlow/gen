@@ -229,7 +229,6 @@ class ClipFeatureExtractor(FeatureExtractorModel):
        
 def run_all():
     import time
-    from image_utils import library_ops
     device = torch.device('cuda:0')
     image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').scale(0.5).resize(224, 224).pil
     

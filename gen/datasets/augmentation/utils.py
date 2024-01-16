@@ -1,7 +1,7 @@
 from einops import rearrange
 from torchvision.transforms.functional import to_pil_image
 from PIL import ImageDraw
-from image_utils import library_ops, Im
+from image_utils import Im
 import matplotlib.pyplot as plt
 import torch
 from kornia.geometry.keypoints import Keypoints
