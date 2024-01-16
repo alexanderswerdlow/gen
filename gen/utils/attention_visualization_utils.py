@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 import math
 import numpy as np
@@ -7,31 +8,25 @@ import torch
 import torch.nn.functional as F
 
 from diffusers.utils import deprecate
-from diffusers.models.attention_processor import (
-    Attention,
-    AttnProcessor,
-    AttnProcessor2_0,
-    LoRAAttnProcessor,
-    LoRAAttnProcessor2_0
-)
+from diffusers.models.attention_processor import Attention, AttnProcessor, AttnProcessor2_0, LoRAAttnProcessor, LoRAAttnProcessor2_0
 
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 import math
 
 from gen.utils.logging_utils import log_info
 
-attn_maps = {}
+attn_maps = defaultdict(list)
 
 
 def attn_call(
-        self,
-        attn: Attention,
-        hidden_states,
-        encoder_hidden_states=None,
-        attention_mask=None,
-        temb=None,
-        scale=1.0,
-    ):
+    self,
+    attn: Attention,
+    hidden_states,
+    encoder_hidden_states=None,
+    attention_mask=None,
+    temb=None,
+    scale=1.0,
+):
     residual = hidden_states
 
     if attn.spatial_norm is not None:
@@ -43,9 +38,7 @@ def attn_call(
         batch_size, channel, height, width = hidden_states.shape
         hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
 
-    batch_size, sequence_length, _ = (
-        hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
-    )
+    batch_size, sequence_length, _ = hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
     attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
 
     if attn.group_norm is not None:
@@ -114,14 +107,14 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.
 
 
 def attn_call2_0(
-        self,
-        attn: Attention,
-        hidden_states,
-        encoder_hidden_states=None,
-        attention_mask=None,
-        temb=None,
-        scale: float = 1.0,
-    ):
+    self,
+    attn: Attention,
+    hidden_states,
+    encoder_hidden_states=None,
+    attention_mask=None,
+    temb=None,
+    scale: float = 1.0,
+):
     residual = hidden_states
 
     if attn.spatial_norm is not None:
@@ -133,9 +126,7 @@ def attn_call2_0(
         batch_size, channel, height, width = hidden_states.shape
         hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
 
-    batch_size, sequence_length, _ = (
-        hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
-    )
+    batch_size, sequence_length, _ = hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
 
     if attention_mask is not None:
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
@@ -169,15 +160,11 @@ def attn_call2_0(
     ####################################################################################################
     # if self.store_attn_map:
     if hasattr(self, "store_attn_map"):
-        hidden_states, attn_map = scaled_dot_product_attention(
-            query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-        )
+        hidden_states, attn_map = scaled_dot_product_attention(query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False)
         # (2,10,4096,77) or (2,20,1024,77)
         self.attn_map = attn_map
     else:
-        hidden_states = F.scaled_dot_product_attention(
-            query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-        )
+        hidden_states = F.scaled_dot_product_attention(query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False)
     ####################################################################################################
 
     hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
@@ -251,7 +238,7 @@ def lora_attn_call2_0(self, attn: Attention, hidden_states, *args, **kwargs):
 
 def cross_attn_init():
     AttnProcessor.__call__ = attn_call
-    AttnProcessor2_0.__call__ = attn_call # attn_call is faster
+    AttnProcessor2_0.__call__ = attn_call  # attn_call is faster
     # AttnProcessor2_0.__call__ = attn_call2_0
     LoRAAttnProcessor.__call__ = lora_attn_call
     # LoRAAttnProcessor2_0.__call__ = lora_attn_call2_0
@@ -259,26 +246,27 @@ def cross_attn_init():
 
 
 def reshape_attn_map(attn_map):
-    attn_map = torch.mean(attn_map,dim=0) # mean by head dim: (20,4096,77) -> (4096,77)
-    attn_map = attn_map.permute(1,0) # (4096,77) -> (77,4096)
+    attn_map = torch.mean(attn_map, dim=0)  # mean by head dim: (20,4096,77) -> (4096,77)
+    attn_map = attn_map.permute(1, 0)  # (4096,77) -> (77,4096)
     latent_size = int(math.sqrt(attn_map.shape[1]))
-    latent_shape = (attn_map.shape[0],latent_size,-1)
-    attn_map = attn_map.reshape(latent_shape) # (77,4096) -> (77,64,64)
+    latent_shape = (attn_map.shape[0], latent_size, -1)
+    attn_map = attn_map.reshape(latent_shape)  # (77,4096) -> (77,64,64)
 
-    return attn_map # torch.sum(attn_map,dim=0) = [1,1,...,1]
+    return attn_map  # torch.sum(attn_map,dim=0) = [1,1,...,1]
 
 
 def hook_fn(name):
     def forward_hook(module, input, output):
         if hasattr(module.processor, "attn_map"):
-            attn_maps[name] = module.processor.attn_map
+            attn_maps[name].append(module.processor.attn_map)
             del module.processor.attn_map
 
     return forward_hook
 
+
 def register_cross_attention_hook(unet):
     for name, module in unet.named_modules():
-        if not name.split('.')[-1].startswith('attn2'):
+        if not name.split(".")[-1].startswith("attn2"):
             continue
 
         if isinstance(module.processor, AttnProcessor):
@@ -295,7 +283,7 @@ def register_cross_attention_hook(unet):
         # log_info(f'registering hook for {name}')
 
         hook = module.register_forward_hook(hook_fn(name))
-    
+
     return unet
 
 
@@ -317,109 +305,106 @@ def prompt2tokens(tokenizer, prompt):
 
 # TODO: generalize for rectangle images
 def upscale(attn_map, target_size):
-    attn_map = torch.mean(attn_map, dim=0) # (10, 32*32, 77) -> (32*32, 77)
-    attn_map = attn_map.permute(1,0) # (32*32, 77) -> (77, 32*32)
+    attn_map = torch.mean(attn_map, dim=0)  # (10, 32*32, 77) -> (32*32, 77)
+    attn_map = attn_map.permute(1, 0)  # (32*32, 77) -> (77, 32*32)
 
-    if target_size[0]*target_size[1] != attn_map.shape[1]:
+    if target_size[0] * target_size[1] != attn_map.shape[1]:
         temp_size = (int(math.sqrt(attn_map.shape[1])), int(math.sqrt(attn_map.shape[1])))
-        attn_map = attn_map.view(attn_map.shape[0], *temp_size) # (77, 32,32)
-        attn_map = attn_map.unsqueeze(0) # (77,32,32) -> (1,77,32,32)
+        attn_map = attn_map.view(attn_map.shape[0], *temp_size)  # (77, 32,32)
+        attn_map = attn_map.unsqueeze(0)  # (77,32,32) -> (1,77,32,32)
 
-        attn_map = F.interpolate(
-            attn_map.to(dtype=torch.float32),
-            size=target_size,
-            mode='bilinear',
-            align_corners=False
-        ).squeeze() # (77,64,64)
+        attn_map = F.interpolate(attn_map.to(dtype=torch.float32), size=target_size, mode="bilinear", align_corners=False).squeeze()  # (77,64,64)
     else:
-        attn_map = attn_map.to(dtype=torch.float32) # (77,64,64)
+        attn_map = attn_map.to(dtype=torch.float32)  # (77,64,64)
 
     attn_map = torch.softmax(attn_map, dim=0)
-    attn_map = attn_map.reshape(attn_map.shape[0],-1) # (77,64*64)
+    attn_map = attn_map.reshape(attn_map.shape[0], -1)  # (77,64*64)
     return attn_map
 
 
-def get_net_attn_map(image_size, batch_size=2, instance_or_negative=False, detach=True, chunk=True):
-    target_size = (image_size[0]//8, image_size[1]//8)
-    idx = 0 if instance_or_negative else 1
-    net_attn_maps = []
+def get_net_attn_map(image_size, timesteps, batch_size=2, detach=True, chunk=True, ):
+    target_size = (image_size[0] // 8, image_size[1] // 8)
+    attn_map_by_timestep = []
+    assert len(next(iter(attn_maps.values()))) == timesteps
+    for t in range(timesteps):
+        net_attn_maps = []
+        for name, attn_map in attn_maps.items():
+            assert len(attn_map) == timesteps
+            attn_map = attn_map[t]
+            attn_map = attn_map.cpu() if detach else attn_map
+            if chunk:
+                attn_map = torch.chunk(attn_map, batch_size)[1]  # (20, 32*32, 77) -> (10, 32*32, 77) # negative & positive CFG
+            if len(attn_map.shape) == 4:
+                attn_map = attn_map.squeeze()
 
-    for name, attn_map in attn_maps.items():
-        attn_map = attn_map.cpu() if detach else attn_map
-        if chunk:
-            attn_map = torch.chunk(attn_map, batch_size)[idx] # (20, 32*32, 77) -> (10, 32*32, 77) # negative & positive CFG
-        if len(attn_map.shape) == 4:
-            attn_map = attn_map.squeeze()
+            attn_map = upscale(attn_map, target_size)  # (10,32*32,77) -> (77,64*64)
+            net_attn_maps.append(attn_map)  # (10,32*32,77) -> (77,64*64)
 
-        attn_map = upscale(attn_map, target_size) # (10,32*32,77) -> (77,64*64)
-        net_attn_maps.append(attn_map) # (10,32*32,77) -> (77,64*64)
+        net_attn_maps = torch.mean(torch.stack(net_attn_maps, dim=0), dim=0)
+        latent_size = int(math.sqrt(net_attn_maps.shape[1]))
+        net_attn_maps = net_attn_maps.reshape(net_attn_maps.shape[0], latent_size, latent_size)  # (77,64*64) -> (77,64,64)
+        attn_map_by_timestep.append(net_attn_maps)
 
-    net_attn_maps = torch.mean(torch.stack(net_attn_maps,dim=0),dim=0)
-    latent_size = int(math.sqrt(net_attn_maps.shape[1]))
-    net_attn_maps = net_attn_maps.reshape(net_attn_maps.shape[0], latent_size, latent_size) # (77,64*64) -> (77,64,64)
-
-    return net_attn_maps
+    return attn_map_by_timestep
 
 
+def get_all_net_attn_maps(attn_map_by_timestep, tokens):
+    attn_maps_img_by_timestep = []
+    for net_attn_maps in attn_map_by_timestep:
+        total_attn_scores = 0
+        attn_maps_img = []
+        for i, (token, attn_map) in enumerate(zip(tokens, net_attn_maps)):
+            attn_map_score = torch.sum(attn_map)
+            attn_map = attn_map.cpu().numpy()
+            h, w = attn_map.shape
+            attn_map_total = h * w
+            attn_map_score = attn_map_score / attn_map_total
+            total_attn_scores += attn_map_score
+            image = get_attn_map_img(attn_map)
+            attn_maps_img.append(image)
 
-def get_all_net_attn_maps(net_attn_maps, tokens):
-    total_attn_scores = 0
-    attn_maps_img = []
-    for i, (token, attn_map) in enumerate(zip(tokens, net_attn_maps)):
-        attn_map_score = torch.sum(attn_map)
-        attn_map = attn_map.cpu().numpy()
-        h,w = attn_map.shape
-        attn_map_total = h*w
-        attn_map_score = attn_map_score / attn_map_total
-        total_attn_scores += attn_map_score
-        image = get_attn_map_img(attn_map)
-        attn_maps_img.append(image)
+        attn_maps_img_by_timestep.append(attn_maps_img)
 
-    log_info(f'total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}')
-    return attn_maps_img
+    log_info(f"total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}")
+
+    return attn_maps_img_by_timestep
+
 
 def save_net_attn_map(net_attn_maps, dir_name, tokenizer, tokens):
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
-    
+
     # tokens = prompt2tokens(tokenizer, prompt)
     total_attn_scores = 0
     attn_maps_img = []
     for i, (token, attn_map) in enumerate(zip(tokens, net_attn_maps)):
         attn_map_score = torch.sum(attn_map)
         attn_map = attn_map.cpu().numpy()
-        h,w = attn_map.shape
-        attn_map_total = h*w
+        h, w = attn_map.shape
+        attn_map_total = h * w
         attn_map_score = attn_map_score / attn_map_total
         total_attn_scores += attn_map_score
-        token = token.replace('</w>','')
-        image = save_attn_map_img(
-            attn_map,
-            f'{token}:{attn_map_score:.2f}',
-            f"{dir_name}/{i}_{token}:{int(attn_map_score*100)}.png"
-        )
-    log_info(f'total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}')
+        token = token.replace("</w>", "")
+        image = save_attn_map_img(attn_map, f"{token}:{attn_map_score:.2f}", f"{dir_name}/{i}_{token}:{int(attn_map_score*100)}.png")
+    log_info(f"total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}")
 
 
-def resize_net_attn_map(net_attn_maps, target_size):
-    net_attn_maps = F.interpolate(
-        net_attn_maps.to(dtype=torch.float32).unsqueeze(0),
-        size=target_size,
-        mode='bilinear',
-        align_corners=False
-    ).squeeze() # (77,64,64)
-    return net_attn_maps
-
+def resize_net_attn_map(attn_map_by_timestep, target_size):
+    return [
+        F.interpolate(net_attn_maps.to(dtype=torch.float32).unsqueeze(0), size=target_size, mode="bilinear", align_corners=False).squeeze()
+        for net_attn_maps in attn_map_by_timestep # (77,64,64)
+    ]
 
 def save_attn_map_img(attn_map, title, save_path):
     normalized_attn_map = (attn_map - np.min(attn_map)) / (np.max(attn_map) - np.min(attn_map)) * 255
     normalized_attn_map = normalized_attn_map.astype(np.uint8)
     image = Image.fromarray(normalized_attn_map)
-    image.save(save_path, format='PNG', compression=0)
+    image.save(save_path, format="PNG", compression=0)
+
 
 def get_attn_map_img(attn_map):
     normalized_attn_map = (attn_map - np.min(attn_map)) / (np.max(attn_map) - np.min(attn_map)) * 255
     normalized_attn_map = normalized_attn_map.astype(np.uint8)
-    image = Image.fromarray(normalized_attn_map)
+    image = Image.fromarray(normalized_attn_map).convert('RGB')
     return image
     # image.save(save_path, format='PNG', compression=0)

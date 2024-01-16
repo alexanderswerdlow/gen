@@ -49,6 +49,7 @@ class XTIAttenProc:
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
         if hasattr(self, "store_attn_map"):
             self.attn_map = attention_probs
+            # rearrange(attention_probs, '(b h) seq d -> b h seq d', b=batch_size, h=attn.heads)
 
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)

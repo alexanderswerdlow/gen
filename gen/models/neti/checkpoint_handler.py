@@ -46,7 +46,7 @@ class CheckpointHandler:
         """Save the mapper and config to be used at inference."""
         state_dict = {
             "state_dict": accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.state_dict(),
-            "encoder": accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.encoder,
+            # "encoder": accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.encoder,
             "cfg": OmegaConf.to_container(self.cfg),
             "clip_state_dict": accelerator.unwrap_model(model.clip).state_dict(),
         }

@@ -11,9 +11,7 @@ import torch
 import wandb
 from accelerate import Accelerator
 from accelerate.utils import PrecisionType
-from diffusers import (AutoencoderKL, DPMSolverMultistepScheduler,
-                       StableDiffusionControlNetPipeline,
-                       StableDiffusionPipeline, UNet2DConditionModel)
+from diffusers import AutoencoderKL, DPMSolverMultistepScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
 from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
 from tqdm import tqdm
@@ -29,11 +27,16 @@ from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.sd_pipeline import sd_pipeline_call
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.attention_visualization_utils import (
-    cross_attn_init, get_all_net_attn_maps, get_net_attn_map,
-    register_cross_attention_hook, resize_net_attn_map)
+    cross_attn_init,
+    get_all_net_attn_maps,
+    get_net_attn_map,
+    register_cross_attention_hook,
+    resize_net_attn_map,
+)
 from gen.utils.decoupled_utils import get_rank, is_main_process
 from gen.utils.logging_utils import log_info
 from accelerate.utils import gather_object as accelerate_gather_object, gather as accelerate_gather
+
 
 def gather(device: torch.device, img: Union[Im, Iterable[Im]], gather_different: bool = False):
     if gather_different:
@@ -170,52 +173,84 @@ def run_inference_dataloader(
 
         images.append(Im(prompt_image))
         if inference_cfg.visualize_attention_map:
-            net_attn_maps = get_net_attn_map(prompt_image.size, chunk=False)
-            net_attn_maps = resize_net_attn_map(net_attn_maps, prompt_image.size)
+            desired_res = (64, 64)
+            attn_map_by_timestep = get_net_attn_map(image_size=prompt_image.size, timesteps=pipeline.scheduler.timesteps.shape[0], chunk=True)
+            if attn_map_by_timestep[0].shape[-2] != desired_res[0] or attn_map_by_timestep[0].shape[-1] != desired_res[1]:
+                attn_map_by_timestep = resize_net_attn_map(attn_map_by_timestep, desired_res)
             tokens = [x.replace("</w>", "") for x in input_prompt[0]]
-            attn_maps = get_all_net_attn_maps(net_attn_maps, tokens)
+            attn_maps_img_by_timestep = get_all_net_attn_maps(attn_map_by_timestep, tokens)
             mask_idx = 0
             output_cols = []
-            for idx, (attn_map, token) in enumerate(zip(attn_maps, tokens)):
-                if token == "placeholder":
+
+            # fmt: off
+            attn_viz_ = Im.concat_vertical((
+                    Im.concat_horizontal(attn_maps, spacing=5).write_text(f"Timestep: {pipeline.scheduler.timesteps[idx].item()}", relative_font_scale=0.004)
+                    for idx, attn_maps in enumerate(attn_maps_img_by_timestep)
+            ),spacing=5)
+            # fmt: on
+
+            for _, (attn_map, token) in enumerate(zip(attn_maps_img_by_timestep[0], tokens)):
+                if token == "place":
                     mask_bool = batch["gen_segmentation"][..., mask_idx].squeeze(0).cpu().bool().numpy()
                     orig_image_ = orig_image.np.copy()
                     orig_image_[~mask_bool] = 0
                     orig_image_ = Im(orig_image_, channel_range=ChannelRange.UINT8)
-
-                    output_col = Im.concat_vertical(Im(attn_map.convert("RGB")), orig_image_, spacing=5).write_text(f"mask: {mask_idx}")
+                    text_to_write = f"mask: {mask_idx}"
                     mask_idx += 1
                 else:
-                    orig_image_ = Im(255 * np.ones((inference_cfg.resolution, inference_cfg.resolution, 3), dtype=np.uint8))
-                    output_col = Im.concat_vertical(Im(attn_map.convert("RGB")), orig_image_, spacing=5).write_text(f"{token}")
+                    orig_image_ = Im(255 * np.ones((desired_res[0], desired_res[1], 3), dtype=np.uint8))
+                    text_to_write = f"{token}"
 
-                output_cols.append(output_col)
+                output_cols.append(orig_image_.resize(*desired_res).write_text(text_to_write, relative_font_scale=0.004))
 
-            output_attn_viz = Im.concat_horizontal(output_cols, spacing=5)
-            all_output_attn_viz.append(output_attn_viz)
+            all_output_attn_viz.append(Im.concat_vertical(attn_viz_, Im.concat_horizontal(output_cols, spacing=5)))
 
             if is_main_process():
-                embeds_ = torch.stack([v[1] for k,v in prompt_embeds[0].items() if 'CONTEXT_TENSOR' in k and 'BYPASS' not in k], dim=0)
+                embeds_ = torch.stack([v[1] for k, v in prompt_embeds[0].items() if "CONTEXT_TENSOR" in k and "BYPASS" not in k], dim=0)
                 bypass_embeds_ = None
-                if any('BYPASS' in k for k in prompt_embeds[0].keys()):
-                    bypass_embeds_ = torch.stack([v[1] for k,v in prompt_embeds[0].items() if 'CONTEXT_TENSOR' in k and 'BYPASS' in k], dim=0)
-                
-                inputs_ = pipeline.tokenizer(" ".join([x.replace("</w>", "") for x in input_prompt[0]]), max_length=pipeline.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt")
-                inputs_['input_ids'] = inputs_['input_ids'].to(pipeline.text_encoder.device)
-                inputs_['attention_mask'] = inputs_['attention_mask'].to(pipeline.text_encoder.device)
-                regular_embeds_ = pipeline.text_encoder(**inputs_).last_hidden_state
-                embeds_, regular_embeds_ = embeds_[:, :len(input_prompt[0])], regular_embeds_[:, :len(input_prompt[0])]
-                if bypass_embeds_ is not None:
-                     bypass_embeds_ = bypass_embeds_[:, :len(input_prompt[0])]
+                if any("BYPASS" in k for k in prompt_embeds[0].keys()):
+                    bypass_embeds_ = torch.stack([v[1] for k, v in prompt_embeds[0].items() if "CONTEXT_TENSOR" in k and "BYPASS" in k], dim=0)
 
-                output_path_ = output_path / 'tmp.png'
+                inputs_ = pipeline.tokenizer(
+                    " ".join([x.replace("</w>", "") for x in input_prompt[0]]),
+                    max_length=pipeline.tokenizer.model_max_length,
+                    padding="max_length",
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                inputs_["input_ids"] = inputs_["input_ids"].to(pipeline.text_encoder.device)
+                inputs_["attention_mask"] = inputs_["attention_mask"].to(pipeline.text_encoder.device)
+                regular_embeds_ = pipeline.text_encoder(**inputs_).last_hidden_state
+                embeds_, regular_embeds_ = embeds_[:, : len(input_prompt[0])], regular_embeds_[:, : len(input_prompt[0])]
+                if bypass_embeds_ is not None:
+                    bypass_embeds_ = bypass_embeds_[:, : len(input_prompt[0])]
+
+                output_path_ = output_path / "tmp.png"
                 embeds_.plt.fig.savefig(output_path_)
-                log_with_accelerator(accelerator, [Im(output_path_)], global_step=(global_step if global_step is not None else i), name="embeds", save_folder=output_path)
+                log_with_accelerator(
+                    accelerator,
+                    [Im(output_path_)],
+                    global_step=(global_step if global_step is not None else i),
+                    name="embeds",
+                    save_folder=output_path,
+                )
                 if bypass_embeds_ is not None:
                     bypass_embeds_.plt.fig.savefig(output_path_)
-                    log_with_accelerator(accelerator, [Im(output_path_)], global_step=(global_step if global_step is not None else i), name="bypass_embeds", save_folder=output_path)
+                    log_with_accelerator(
+                        accelerator,
+                        [Im(output_path_)],
+                        global_step=(global_step if global_step is not None else i),
+                        name="bypass_embeds",
+                        save_folder=output_path,
+                    )
                 regular_embeds_.plt.fig.savefig(output_path_)
-                log_with_accelerator(accelerator, [Im(output_path_)], global_step=(global_step if global_step is not None else i), name="regular_embeds", save_folder=output_path)
+                log_with_accelerator(
+                    accelerator,
+                    [Im(output_path_)],
+                    global_step=(global_step if global_step is not None else i),
+                    name="regular_embeds",
+                    save_folder=output_path,
+                )
 
         if inference_cfg.num_masks_to_remove is not None:
             gen_segmentation = batch["gen_segmentation"]
@@ -321,18 +356,18 @@ def load_stable_diffusion_model(
     """Loads SD model given the current text encoder and our mapper."""
     assert not cfg.model.controlnet or hasattr(model, "controlnet"), "You must pass a controlnet model to use controlnet."
     cls = StableDiffusionControlNetPipeline if cfg.model.controlnet else StableDiffusionPipeline
-    pretrained_model_name_or_path=cfg.model.pretrained_model_name_or_path
+    pretrained_model_name_or_path = cfg.model.pretrained_model_name_or_path
 
     kwargs = dict(pretrained_model_name_or_path=pretrained_model_name_or_path, torch_dtype=torch_dtype, unet=unet, vae=vae)
 
     if cfg.model.controlnet:
-        kwargs['controlnet'] = model.controlnet
+        kwargs["controlnet"] = model.controlnet
 
     if tokenizer is None:
-        kwargs['tokenizer'] = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
+        kwargs["tokenizer"] = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
 
     if text_encoder is None:
-        kwargs['text_encoder'] = NeTICLIPTextModel.from_pretrained(
+        kwargs["text_encoder"] = NeTICLIPTextModel.from_pretrained(
             pretrained_model_name_or_path,
             subfolder="text_encoder",
             torch_dtype=torch_dtype,
@@ -358,6 +393,7 @@ def load_stable_diffusion_model(
         accelerator.unwrap_model(pipeline.controlnet).eval()
 
     return pipeline
+
 
 def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], global_step: int, name: str, save_folder: Optional[Path] = None):
     save_folder.parent.mkdir(exist_ok=True)

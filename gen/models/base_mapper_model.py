@@ -356,7 +356,8 @@ class BaseMapper(nn.Module):
             clip_feature_cls_token = clip_feature_map[:, 0, :]  # We take the cls token
             clip_feature_map = clip_feature_map[:, 1:, :]
 
-            assert -1 <= batch["gen_pixel_values"].min().item() <= batch["gen_pixel_values"].max().item() <= 1
+            if not (-1 <= batch["gen_pixel_values"].min().item() <= batch["gen_pixel_values"].max().item() <= 1):
+                log_warn(f"Warning, pixel values are not in [-1, 1] range, actual range: {batch["gen_pixel_values"].min().item()}, {batch["gen_pixel_values"].max().item()}")
             sam_input = rearrange(
                 (((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c"
             )  # SAM requires NumPy [0, 255]
@@ -375,6 +376,7 @@ class BaseMapper(nn.Module):
                     masks = self.hqsam.forward(sam_input[i])
                     masks = masks[:24]  # We only have 77 tokens
                     original = torch.from_numpy(np.array([masks[i]["segmentation"] for i in range(len(masks))]))
+                    batch["gen_segmentation"] = original.permute(1, 2, 0).long().clone()
 
                 if original.shape[0] == 0:
                     log_info("Warning, no masks found for this image")
