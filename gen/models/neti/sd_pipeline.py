@@ -4,7 +4,7 @@ import torch
 from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline, StableDiffusionPipelineOutput
 from diffusers.pipelines.controlnet import StableDiffusionControlNetPipeline
 
-from gen.utils.logging_utils import log_info
+from gen.utils.logging_utils import log_info, log_warn
 
 
 @torch.no_grad()
@@ -44,10 +44,21 @@ def sd_pipeline_call(
         )
         negative_prompt_embeds = negative_prompt_embeds[0].to(pipeline.unet.dtype)
 
+        # log_warn("!!!! WARNING !!!! REMOVE THIS !!!!!!!!!")
+        # prompt_embeds = pipeline.text_encoder(
+        #     input_ids=get_neg_prompt_input_ids(pipeline, "A photo of a house").input_ids.to(device),
+        #     attention_mask=None,
+        # )
+        # prompt_embeds = prompt_embeds[0].to(pipeline.unet.dtype)
+        # prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
+        # log_warn("!!!! WARNING !!!! REMOVE THIS !!!!!!!!!")
+
     # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
     # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
     # corresponds to doing no classifier free guidance.
     do_classifier_free_guidance = guidance_scale > 1.0
+    if not do_classifier_free_guidance:
+        log_warn("Not using classifier free guidance.")
 
     # 4. Prepare timesteps
     num_inference_steps = 50
@@ -87,6 +98,8 @@ def sd_pipeline_call(
             embed = prompt_embeds[i] if type(prompt_embeds) == list else prompt_embeds
             if do_classifier_free_guidance:
                 negative_prompt_embed = negative_prompt_embeds[i] if type(negative_prompt_embeds) == list else negative_prompt_embeds
+                
+                # log_warn("UNCOMMENT THIS FOR CFG")
                 for k in embed.keys():
                     if "CONTEXT_TENSOR" in k:
                         embed[k] = torch.cat([negative_prompt_embed, embed[k]])

@@ -1,6 +1,7 @@
 from collections import defaultdict
 import os
 import math
+from typing import Optional
 import numpy as np
 from PIL import Image
 
@@ -16,7 +17,7 @@ import math
 from gen.utils.logging_utils import log_info
 
 attn_maps = defaultdict(list)
-
+hooks = []
 
 def attn_call(
     self,
@@ -265,6 +266,7 @@ def hook_fn(name):
 
 
 def register_cross_attention_hook(unet):
+    global hooks
     for name, module in unet.named_modules():
         if not name.split(".")[-1].startswith("attn2"):
             continue
@@ -283,7 +285,23 @@ def register_cross_attention_hook(unet):
         # log_info(f'registering hook for {name}')
 
         hook = module.register_forward_hook(hook_fn(name))
+        hooks.append(hook)
 
+    return unet
+
+def unregister_cross_attention_hook(unet):
+    global hooks
+    for name, module in unet.named_modules():
+        if not name.split(".")[-1].startswith("attn2"):
+            continue
+
+        if isinstance(module.processor, AttnProcessor) or isinstance(module.processor, AttnProcessor2_0) or isinstance(module.processor, LoRAAttnProcessor) or isinstance(module.processor, LoRAAttnProcessor2_0) or isinstance(module.processor, XTIAttenProc):
+            module.processor.store_attn_map = False
+
+    for hook in hooks:
+        hook.remove()
+
+    hooks = []
     return unet
 
 
@@ -303,8 +321,45 @@ def prompt2tokens(tokenizer, prompt):
     return tokens
 
 
-# TODO: generalize for rectangle images
-def upscale(attn_map, target_size):
+def retrieve_attn_maps_per_timestep(image_size, timesteps, detach=True, chunk=True) -> list[list[torch.Tensor]]:
+    """
+    Returns the attention maps at each timestep, for each input token
+    """
+    global attn_maps
+
+    target_size = (image_size[0] // 8, image_size[1] // 8)
+    attn_maps_per_timestep = []
+
+    for t in range(timesteps):
+        attn_maps_layers = []
+        for _, attn_maps_layer_ in attn_maps.items():
+            # Make sure we have saved maps at each timestep
+            assert len(attn_maps_layer_) == timesteps
+
+            attn_maps_layer_ = attn_maps_layer_[t]
+            attn_maps_layer_ = attn_maps_layer_.detach().cpu() if detach else attn_maps_layer_
+
+            # For CFG, we need to chop off the unconditional tokens [first half by convention]. First dim is (batch * heads).
+            if chunk:
+                attn_maps_layer_ = torch.chunk(attn_maps_layer_, 2)[1]  # (20, 32*32, 77) -> (10, 32*32, 77) # negative & positive CFG
+            if len(attn_maps_layer_.shape) == 4:
+                attn_maps_layer_ = attn_maps_layer_.squeeze()
+
+            attn_maps_layer_ = mean_and_scale(attn_maps_layer_, target_size)  # (10,32*32,77) -> (77,64*64)
+            attn_maps_layers.append(attn_maps_layer_)
+
+        attn_maps_layers = torch.mean(torch.stack(attn_maps_layers, dim=0), dim=0) # (77,64*64)
+        latent_size = int(math.sqrt(attn_maps_layers.shape[1]))
+        attn_maps_per_timestep.append(attn_maps_layers.reshape(attn_maps_layers.shape[0], latent_size, latent_size)) # (77,64*64) -> (77,64,64)
+
+    attn_maps = defaultdict(list)
+    return attn_maps_per_timestep
+
+
+def mean_and_scale(attn_map, target_size):
+    """
+    Average over the heads, rescale to resolution, and softmax over tokens. This contains the attention map for one layer and timestep.
+    """
     attn_map = torch.mean(attn_map, dim=0)  # (10, 32*32, 77) -> (32*32, 77)
     attn_map = attn_map.permute(1, 0)  # (32*32, 77) -> (77, 32*32)
 
@@ -312,7 +367,6 @@ def upscale(attn_map, target_size):
         temp_size = (int(math.sqrt(attn_map.shape[1])), int(math.sqrt(attn_map.shape[1])))
         attn_map = attn_map.view(attn_map.shape[0], *temp_size)  # (77, 32,32)
         attn_map = attn_map.unsqueeze(0)  # (77,32,32) -> (1,77,32,32)
-
         attn_map = F.interpolate(attn_map.to(dtype=torch.float32), size=target_size, mode="bilinear", align_corners=False).squeeze()  # (77,64,64)
     else:
         attn_map = attn_map.to(dtype=torch.float32)  # (77,64,64)
@@ -322,50 +376,28 @@ def upscale(attn_map, target_size):
     return attn_map
 
 
-def get_net_attn_map(image_size, timesteps, batch_size=2, detach=True, chunk=True, ):
-    target_size = (image_size[0] // 8, image_size[1] // 8)
-    attn_map_by_timestep = []
-    assert len(next(iter(attn_maps.values()))) == timesteps
-    for t in range(timesteps):
-        net_attn_maps = []
-        for name, attn_map in attn_maps.items():
-            assert len(attn_map) == timesteps
-            attn_map = attn_map[t]
-            attn_map = attn_map.cpu() if detach else attn_map
-            if chunk:
-                attn_map = torch.chunk(attn_map, batch_size)[1]  # (20, 32*32, 77) -> (10, 32*32, 77) # negative & positive CFG
-            if len(attn_map.shape) == 4:
-                attn_map = attn_map.squeeze()
-
-            attn_map = upscale(attn_map, target_size)  # (10,32*32,77) -> (77,64*64)
-            net_attn_maps.append(attn_map)  # (10,32*32,77) -> (77,64*64)
-
-        net_attn_maps = torch.mean(torch.stack(net_attn_maps, dim=0), dim=0)
-        latent_size = int(math.sqrt(net_attn_maps.shape[1]))
-        net_attn_maps = net_attn_maps.reshape(net_attn_maps.shape[0], latent_size, latent_size)  # (77,64*64) -> (77,64,64)
-        attn_map_by_timestep.append(net_attn_maps)
-
-    return attn_map_by_timestep
-
-
-def get_all_net_attn_maps(attn_map_by_timestep, tokens):
+def get_all_net_attn_maps(attn_maps_per_timestep, tokens):
+    """
+    Returns the attention maps at each timestep.
+    Each pixel is normalized over all tokens [e.g., summing over then token dimension == 1]
+    We then normalize the entire image by the max/min values.
+    """
     attn_maps_img_by_timestep = []
-    for net_attn_maps in attn_map_by_timestep:
+    for attn_maps_single_timestep in attn_maps_per_timestep: # [(77,64,64), (77,64,64), ...)]
         total_attn_scores = 0
         attn_maps_img = []
-        for i, (token, attn_map) in enumerate(zip(tokens, net_attn_maps)):
-            attn_map_score = torch.sum(attn_map)
-            attn_map = attn_map.cpu().numpy()
-            h, w = attn_map.shape
+        attn_maps_single_timestep = attn_maps_single_timestep[:len(tokens)].softmax(dim=0)
+        min_, max_ = torch.min(attn_maps_single_timestep).item(), torch.max(attn_maps_single_timestep).item()
+        for i, (token, attn_map_single_token) in enumerate(zip(tokens, attn_maps_single_timestep)):
+            attn_maps_img.append(get_attn_map_img(attn_map_single_token.cpu().numpy(), norm=(min_, max_)))
+            attn_map_score = torch.sum(attn_map_single_token)
+            h, w = attn_map_single_token.shape
             attn_map_total = h * w
             attn_map_score = attn_map_score / attn_map_total
             total_attn_scores += attn_map_score
-            image = get_attn_map_img(attn_map)
-            attn_maps_img.append(image)
-
         attn_maps_img_by_timestep.append(attn_maps_img)
 
-    log_info(f"total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}")
+    log_info(f"total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(attn_maps_single_timestep)}")
 
     return attn_maps_img_by_timestep
 
@@ -392,8 +424,9 @@ def save_net_attn_map(net_attn_maps, dir_name, tokenizer, tokens):
 def resize_net_attn_map(attn_map_by_timestep, target_size):
     return [
         F.interpolate(net_attn_maps.to(dtype=torch.float32).unsqueeze(0), size=target_size, mode="bilinear", align_corners=False).squeeze()
-        for net_attn_maps in attn_map_by_timestep # (77,64,64)
+        for net_attn_maps in attn_map_by_timestep  # (77,64,64)
     ]
+
 
 def save_attn_map_img(attn_map, title, save_path):
     normalized_attn_map = (attn_map - np.min(attn_map)) / (np.max(attn_map) - np.min(attn_map)) * 255
@@ -402,9 +435,12 @@ def save_attn_map_img(attn_map, title, save_path):
     image.save(save_path, format="PNG", compression=0)
 
 
-def get_attn_map_img(attn_map):
-    normalized_attn_map = (attn_map - np.min(attn_map)) / (np.max(attn_map) - np.min(attn_map)) * 255
+def get_attn_map_img(attn_map, norm: Optional[tuple[float]] = None):
+    if norm is not None:
+        normalized_attn_map = (attn_map - norm[0]) / (norm[1] - norm[0]) * 255
+    else:
+        normalized_attn_map = (attn_map - np.min(attn_map)) / (np.max(attn_map) - np.min(attn_map)) * 255
     normalized_attn_map = normalized_attn_map.astype(np.uint8)
-    image = Image.fromarray(normalized_attn_map).convert('RGB')
+    image = Image.fromarray(normalized_attn_map).convert("RGB")
     return image
     # image.save(save_path, format='PNG', compression=0)

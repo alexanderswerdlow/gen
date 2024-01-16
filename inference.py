@@ -29,8 +29,9 @@ from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.attention_visualization_utils import (
     cross_attn_init,
     get_all_net_attn_maps,
-    get_net_attn_map,
+    retrieve_attn_maps_per_timestep,
     register_cross_attention_hook,
+    unregister_cross_attention_hook,
     resize_net_attn_map,
 )
 from gen.utils.decoupled_utils import get_rank, is_main_process
@@ -170,15 +171,17 @@ def run_inference_dataloader(
             visualize_attention_map=inference_cfg.visualize_attention_map,
             inference_cfg=inference_cfg,
         )
+        
+        full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
+        images.append(Im.concat_vertical(prompt_image, full_seg))
 
-        images.append(Im(prompt_image))
         if inference_cfg.visualize_attention_map:
             desired_res = (64, 64)
-            attn_map_by_timestep = get_net_attn_map(image_size=prompt_image.size, timesteps=pipeline.scheduler.timesteps.shape[0], chunk=True)
-            if attn_map_by_timestep[0].shape[-2] != desired_res[0] or attn_map_by_timestep[0].shape[-1] != desired_res[1]:
-                attn_map_by_timestep = resize_net_attn_map(attn_map_by_timestep, desired_res)
+            attn_maps_per_timestep = retrieve_attn_maps_per_timestep(image_size=prompt_image.size, timesteps=pipeline.scheduler.timesteps.shape[0], chunk=inference_cfg.guidance_scale > 1.0)
+            if attn_maps_per_timestep[0].shape[-2] != desired_res[0] or attn_maps_per_timestep[0].shape[-1] != desired_res[1]:
+                attn_maps_per_timestep = resize_net_attn_map(attn_maps_per_timestep, desired_res)
             tokens = [x.replace("</w>", "") for x in input_prompt[0]]
-            attn_maps_img_by_timestep = get_all_net_attn_maps(attn_map_by_timestep, tokens)
+            attn_maps_img_by_timestep = get_all_net_attn_maps(attn_maps_per_timestep, tokens)
             mask_idx = 0
             output_cols = []
 
@@ -206,10 +209,10 @@ def run_inference_dataloader(
             all_output_attn_viz.append(Im.concat_vertical(attn_viz_, Im.concat_horizontal(output_cols, spacing=5)))
 
             if is_main_process():
-                embeds_ = torch.stack([v[1] for k, v in prompt_embeds[0].items() if "CONTEXT_TENSOR" in k and "BYPASS" not in k], dim=0)
+                embeds_ = torch.stack([v[-1] for k, v in prompt_embeds[0].items() if "CONTEXT_TENSOR" in k and "BYPASS" not in k], dim=0)
                 bypass_embeds_ = None
                 if any("BYPASS" in k for k in prompt_embeds[0].keys()):
-                    bypass_embeds_ = torch.stack([v[1] for k, v in prompt_embeds[0].items() if "CONTEXT_TENSOR" in k and "BYPASS" in k], dim=0)
+                    bypass_embeds_ = torch.stack([v[-1] for k, v in prompt_embeds[0].items() if "CONTEXT_TENSOR" in k and "BYPASS" in k], dim=0)
 
                 inputs_ = pipeline.tokenizer(
                     " ".join([x.replace("</w>", "") for x in input_prompt[0]]),
@@ -340,6 +343,10 @@ def run_inference_batch(
         num_images_per_prompt=num_images_per_prompt,
         guidance_scale=inference_cfg.guidance_scale,
     ).images[0]
+
+    if visualize_attention_map:
+        pipeline.unet = unregister_cross_attention_hook(pipeline.unet)
+
     return images, input_prompt, prompt_embeds
 
 

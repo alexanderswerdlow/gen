@@ -1,12 +1,13 @@
-from dataclasses import dataclass
-from typing import ClassVar, Dict, Optional
-from enum import Enum
 from dataclasses import dataclass, field
+from enum import Enum
+from typing import ClassVar, Dict, Optional
 
 from hydra_zen import builds
+from hydra_zen.typing import Builds
+
 from gen.configs.utils import auto_store, store_child_config
 from gen.models.neti.decoder import DecoderTransformer
-from hydra_zen.typing import Builds
+from gen.utils.encoder_utils import BaseModel, ClipFeatureExtractor
 
 
 class ModelType(Enum):
@@ -60,9 +61,12 @@ class ModelConfig:
     enable_norm_scale: bool = True
     enable_neti: bool = False
     cross_attn_residual: bool = True
-    decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     use_dataset_segmentation: bool = True
     use_cls_token_only: bool = False
+    cross_attn_dim: int = 1024
+
+    decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
+    encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
 
 
 @dataclass
@@ -74,7 +78,12 @@ class ControlNetConfig(ModelConfig):
 
 
 auto_store(ControlNetConfig, name="controlnet")
-auto_store(ModelConfig, model_type=ModelType.BASE_MAPPER, name="basemapper")
+auto_store(
+    ModelConfig,
+    model_type=ModelType.BASE_MAPPER,
+    name="basemapper",
+    encoder=builds(ClipFeatureExtractor, return_only="ln_post", populate_full_signature=False),
+)
 store_child_config(
     cls=ModelConfig,
     group="model",

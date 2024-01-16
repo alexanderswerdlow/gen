@@ -38,7 +38,7 @@ class HQSam(nn.Module):
         self.sam = sam_model_registry[model_type](checkpoint=load_checkpoint_from_url(model_urls[model_type]))
         self.mask_generator = SamAutomaticMaskGenerator(
             model=self.sam,
-            points_per_side=8,
+            points_per_side=16,
             process_batch_size=128
         )
 

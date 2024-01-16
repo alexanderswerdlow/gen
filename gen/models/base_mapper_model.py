@@ -2,20 +2,18 @@ import math
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
+import hydra
 import numpy as np
 import open_clip
-from regex import R
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate import Accelerator
-from gen.utils.decoupled_utils import is_main_process
-from gen.utils.logging_utils import log_info, log_warn
-from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, UNet2DConditionModel
+from diffusers import (AutoencoderKL, ControlNetModel, DDPMScheduler,
+                       UNet2DConditionModel)
 from diffusers.utils.import_utils import is_xformers_available
 from einops import rearrange
-from PIL import Image
 from tqdm import tqdm
 from transformers import CLIPTokenizer
 
@@ -26,76 +24,10 @@ from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.models.sam import HQSam, find_true_indices_batched
-from gen.utils.encoder_utils import ClipFeatureExtractor
+from gen.utils.decoupled_utils import is_main_process
+from gen.utils.encoder_utils import ClipFeatureExtractor, TimmModel
+from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import custom_ddp_unwrap
-
-
-# UNET_LAYERS = ["IN01", "IN02", "IN04", "IN05", "IN07", "IN08", "MID", "OUT03", "OUT04", "OUT05", "OUT06", "OUT07", "OUT08", "OUT09", "OUT10", "OUT11"]
-
-SD_INFERENCE_TIMESTEPS = [
-    999,
-    979,
-    959,
-    939,
-    919,
-    899,
-    879,
-    859,
-    839,
-    819,
-    799,
-    779,
-    759,
-    739,
-    719,
-    699,
-    679,
-    659,
-    639,
-    619,
-    599,
-    579,
-    559,
-    539,
-    519,
-    500,
-    480,
-    460,
-    440,
-    420,
-    400,
-    380,
-    360,
-    340,
-    320,
-    300,
-    280,
-    260,
-    240,
-    220,
-    200,
-    180,
-    160,
-    140,
-    120,
-    100,
-    80,
-    60,
-    40,
-    20,
-]
-
-
-def image_grid(imgs, rows, cols):
-    assert len(imgs) == rows * cols
-
-    w, h = imgs[0].size
-    grid = Image.new("RGB", size=(cols * w, rows * h))
-
-    for i, img in enumerate(imgs):
-        grid.paste(img, box=(i % cols * w, i // cols * h))
-    return grid
-
 
 class BaseMapper(nn.Module):
     def __init__(self, cfg: BaseConfig, init_modules: bool = True):
@@ -108,7 +40,7 @@ class BaseMapper(nn.Module):
         self._add_concept_token_to_tokenizer()
 
     def initialize_pretrained_models(self):
-        self.clip = ClipFeatureExtractor()
+        self.clip = hydra.utils.instantiate(self.cfg.model.encoder, _recursive_=True, num_from_back=3, tensor_input=True)
 
         if self.cfg.model.freeze_clip:
             self.clip.requires_grad_(False)
@@ -181,7 +113,7 @@ class BaseMapper(nn.Module):
         if self.cfg.model.controlnet:
             self.controlnet: ControlNetModel = accelerator.prepare(self.controlnet)
             self.controlnet.train()
-            accelerator.unwrap_model(self.controlnet).set_attn_processor(XTIAttenProc()) # TODO: Don't do this
+            accelerator.unwrap_model(self.controlnet).set_attn_processor(XTIAttenProc())  # TODO: Don't do this
 
         if self.cfg.trainer.gradient_checkpointing:
             self.text_encoder.enable_gradient_checkpointing()
@@ -228,10 +160,10 @@ class BaseMapper(nn.Module):
     def embed_prompt(
         self,
         batch: dict,
+        timesteps: List[int],
         truncation_idx: Optional[int] = None,
         num_images_per_prompt: int = 1,
         disable_conditioning: bool = False,
-        timesteps: List[int] = SD_INFERENCE_TIMESTEPS,
     ) -> List[Dict[str, Any]]:
         """
         Compute the conditioning vectors for the given prompt. We assume that the prompt is defined using `{}`
@@ -284,7 +216,7 @@ class BaseMapper(nn.Module):
         self.cfg.model.placeholder_token_id = self.placeholder_token_id
         if not self.cfg.model.enable_neti:
             return
-        
+
         # Convert the super_category_token, placeholder_token to ids
         token_ids = self.tokenizer.encode(self.cfg.model.super_category_token, add_special_tokens=False)
 
@@ -327,7 +259,8 @@ class BaseMapper(nn.Module):
         bs: int = batch["disc_pixel_values"].shape[0]
 
         def viz():
-            from image_utils import Im, calculate_principal_components, get_layered_image_from_binary_mask, pca
+            from image_utils import (Im, calculate_principal_components,
+                                     get_layered_image_from_binary_mask, pca)
 
             principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]).float())
             bs_ = clip_feature_map.shape[1]
@@ -351,13 +284,20 @@ class BaseMapper(nn.Module):
         # viz()
         text_encoder_dict = dict()
         if not disable_conditioning:
-            clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))["ln_post"].permute(1, 0, 2)
-            clip_feature_map = rearrange(clip_feature_map, "l b d -> b l d")
-            clip_feature_cls_token = clip_feature_map[:, 0, :]  # We take the cls token
-            clip_feature_map = clip_feature_map[:, 1:, :]
+            if isinstance(self.clip, TimmModel):
+                clip_feature_map = self.clip(((batch["gen_pixel_values"] + 1) / 2).to(device=device, dtype=dtype))
+                clip_feature_map = rearrange(clip_feature_map, "b d h w -> b (h w) d")
+                clip_feature_cls_token = torch.mean(clip_feature_map, dim=1)
+            elif isinstance(self.clip, ClipFeatureExtractor):
+                clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype)).permute(1, 0, 2)
+                clip_feature_map = rearrange(clip_feature_map, "l b d -> b l d")
+                clip_feature_cls_token = clip_feature_map[:, 0, :]  # We take the cls token
+                clip_feature_map = clip_feature_map[:, 1:, :]
 
             if not (-1 <= batch["gen_pixel_values"].min().item() <= batch["gen_pixel_values"].max().item() <= 1):
-                log_warn(f"Warning, pixel values are not in [-1, 1] range, actual range: {batch["gen_pixel_values"].min().item()}, {batch["gen_pixel_values"].max().item()}")
+                log_warn(
+                    f'Warning, pixel values are not in [-1, 1] range, actual range: {batch["gen_pixel_values"].min().item()}, {batch["gen_pixel_values"].max().item()}'
+                )
             sam_input = rearrange(
                 (((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c"
             )  # SAM requires NumPy [0, 255]
@@ -365,6 +305,7 @@ class BaseMapper(nn.Module):
             latent_dim = int(math.sqrt(clip_feature_map.shape[1]))
             feature_map_masks = []
             feature_map_batch_idxs = []
+            gen_segmentations = []
             for i in range(bs):
                 if self.cfg.model.use_cls_token_only:
                     original = batch["gen_segmentation"][i].permute(2, 0, 1)
@@ -374,20 +315,24 @@ class BaseMapper(nn.Module):
                     original = batch["gen_segmentation"][i].permute(2, 0, 1).bool()
                 else:
                     masks = self.hqsam.forward(sam_input[i])
-                    masks = masks[:24]  # We only have 77 tokens
+                    masks = sorted(masks, key=lambda d: d['area'], reverse=True)
+                    max_masks = 4
+                    masks = masks[:max_masks]  # We only have 77 tokens
                     original = torch.from_numpy(np.array([masks[i]["segmentation"] for i in range(len(masks))]))
-                    batch["gen_segmentation"] = original.permute(1, 2, 0).long().clone()
+                    if original.shape[0] != 0 and not custom_ddp_unwrap(self.text_encoder).text_model.embeddings.mapper.training:
+                        gen_segmentation_ = original.permute(1, 2, 0).long().clone()
+                        gen_segmentations.append(torch.nn.functional.pad(gen_segmentation_, (0, max_masks - gen_segmentation_.shape[-1]), "constant", 0))
 
                 if original.shape[0] == 0:
                     log_info("Warning, no masks found for this image")
                     continue
-                
+
                 if self.cfg.model.dropout_masks is not None and custom_ddp_unwrap(self.text_encoder).text_model.embeddings.mapper.training:
                     mask = torch.rand(original.size(0)) > self.cfg.model.dropout_masks
                     mask[0] = True  # We always keep the background mask
                     original = original[mask]
 
-                original = original[torch.sum(original, dim=[1, 2]) > 0] # Remove empty masks
+                original = original[torch.sum(original, dim=[1, 2]) > 0]  # Remove empty masks
 
                 if original.shape[0] == 0:
                     log_info("Warning, no masks found for this image")
@@ -397,7 +342,9 @@ class BaseMapper(nn.Module):
                 feature_map_mask_ = find_true_indices_batched(original=original, dh=latent_dim, dw=latent_dim)
                 feature_map_masks.append(feature_map_mask_)
                 feature_map_batch_idxs.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
-                # batch_idx += 1
+
+            if len(gen_segmentations) > 0:
+                batch['gen_segmentation'] = torch.stack(gen_segmentations, dim=0)
 
             # If the 1st image has 5 masks and the 2nd has 3 masks, we will have an integer tensor of shape (total == 8,) for 8 different cross-attns. The sequence length for each is thus the number of valid "pixels" (KVs)
             feature_map_masks = torch.cat(feature_map_masks, dim=0)  # feature_map_mask is a boolean mask of (total, h, w)
@@ -438,7 +385,7 @@ class BaseMapper(nn.Module):
                 batch["input_ids"][b, replace_sl] = repeated_tensor
 
             text_encoder_dict = dict(
-                attn_dict=attn_dict, 
+                attn_dict=attn_dict,
                 placeholder_token=placeholder_token_id,
                 pad_token=pad_token_id,
                 feature_map_batch_idxs=feature_map_batch_idxs,
@@ -446,7 +393,10 @@ class BaseMapper(nn.Module):
             )
 
             if self.cfg.model.use_cls_token_only:
-                text_encoder_dict['clip_feature_cls_token'] = self.clip.forward_base_model(batch["disc_pixel_values"].to(device=device, dtype=dtype))
+                if isinstance(self.clip, TimmModel):
+                    pass
+                else:
+                    text_encoder_dict["clip_feature_cls_token"] = self.clip.forward_base_model(batch["disc_pixel_values"].to(device=device, dtype=dtype))
 
         input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
 
@@ -461,7 +411,7 @@ class BaseMapper(nn.Module):
         encoder_hidden_states, input_prompt = self.get_hidden_state(batch, timesteps, device=noisy_latents.device, dtype=weight_dtype)
 
         if self.cfg.model.controlnet:
-            controlnet_image = batch['gen_segmentation'].permute(0, 3, 1, 2).to(dtype=weight_dtype)
+            controlnet_image = batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=weight_dtype)
             down_block_res_samples, mid_block_res_sample = self.controlnet(
                 noisy_latents,
                 timesteps,

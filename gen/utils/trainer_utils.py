@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from functools import wraps
 
 from accelerate import Accelerator
+from accelerate.utils import extract_model_from_parallel
 from gen.utils.decoupled_utils import is_main_process
 from gen.utils.logging_utils import log_info
 
@@ -75,12 +76,13 @@ def every_n_epochs(func, *wrapper_args, **wrapper_kwargs):
 
 
 def custom_ddp_unwrap(model):
-    from torch.nn.parallel import DistributedDataParallel
+    return extract_model_from_parallel(model)
 
-    if isinstance(model, DistributedDataParallel):
-        return model.module
-    else:
-        return model
+    # from torch.nn.parallel import DistributedDataParallel
+    # if isinstance(model, DistributedDataParallel):
+    #     return model.module
+    # else:
+    #     return model
 
 
 if __name__ == "__main__":

@@ -3,14 +3,15 @@ from pathlib import Path
 from typing import Any, List, Optional, Union
 
 from hydra_zen import MISSING, builds, hydrated_dataclass, store
-from gen import IMAGENET_PATH, MOVI_OVERFIT_DATASET_PATH
 
+from gen import IMAGENET_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.datasets import DatasetConfig
 from gen.configs.hydra import get_hydra_config
 from gen.configs.inference import InferenceConfig
 from gen.configs.models import ModelConfig
 from gen.configs.trainer import TrainerConfig
 from gen.configs.utils import destructure_store, exp_store, mode_store
+from gen.utils.encoder_utils import ResNet50
 
 defaults = [
     "_self_",
@@ -121,7 +122,7 @@ mode_store(
     debug=True,
     inference=dict(num_masks_to_remove=None, visualize_attention_map=True, empty_string_cfg=True, guidance_scale=7.5),
     trainer=dict(
-        gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=50
+        gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=100
     ),
     dataset=dict(
         train_dataset=dict(batch_size=8, random_subset=None, **shared_overfit_movi_args),
@@ -165,6 +166,18 @@ mode_store(
 mode_store(
     name="cls_token_only",
     model=dict(use_cls_token_only=True, mask_cross_attn=False),
+)
+
+mode_store(
+    name="resnet",
+    model=dict(encoder=builds(ResNet50, populate_full_signature=False), cross_attn_dim=256)
+)
+
+mode_store(
+    name="should_work",
+    inference=dict(guidance_scale=0.0),
+    model=dict(use_dataset_segmentation=True, mask_cross_attn=False, use_cls_token_only=True),
+    trainer=dict(learning_rate=1e-5),
 )
 
 destructure_store(BaseConfig, name="config")

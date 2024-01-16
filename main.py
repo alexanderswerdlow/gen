@@ -21,10 +21,8 @@ from image_utils import library_ops  # This overrides repr() for tensors
 from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig
-from gen.utils.decoupled_utils import (check_gpu_memory_usage, get_num_gpus,
-                                       is_main_process, set_global_breakpoint)
-from gen.utils.logging_utils import (log_error, log_info, log_warn,
-                                     set_log_file, set_logger)
+from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, is_main_process, set_global_breakpoint
+from gen.utils.logging_utils import log_error, log_info, log_warn, set_log_file, set_logger
 from inference import inference
 from train import train
 
@@ -32,8 +30,9 @@ check_min_version("0.25.0")
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
-set_global_breakpoint() # Overrides breakpoint() to use ipdb.set_trace() instead and handle distributed training
+set_global_breakpoint()  # Overrides breakpoint() to use ipdb.set_trace() instead and handle distributed training
 set_logger(__name__)
+
 
 @hydra.main(config_path=None, config_name="config", version_base=None)
 def main(cfg: BaseConfig):
@@ -45,7 +44,6 @@ def main(cfg: BaseConfig):
 
     if cfg.attach:
         import subprocess
-
         import debugpy
 
         subprocess.run("kill -9 $(lsof -i :5678 | grep $(whoami) | awk '{print $2}')", shell=True)
@@ -159,6 +157,7 @@ def main(cfg: BaseConfig):
             import sys
             import traceback
             import ipdb
+
             traceback.print_exc()
             ipdb.post_mortem(e.__traceback__)
             sys.exit(1)

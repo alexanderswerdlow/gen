@@ -29,11 +29,11 @@ class CrossAttn(nn.Module):
     def __init__(self, cfg: BaseConfig, input_dim: int, output_dim: int):
         super().__init__()
         self.cfg = cfg
-        self.neti_up_proj = nn.Sequential(nn.Linear(input_dim, 1024), nn.LayerNorm(1024))
+        self.neti_up_proj = nn.Sequential(nn.Linear(input_dim, self.cfg.model.cross_attn_dim), nn.LayerNorm(self.cfg.model.cross_attn_dim))
         self.decoder = hydra.utils.instantiate(
-            self.cfg.model.decoder_transformer, _recursive_=False, use_flash_attn=self.cfg.trainer.mixed_precision != "no"
+            self.cfg.model.decoder_transformer, _recursive_=False, embed_dim=self.cfg.model.cross_attn_dim, use_flash_attn=self.cfg.trainer.mixed_precision != "no"
         )
-        self.cross_attn_proj = nn.Sequential(nn.Linear(1024, output_dim), nn.LayerNorm(output_dim))
+        self.cross_attn_proj = nn.Sequential(nn.Linear(self.cfg.model.cross_attn_dim, output_dim), nn.LayerNorm(output_dim))
 
     def forward(self, **kwargs):
         attn_dict = kwargs.get("attn_dict")
@@ -76,7 +76,7 @@ class NeTIMapper(nn.Module):
         self.use_positional_encoding = use_positional_encoding
 
         if self.cfg.model.use_cls_token_only:
-            self.mapper = nn.Sequential(nn.Linear(768, self.orig_output_dim))
+            self.mapper = nn.Sequential(nn.Linear(self.cfg.model.cross_attn_dim, self.orig_output_dim))
         else:
             if self.cfg.model.use_fixed_position_encoding:
                 self.encoder = FourierPositionalEncodingNDims(dim=output_dim, sigmas=[pe_sigmas.sigma_t, pe_sigmas.sigma_l])

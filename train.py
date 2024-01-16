@@ -184,16 +184,26 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
 
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate(controlnet if cfg.model.model_type == ModelType.CONTROLNET else text_encoder):
-                if is_main_process() and global_step == 1:
-                    log_info(f'time to complete 1st step: {__import__("time").time() - load_time} seconds')
+            if is_main_process() and global_step == 1:
+                log_info(f'time to complete 1st step: {__import__("time").time() - load_time} seconds')
 
+            match cfg.model.model_type:
+                case ModelType.CONTROLNET:
+                    models = (controlnet,)
+                case ModelType.BASE_MAPPER:
+                    models = [text_encoder]
+                    if cfg.model.controlnet:
+                        models.append(model.controlnet)
+
+            with accelerator.accumulate(*models):
                 state: TrainingState = TrainingState(
                     epoch_step=step,
                     total_epoch_steps=len(train_dataloader),
                     global_step=global_step,
                     epoch=epoch,
                 )
+
+                batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
 
                 # Convert images to latent space
                 latents = vae.encode(batch["gen_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()

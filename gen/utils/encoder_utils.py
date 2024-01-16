@@ -1,4 +1,5 @@
 import autoroot
+
 import functools
 import math
 from abc import ABC, abstractmethod, abstractproperty
@@ -19,12 +20,15 @@ from PIL import Image
 from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
 from torch import Tensor
-from torchvision.models.feature_extraction import (create_feature_extractor, get_graph_node_names)
+from torchvision.models.feature_extraction import (create_feature_extractor,
+                                                   get_graph_node_names)
+
 from gen.utils.extracted_encoder_utils import (interpolate_embeddings,
                                                pad_image_and_adjust_coords)
 
 ImArr: TypeAlias = Union[Image.Image, Tensor]
 import open_clip
+
 
 def reshape_vit_output(num_to_truncate: int, x: torch.Tensor):
     x = x[:, num_to_truncate:]
@@ -61,6 +65,7 @@ class BaseModel(ABC, nn.Module):
             compile_kwargs: dict = {},
             device: Optional[torch.device] = None,
             dtype: Optional[torch.dtype] = None,
+            **kwargs
         ):
         super().__init__()
         self.model = self.create_model()
@@ -108,12 +113,20 @@ class BaseModel(ABC, nn.Module):
     
 
 class TimmModel(BaseModel):
+    def __init__(self, num_from_back: int = 0, tensor_input: bool = False, **kwargs): 
+        self.num_from_back = num_from_back
+        self.tensor_input = tensor_input
+        super().__init__(**kwargs)
+    
     @functools.cached_property
     def transform(self): 
         cfg = resolve_data_config(self.model.pretrained_cfg, model=self.model)
         if hasattr(self, 'img_size'):
             cfg['input_size'] = self.img_size
-        return create_transform(**cfg)
+        transform_ = create_transform(**cfg)
+        if self.tensor_input:
+            transform_.transforms = [x for x in transform_.transforms if not isinstance(x, torchvision.transforms.ToTensor)]
+        return transform_
 
 class DINOV2(TimmModel):
     def __init__(self, img_size=(224, 224), **kwargs): 
@@ -136,19 +149,19 @@ class VIT(TimmModel):
 class ConvNextV2(TimmModel):
     def create_model(self): return self.create_model_timm('convnextv2_base.fcmae_ft_in22k_in1k', features_only=True)
     def pre_transform(self, image: ImArr, **kwargs): return image
-    def reshape_func(self, output: Tensor): return get_feature_layer(x=output, num_from_back=1)['x']
+    def reshape_func(self, output: Tensor): return get_feature_layer(x=output, num_from_back=self.num_from_back)['x']
     def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs): return self.model.forward(image)
     
 class SwinV2(TimmModel):
     def create_model(self): return self.create_model_timm('swinv2_large_window12to16_192to256.ms_in22k_ft_in1k', features_only=True)
     def pre_transform(self, image: ImArr): return image
-    def reshape_func(self, output: Tensor): return swin_rearrange(x=output, num_from_back=3)['x']
+    def reshape_func(self, output: Tensor): return swin_rearrange(x=output, num_from_back=self.num_from_back)['x']
     def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs): return self.model.forward(image)
 
 class ResNet50(TimmModel):
     def create_model(self): return self.create_model_timm('resnet50.fb_ssl_yfcc100m_ft_in1k', features_only=True)
     def pre_transform(self, image: ImArr, **kwargs): return image
-    def reshape_func(self, output: torch.Tensor): return get_feature_layer(x=output, num_from_back=1)['x']
+    def reshape_func(self, output: torch.Tensor): return get_feature_layer(x=output, num_from_back=self.num_from_back)['x']
     def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs): return self.model.forward(image)
 
 class TorchVisionModel(BaseModel):
@@ -182,7 +195,15 @@ class VIT_H_14(TorchVisionModel):
         model = self.model_builder(image_size=self.img_size)
         model.load_state_dict(new_model_state)
         return model
-        
+
+class ResNet18TorchVision(TorchVisionModel):
+    def __init__(self, img_size=224, **kwargs): 
+        self.img_size = img_size
+        super().__init__(torchvision.models.resnet18, torchvision.models.ResNet18_Weights.DEFAULT, **kwargs)
+
+    @functools.cached_property
+    def transform(self): return partial(self.weights.transforms, crop_size=self.img_size, resize_size=self.img_size)()
+
 class FeatureExtractorModel(BaseModel):
     def create_model(self, base_model):
         self.base_model = base_model
@@ -205,11 +226,13 @@ class ClipFeatureExtractor(FeatureExtractorModel):
                 'transformer': 'transformer',
                 'ln_post': 'ln_post',
             },
+            return_only: Optional[str] = None,
             **kwargs
         ):
         self.model_name = model_name
         self.weights = weights
         self.return_nodes = return_nodes
+        self.return_only = return_only
         super().__init__(**kwargs)
         
     def create_model(self): 
@@ -222,11 +245,17 @@ class ClipFeatureExtractor(FeatureExtractorModel):
     def transform(self): return self.preprocess_val
 
     def forward(self, image: ImArr, **kwargs):
-        return self.model(image)
+        output = self.model(image)
+        if self.return_only is not None:
+            output = output[self.return_only]
+        return output
     
     def forward_base_model(self, image: ImArr, **kwargs):
         return self.base_model(image)
-       
+    
+def get_pil_img():
+    return Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').scale(0.5).resize(224, 224).pil
+
 def run_all():
     import time
     device = torch.device('cuda:0')
