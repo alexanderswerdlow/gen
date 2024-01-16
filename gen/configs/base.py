@@ -165,7 +165,7 @@ mode_store(
 
 mode_store(
     name="cls_token_only",
-    model=dict(use_cls_token_only=True, mask_cross_attn=False),
+    model=dict(use_cls_token_only=True, mask_cross_attn=False, cross_attn_dim=768),
 )
 
 mode_store(

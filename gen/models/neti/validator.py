@@ -51,3 +51,4 @@ class ValidationHandler:
         torch.cuda.empty_cache()
         accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.train()
         if self.cfg.model.controlnet: accelerator.unwrap_model(model).controlnet.train()
+        if not self.cfg.model.freeze_text_encoder: accelerator.unwrap_model(text_encoder).train()

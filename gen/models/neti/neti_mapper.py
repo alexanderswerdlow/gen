@@ -1,5 +1,6 @@
 import random
 from dataclasses import dataclass
+from re import M
 from typing import List, Optional
 
 import torch
@@ -24,6 +25,15 @@ class PESigmas:
 
 UNET_LAYERS = ["IN01", "IN02", "IN04", "IN05", "IN07", "IN08", "MID", "OUT03", "OUT04", "OUT05", "OUT06", "OUT07", "OUT08", "OUT09", "OUT10", "OUT11"]
 
+
+def _init_weights(m):
+    initializer_range=0.02
+    if isinstance(m, nn.Linear):
+        nn.init.normal_(m.weight, std=initializer_range)
+        if isinstance(m, nn.Linear) and m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.Embedding):
+        nn.init.normal_(m.weight, std=initializer_range)
 
 class CrossAttn(nn.Module):
     def __init__(self, cfg: BaseConfig, input_dim: int, output_dim: int):
@@ -93,6 +103,8 @@ class NeTIMapper(nn.Module):
 
             if self.cfg.model.mask_cross_attn:
                 self.cross_attn = CrossAttn(cfg=cfg, input_dim=self.orig_output_dim, output_dim=output_dim)
+
+        self.apply(_init_weights)
         
     def set_net(self, num_unet_layers: int, num_time_anchors: int, output_dim: int = 768):
         self.input_layer = self.set_input_layer(num_unet_layers, num_time_anchors)

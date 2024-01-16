@@ -39,7 +39,11 @@ def get_named_params_to_optimize(accelerator: Accelerator, cfg: BaseConfig, mode
             params_to_optimize = model.named_parameters()
         case ModelType.BASE_MAPPER:
             assert cfg.model.model_type == ModelType.BASE_MAPPER
-            params_to_optimize = [accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.named_parameters()]
+            params_to_optimize = []
+            if not cfg.model.freeze_text_encoder:
+                params_to_optimize.append(accelerator.unwrap_model(model.text_encoder).named_parameters())
+            else:
+                params_to_optimize.append(accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.named_parameters())
             params_to_optimize = dict(itertools.chain.from_iterable(params_to_optimize))
 
     return params_to_optimize

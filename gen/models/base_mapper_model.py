@@ -92,6 +92,7 @@ class BaseMapper(nn.Module):
 
         if self.cfg.model.freeze_text_encoder:
             self.text_encoder.requires_grad_(False)
+            self.text_encoder.train()
         else:
             warnings.warn("Warning, text encoder is unfrozen")
 
