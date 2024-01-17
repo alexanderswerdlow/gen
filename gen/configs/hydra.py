@@ -3,7 +3,7 @@ from hydra.conf import HydraConf, JobConf, RunDir, SweepDir
 
 def get_hydra_config():
         return HydraConf(
-        run=RunDir(dir="${get_run_dir:top_level_output_path}"),
+        run=RunDir(dir="${get_run_dir:first_level_output_path}"),
         # sweep=SweepDir(
         #     dir="${top_level_output_path}/hydra-multirun/${now:%Y-%m-%d_%H-%M-%S}",
         #     subdir="${hydra.job.num}",

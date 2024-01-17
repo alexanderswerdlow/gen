@@ -355,5 +355,6 @@ def set_global_breakpoint():
     builtins.st = ipdb.set_trace  # We import st everywhere
 
 def write_to_file(path: Path, text: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'a') as file:
         file.write(text + '\n')

@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional
 
-from hydra_zen import MISSING, builds, hydrated_dataclass, store
+from hydra_zen import MISSING, builds, store
 from omegaconf import OmegaConf
 
 from gen import IMAGENET_PATH, MOVI_OVERFIT_DATASET_PATH
@@ -34,8 +34,7 @@ class BaseConfig:
     inference: InferenceConfig = MISSING
     slurm: SlurmConfig = MISSING
 
-    top_level_output_path: Path = Path("outputs")
-    logging_dir: Path = Path("logs")  # Folder inside the experiment folder
+
     exp: Optional[str] = None
     debug: bool = False
     tags: Optional[tuple[str]] = None
@@ -44,12 +43,17 @@ class BaseConfig:
     overfit: bool = False
     run_inference: bool = False
 
-    # These are set in code
-    sweep_run_id: Optional[str] = None
-    parent_dir: Optional[Path] = None
-    output_dir: Optional[Path] = None
-    reference_dir: Optional[Path] = None
-    run_name: Optional[str] = None
+    output_dir: Optional[Path] = None # Auto generated but can be specified
+    first_level_output_path: Path = Path("outputs")
+    second_level_output_path: Optional[Path] = None # Auto generated if not specified
+    
+    logging_dir: Path = Path("logs")  # Folder inside the experiment folder
+
+    sweep_id: Optional[str] = None # ID of the entire sweep
+    sweep_run_id: Optional[str] = None # ID of the specific run in a sweep
+    reference_dir: Optional[Path] = None # Used to symlink slurm logs
+
+    run_name: Optional[str] = None # Run name used for wandb
     cwd: Optional[Path] = None
     defaults: List[Any] = field(default_factory=lambda: defaults)
 
@@ -57,20 +61,24 @@ class BaseConfig:
 def get_run_dir(_, *, _root_: BaseConfig):
     if _root_.output_dir is not None:
         return _root_.output_dir
-    
+
     exp_name = f"{_root_.exp}_" if _root_.exp else ""
     overfit_str = "overfit_" if _root_.overfit else ""
     debug_str = "debug_" if _root_.debug else ""
     _root_.run_name = f"{overfit_str}{debug_str}{exp_name}"
+
+    if _root_.second_level_output_path is None:
+        _root_.second_level_output_path = "debug" if _root_.debug else ("inference" if _root_.run_inference else "train")
+
     if _root_.sweep_run_id is not None:
-        _root_.run_name = _root_.run_name + f'{datetime.now().strftime("%Y-%m-%d_%H")}' + "_" + _root_.sweep_run_id
+        _root_.sweep_id = str(_root_.sweep_id)
+        _root_.sweep_run_id = str(_root_.sweep_run_id)
+
+        _root_.run_name = _root_.run_name + "_" + _root_.sweep_id + "_" + _root_.sweep_run_id
+        return Path(_root_.first_level_output_path) / _root_.second_level_output_path / _root_.sweep_id / _root_.sweep_run_id
     else:
         _root_.run_name = _root_.run_name + f'{datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}'
-
-    if _root_.parent_dir is None:
-        _root_.parent_dir = ("debug" if _root_.debug else ("inference" if _root_.run_inference else "train"))
-
-    return Path(_root_.top_level_output_path) / _root_.parent_dir / _root_.run_name
+        return Path(_root_.first_level_output_path) / _root_.second_level_output_path / _root_.run_name
 
 
 OmegaConf.register_new_resolver("get_run_dir", get_run_dir)

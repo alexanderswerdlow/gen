@@ -52,14 +52,18 @@ def main(cfg: BaseConfig):
         log_info("Waiting for debugger attach")
         debugpy.wait_for_client()
 
-    cfg.output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    cfg.output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
 
     # log_file_path = logging_dir / "output.log"
     # log_file_path.parent.mkdir(parents=True, exist_ok=True)
     # set_log_file(log_file_path)
 
-    print("!!!A", cfg.reference_dir)
+    if cfg.reference_dir is not None:
+        reference_dir = Path(cfg.reference_dir)
+        assert reference_dir.exists()
+        symlink_dir = cfg.output_dir / "slurm"
+        symlink_dir.symlink_to(reference_dir)
 
     if cfg.trainer.seed is not None:
         np.random.seed(cfg.trainer.seed)
@@ -117,7 +121,7 @@ def main(cfg: BaseConfig):
         accelerator.init_trackers(
             cfg.trainer.tracker_project_name + ("_inference" if cfg.run_inference else ""),
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
-            init_kwargs=dict(wandb=dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.top_level_output_path, sync_tensorboard=cfg.profile)),
+            init_kwargs=dict(wandb=dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.output_dir, sync_tensorboard=cfg.profile)),
         )
         wandb.run.log_code(include_fn=lambda path: any(path.endswith(f) for f in (".py", ".yaml", ".yml", ".txt", ".md")))
         log_info(OmegaConf.to_yaml(cfg))
@@ -148,6 +152,7 @@ def main(cfg: BaseConfig):
             log_info("Exception...")
             import sys
             import traceback
+
             import ipdb
 
             traceback.print_exc()

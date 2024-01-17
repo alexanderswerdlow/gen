@@ -108,14 +108,14 @@ class Task:
         output = subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE).stdout.decode("utf-8")
         print(output)
 
-        num_processes = self.cfg.n_processes * self.cfg.n_nodes  # --num_processes {num_processes}
+        num_processes = self.cfg.n_processes * self.cfg.n_nodes
         machine_rank = dist_env.rank // self.cfg.n_processes
         deepspeed_str = ""
         if self.cfg.use_deepspeed:
             deepspeed_str = f" {DEEPSPEED_MULTINODE} --use_deepspeed"
 
         if self.cfg.use_accelerate:
-            init_cmd = f"accelerate launch --mixed_precision bf16 --dynamo_backend no --gpu_ids all {deepspeed_str} --num_machines {self.cfg.n_nodes} --machine_rank {machine_rank} --main_process_ip {dist_env.master_addr} --main_process_port {dist_env.master_port}"
+            init_cmd = f"accelerate launch --dynamo_backend no --num_processes {num_processes} --gpu_ids all {deepspeed_str} --num_machines {self.cfg.n_nodes} --machine_rank {machine_rank} --main_process_ip {dist_env.master_addr} --main_process_port {dist_env.master_port}"
         else:
             init_cmd = f"python"
 
@@ -150,6 +150,9 @@ class Task:
 
 @hydra.main(config_path=None, config_name="config", version_base=None)
 def main(cfg: BaseConfig):
+    """
+    This script uses submitit to execute a training run on a SLURM cluster. Although it takes a BaseConfig it only actually uses the SLURM submodule. The rest of the config is ignored.
+    """
     if cfg.output_dir is None:
         with open_dict(cfg):
             cfg.output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
