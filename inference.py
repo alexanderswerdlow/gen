@@ -1,5 +1,3 @@
-import autoroot
-
 import math
 import warnings
 from pathlib import Path
@@ -23,7 +21,6 @@ from gen.datasets.base_dataset import Split
 from gen.models.base_mapper_model import BaseMapper
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
-from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.sd_pipeline import sd_pipeline_call
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.attention_visualization_utils import (
@@ -171,13 +168,15 @@ def run_inference_dataloader(
             visualize_attention_map=inference_cfg.visualize_attention_map,
             inference_cfg=inference_cfg,
         )
-        
+
         full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
         images.append(Im.concat_vertical(prompt_image, full_seg))
 
         if inference_cfg.visualize_attention_map:
             desired_res = (64, 64)
-            attn_maps_per_timestep = retrieve_attn_maps_per_timestep(image_size=prompt_image.size, timesteps=pipeline.scheduler.timesteps.shape[0], chunk=inference_cfg.guidance_scale > 1.0)
+            attn_maps_per_timestep = retrieve_attn_maps_per_timestep(
+                image_size=prompt_image.size, timesteps=pipeline.scheduler.timesteps.shape[0], chunk=inference_cfg.guidance_scale > 1.0
+            )
             if attn_maps_per_timestep[0].shape[-2] != desired_res[0] or attn_maps_per_timestep[0].shape[-1] != desired_res[1]:
                 attn_maps_per_timestep = resize_net_attn_map(attn_maps_per_timestep, desired_res)
             tokens = [x.replace("</w>", "") for x in input_prompt[0]]

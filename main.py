@@ -1,7 +1,7 @@
+import autoroot
+
 import os
 import random
-import shutil
-from datetime import datetime
 from pathlib import Path
 
 import diffusers
@@ -22,7 +22,7 @@ from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig
 from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, is_main_process, set_global_breakpoint
-from gen.utils.logging_utils import log_error, log_info, log_warn, set_log_file, set_logger
+from gen.utils.logging_utils import log_error, log_info, log_warn, set_logger
 from inference import inference
 from train import train
 
@@ -44,6 +44,7 @@ def main(cfg: BaseConfig):
 
     if cfg.attach:
         import subprocess
+
         import debugpy
 
         subprocess.run("kill -9 $(lsof -i :5678 | grep $(whoami) | awk '{print $2}')", shell=True)
@@ -51,18 +52,14 @@ def main(cfg: BaseConfig):
         log_info("Waiting for debugger attach")
         debugpy.wait_for_client()
 
-    datetime_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    exp_name = f"{cfg.exp}_" if cfg.exp else ""
-    overfit_str = "overfit_" if cfg.overfit else ""
-    debug_str = "debug_" if cfg.debug else ""
-    cfg.run_name = f"{overfit_str}{debug_str}{exp_name}{datetime_str}"
-    cfg.output_dir = cfg.top_level_output_path / ("debug" if cfg.debug else ("inference" if cfg.run_inference else "train")) / cfg.run_name
+    cfg.output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     logging_dir = Path(cfg.output_dir, cfg.logging_dir)
 
-    cfg.output_dir.mkdir(exist_ok=True, parents=True)
-    log_file_path = logging_dir / "output.log"
-    log_file_path.parent.mkdir(parents=True, exist_ok=True)
-    set_log_file(log_file_path)
+    # log_file_path = logging_dir / "output.log"
+    # log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    # set_log_file(log_file_path)
+
+    print("!!!A", cfg.reference_dir)
 
     if cfg.trainer.seed is not None:
         np.random.seed(cfg.trainer.seed)
@@ -117,11 +114,6 @@ def main(cfg: BaseConfig):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if is_main_process():
-        original_output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / ".hydra"
-        if original_output_dir.exists():
-            shutil.move(original_output_dir, cfg.output_dir)  # delete original dir
-        if cfg.output_dir is not None:
-            os.makedirs(cfg.output_dir, exist_ok=True)
         accelerator.init_trackers(
             cfg.trainer.tracker_project_name + ("_inference" if cfg.run_inference else ""),
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),

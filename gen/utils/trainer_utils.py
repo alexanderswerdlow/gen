@@ -1,4 +1,3 @@
-import autoroot
 import os
 import shutil
 from dataclasses import dataclass

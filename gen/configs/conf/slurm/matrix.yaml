@@ -1,8 +1,5 @@
 # @package _global_
 
-# python launch_slurm.py +slurm=grogu 'slurm.cmd=""'
-# gpu_ref_gb = {'A5500': 24, 'A100': 40, 'volta': 32, '6000ADA': 48, '2080Ti': 11, 'titanx': 12}
-
 slurm:
   job_name: diff_tta
   partition: kate_reserved # kate_reserved, deepaklong

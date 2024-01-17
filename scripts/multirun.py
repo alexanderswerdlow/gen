@@ -1,47 +1,61 @@
+import autoroot
+import itertools
 import subprocess
-from itertools import product
+from pathlib import Path
+from typing import List, Optional
+
 import typer
+from typing_extensions import Annotated
+from datetime import datetime
+from gen import CONDA_ENV, REPO_DIR
+import random
+import string
 
 app = typer.Typer(pretty_exceptions_show_locals=False)
-
 typer.main.get_command_name = lambda name: name
+
 
 @app.command()
 def main(
-    cmd_str: str = '',
-    modes: str = '',
-    init_str: str = f'''cd ~/aswerdlo/tta && source /grogu/user/mprabhud/miniconda3/bin/activate aswerdlo && export WANDB_API_KEY=ff8ac5cca8f65cb77b0e92087205b9bde874a33c'''
+    init_cmds: str = f"""cd {REPO_DIR} && source {Path.home() / 'anaconda3/bin/activate'} {CONDA_ENV}""",
+    args: Annotated[Optional[List[str]], typer.Argument()] = None,
+    prod: Annotated[Optional[List[str]], typer.Option()] = None,
+    output_dir: Path = REPO_DIR / "outputs" / "slurm" / f'{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}',
+    dry_run: bool = False,
 ):
-    adapt_only_classifier = [False] # [True, False]
-    adapt_top_k = [5] # [5, 1000]
-    online_mode = ['offline'] # ['online', 'offline']
-    use_checkpointing = [True] # [True, False]
-    imagenet_c_modes = ['fog'] # , 'gaussian_noise', 'pixelate', 'contrast']
-    output_file = "command_output.log"
-    # datasets = ['ImageNetCDataset'] # , 'ImageNetADataset'], 'ImageNetDataset']
-    datasets = ['ImageNetADataset', 'ImageNetDataset']
+    regular_args = " ".join(args)
 
-    # Generate and run all combinations
-    for cls_adapt, top_k, online, checkpointing, dataset, imagenet_c_mode in product(adapt_only_classifier, adapt_top_k, online_mode, use_checkpointing, datasets, imagenet_c_modes):
-        name_suffix = f""
-        if len(adapt_only_classifier) > 1: name_suffix += f"cls_adapt_{cls_adapt}_"
-        if len(adapt_top_k) > 1: name_suffix += f"topk_{top_k}_"
-        if len(online_mode) > 1: name_suffix += f"online_{online}_"
-        if len(use_checkpointing) > 1: name_suffix += f"checkpointing_{checkpointing}_"
-        if len(imagenet_c_modes) > 1: name_suffix += f"imagenet_c_mode_{imagenet_c_mode}_"
+    if prod is None:
+        data = {None: (None,)}
+    else:
+        data = {item.split("=")[0]: item.split("=")[1].split(",") for item in prod}
+        keys = list(data.keys())
 
-        command = f'''{init_str} && \
-python launch_slurm.py use_accelerate=False program=main.py +slurm=grogu 'slurm.cmd="\
-experiment=dit modes='[base,grogu,{online}{modes}]' exp_suffix='{name_suffix}' \
-model.adapt_only_classifier={cls_adapt} tta.adapt_topk={top_k} model.use_checkpointing={checkpointing} input.dataset_name={dataset} input.imagenet_c_mode={imagenet_c_mode} {cmd_str}"' '''
-        print(command)
-        # with open('filename.txt', 'a') as f: f.write(f'{command}\n')
-        # continue
-        # Open the output file in append mode and execute the command
-        with open(output_file, "a") as file:
-            process = subprocess.Popen(command, shell=True, stdout=file, stderr=subprocess.STDOUT)
+    # Generating and printing all combinations
+    for combination in itertools.product(*data.values()):
+        if len(combination) == 0:
+            prod_args = ""
+        else:
+            prod_args = " " + " ".join([f"{keys[i]}={value}" for i, value in enumerate(combination)])
 
-    # Note: Processes are started and will run concurrently. Their outputs will be appended to the output file.
+        run_id = "".join(random.choices(string.ascii_letters, k=5))
+        output_dir_ = output_dir.parent / (output_dir.name + f"_{run_id}")
+        output_dir_.mkdir(parents=True, exist_ok=True)
+        output_file_ = output_dir_ / "submitit.log"
+        command = f"""{init_cmds} && python scripts/launch_slurm.py output_dir={output_dir_} 'slurm.cmd="reference_dir={output_dir_} {regular_args}{prod_args}"' """
+
+        if dry_run:
+            print(command)
+        else:
+            with open(output_file_, "a") as f:
+                f.write(f"Running: {command}\n")
+            with open(output_file_, "a") as file:
+                process = subprocess.Popen(command, shell=True, stdout=file, stderr=subprocess.STDOUT)
+
+        print(f"Running: {command}")
+        print(f"Output: {output_file_}")
+        # Note: Processes are started and will run concurrently. Their outputs will be appended to the output file.
+
 
 if __name__ == "__main__":
     app()

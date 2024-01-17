@@ -1,4 +1,3 @@
-import autoroot
 import os
 
 import torch
@@ -6,8 +5,7 @@ from einops import rearrange
 
 from gen.utils.logging_utils import log_info
 
-device_name = torch.cuda.get_device_name()
-if not device_name.startswith('NVIDIA A100'):
+if not torch.cuda.is_available() or not torch.cuda.get_device_name().startswith('NVIDIA A100'):
     log_info("Warning: Custom flash attention kernels were written specifically for A100. Setting SEGMENT_ANYTHING_FAST_USE_FLASH_4=0")
     os.environ['SEGMENT_ANYTHING_FAST_USE_FLASH_4'] = '0'
 

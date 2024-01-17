@@ -1,14 +1,17 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional, Union
 
 from hydra_zen import MISSING, builds, hydrated_dataclass, store
+from omegaconf import OmegaConf
 
 from gen import IMAGENET_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.datasets import DatasetConfig
 from gen.configs.hydra import get_hydra_config
 from gen.configs.inference import InferenceConfig
 from gen.configs.models import ModelConfig
+from gen.configs.slurm import SlurmConfig
 from gen.configs.trainer import TrainerConfig
 from gen.configs.utils import destructure_store, exp_store, mode_store
 from gen.utils.encoder_utils import ResNet50
@@ -19,6 +22,7 @@ defaults = [
     {"dataset": "coco_captions"},
     {"model": "basemapper"},
     {"inference": "basemapper"},
+    {"slurm": "default"},
 ]
 
 
@@ -28,9 +32,10 @@ class BaseConfig:
     dataset: DatasetConfig = MISSING
     model: ModelConfig = MISSING
     inference: InferenceConfig = MISSING
+    slurm: SlurmConfig = MISSING
 
-    top_level_output_path: Optional[Path] = Path("outputs")
-    logging_dir: Optional[Path] = Path("logs")  # Folder inside the experiment folder
+    top_level_output_path: Path = Path("outputs")
+    logging_dir: Path = Path("logs")  # Folder inside the experiment folder
     exp: Optional[str] = None
     debug: bool = False
     tags: Optional[tuple[str]] = None
@@ -40,11 +45,35 @@ class BaseConfig:
     run_inference: bool = False
 
     # These are set in code
+    sweep_run_id: Optional[str] = None
+    parent_dir: Optional[Path] = None
     output_dir: Optional[Path] = None
+    reference_dir: Optional[Path] = None
     run_name: Optional[str] = None
     cwd: Optional[Path] = None
     defaults: List[Any] = field(default_factory=lambda: defaults)
 
+
+def get_run_dir(_, *, _root_: BaseConfig):
+    if _root_.output_dir is not None:
+        return _root_.output_dir
+    
+    exp_name = f"{_root_.exp}_" if _root_.exp else ""
+    overfit_str = "overfit_" if _root_.overfit else ""
+    debug_str = "debug_" if _root_.debug else ""
+    _root_.run_name = f"{overfit_str}{debug_str}{exp_name}"
+    if _root_.sweep_run_id is not None:
+        _root_.run_name = _root_.run_name + f'{datetime.now().strftime("%Y-%m-%d_%H")}' + "_" + _root_.sweep_run_id
+    else:
+        _root_.run_name = _root_.run_name + f'{datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}'
+
+    if _root_.parent_dir is None:
+        _root_.parent_dir = ("debug" if _root_.debug else ("inference" if _root_.run_inference else "train"))
+
+    return Path(_root_.top_level_output_path) / _root_.parent_dir / _root_.run_name
+
+
+OmegaConf.register_new_resolver("get_run_dir", get_run_dir)
 
 store(get_hydra_config())
 
@@ -168,10 +197,7 @@ mode_store(
     model=dict(use_cls_token_only=True, mask_cross_attn=False, cross_attn_dim=768),
 )
 
-mode_store(
-    name="resnet",
-    model=dict(encoder=builds(ResNet50, populate_full_signature=False), cross_attn_dim=256)
-)
+mode_store(name="resnet", model=dict(encoder=builds(ResNet50, populate_full_signature=False), cross_attn_dim=256))
 
 mode_store(
     name="should_work",

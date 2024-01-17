@@ -12,7 +12,6 @@ logger: Optional[logging.Logger] = None
 
 def set_logger(name: str):
     from gen.utils.decoupled_utils import get_rank, is_main_process
-
     global logger
     logger = logging.getLogger(name if is_main_process() else name + f"_rank_{get_rank()}")
 

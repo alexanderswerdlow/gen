@@ -1,5 +1,3 @@
-import autoroot
-
 import glob
 import itertools
 import json

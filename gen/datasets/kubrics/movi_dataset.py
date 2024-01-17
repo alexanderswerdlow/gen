@@ -1,5 +1,3 @@
-import autoroot
-
 import os
 import warnings
 from pathlib import Path

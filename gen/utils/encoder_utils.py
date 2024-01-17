@@ -1,5 +1,3 @@
-import autoroot
-
 import functools
 import math
 from abc import ABC, abstractmethod, abstractproperty

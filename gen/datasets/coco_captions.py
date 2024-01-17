@@ -1,5 +1,4 @@
 from typing import Optional
-import autoroot
 
 import warnings
 from enum import Enum
