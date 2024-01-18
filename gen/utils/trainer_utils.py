@@ -5,10 +5,10 @@ from functools import wraps
 
 from accelerate import Accelerator
 from accelerate.utils import extract_model_from_parallel
-from gen.utils.decoupled_utils import is_main_process
-from gen.utils.logging_utils import log_info
 
 from gen.configs.base import BaseConfig
+from gen.utils.decoupled_utils import is_main_process
+from gen.utils.logging_utils import log_info
 
 
 def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step: int):
@@ -46,11 +46,14 @@ class TrainingState:
 def check_every_n_steps(state: TrainingState, n: int, run_first: bool = False, all_processes: bool = False):
     return (state.global_step % n == 0 and (run_first or state.global_step > 0)) and (is_main_process() or all_processes)
 
+from typing import Optional
 
-def check_every_n_epochs(state: TrainingState, n: int, run_first: bool = False, all_processes: bool = False):
+
+def check_every_n_epochs(state: TrainingState, n: Optional[int], run_first: bool = False, all_processes: bool = False):
     # Check if the current step is the last one in the epoch. We always want to run on the last step of the epoch. If we have n=5, then we run at the end of epochs 0 [if except_first == False], 5, 10, 15, etc.
     return (
-        (state.epoch_step == state.total_epoch_steps - 1)
+        n is not None
+        and (state.epoch_step == state.total_epoch_steps - 1)
         and ((state.epoch + 1) % n == 0 or (state.epoch == 0 and run_first))
         and (is_main_process() or all_processes)
     )

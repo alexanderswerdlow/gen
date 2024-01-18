@@ -13,6 +13,7 @@ from gen.utils.encoder_utils import BaseModel, ClipFeatureExtractor
 class ModelType(Enum):
     BASE_MAPPER = 0
     CONTROLNET = 1
+    SODA = 2
 
 
 @dataclass
@@ -62,8 +63,14 @@ class ModelConfig:
     enable_neti: bool = False
     cross_attn_residual: bool = True
     use_dataset_segmentation: bool = True
-    use_cls_token_only: bool = False
+
+    use_single_token: bool = False
+    use_cls_token_projected: bool = False
+    use_cls_token_final_layer: bool = False
+    use_cls_token_mean: bool = False
+
     cross_attn_dim: int = 1024
+    single_token: bool = False
 
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)

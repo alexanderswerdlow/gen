@@ -59,11 +59,14 @@ def main(cfg: BaseConfig):
     # log_file_path.parent.mkdir(parents=True, exist_ok=True)
     # set_log_file(log_file_path)
 
-    if cfg.reference_dir is not None:
-        reference_dir = Path(cfg.reference_dir)
-        assert reference_dir.exists()
-        symlink_dir = cfg.output_dir / "slurm"
-        symlink_dir.symlink_to(reference_dir)
+    if is_main_process() and cfg.reference_dir is not None:
+        try:
+            reference_dir = Path(cfg.reference_dir)
+            assert reference_dir.exists()
+            symlink_dir = cfg.output_dir / "slurm"
+            symlink_dir.symlink_to(reference_dir)
+        except:
+            log_warn(f"Could not symlink {reference_dir} to {symlink_dir}")
 
     if cfg.trainer.seed is not None:
         np.random.seed(cfg.trainer.seed)

@@ -386,10 +386,10 @@ def get_all_net_attn_maps(attn_maps_per_timestep, tokens):
     for attn_maps_single_timestep in attn_maps_per_timestep: # [(77,64,64), (77,64,64), ...)]
         total_attn_scores = 0
         attn_maps_img = []
-        attn_maps_single_timestep = attn_maps_single_timestep[:len(tokens)].softmax(dim=0)
+        # attn_maps_single_timestep = attn_maps_single_timestep[:len(tokens)].softmax(dim=0)
         min_, max_ = torch.min(attn_maps_single_timestep).item(), torch.max(attn_maps_single_timestep).item()
         for i, (token, attn_map_single_token) in enumerate(zip(tokens, attn_maps_single_timestep)):
-            attn_maps_img.append(get_attn_map_img(attn_map_single_token.cpu().numpy(), norm=(min_, max_)))
+            attn_maps_img.append(get_attn_map_img(attn_map_single_token.cpu().numpy(), norm=None)) # (min_, max_)
             attn_map_score = torch.sum(attn_map_single_token)
             h, w = attn_map_single_token.shape
             attn_map_total = h * w

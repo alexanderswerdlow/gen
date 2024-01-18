@@ -29,6 +29,7 @@ from gen.utils.encoder_utils import ClipFeatureExtractor, TimmModel
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import custom_ddp_unwrap
 
+
 class BaseMapper(nn.Module):
     def __init__(self, cfg: BaseConfig, init_modules: bool = True):
         super(BaseMapper, self).__init__()
@@ -215,6 +216,7 @@ class BaseMapper(nn.Module):
 
         self.placeholder_token_id = self.tokenizer.encode(self.cfg.model.placeholder_token, add_special_tokens=False)[0]
         self.cfg.model.placeholder_token_id = self.placeholder_token_id
+
         if not self.cfg.model.enable_neti:
             return
 
@@ -224,22 +226,18 @@ class BaseMapper(nn.Module):
         # Check if super_category_token is a single token or a sequence of tokens
         if len(token_ids) > 1:
             raise ValueError("The super category token must be a single token.")
-
+        
         super_category_token_id = token_ids[0]
-
-        # Resize the token embeddings as we are adding new special tokens to the tokenizer
         self.text_encoder.resize_token_embeddings(len(self.tokenizer))
-
-        # Initialize the newly added placeholder token with the embeddings of the super category token
+        
         token_embeds = self.text_encoder.get_input_embeddings().weight.data
         token_embeds[placeholder_token_id] = token_embeds[super_category_token_id].clone()
 
-        # Compute the norm of the super category token embedding for scaling mapper output
         self.cfg.model.target_norm = None
         if self.cfg.model.normalize_mapper_output:
             self.cfg.model.target_norm = token_embeds[super_category_token_id].norm().item()
-
-        return token_embeds, placeholder_token_id
+        
+        return
 
     def _init_neti_mapper(self) -> Tuple[NeTIMapper, Optional[int]]:
         loaded_iteration = None
@@ -292,8 +290,14 @@ class BaseMapper(nn.Module):
             elif isinstance(self.clip, ClipFeatureExtractor):
                 clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype)).permute(1, 0, 2)
                 clip_feature_map = rearrange(clip_feature_map, "l b d -> b l d")
-                clip_feature_cls_token = clip_feature_map[:, 0, :]  # We take the cls token
                 clip_feature_map = clip_feature_map[:, 1:, :]
+
+                if self.cfg.model.use_cls_token_projected:
+                    clip_feature_cls_token = self.clip.forward_base_model(batch["disc_pixel_values"].to(device=device, dtype=dtype))
+                elif self.cfg.model.use_cls_token_final_layer:
+                    clip_feature_cls_token = clip_feature_map[:, -1, :]
+                elif self.cfg.model.use_cls_token_mean:
+                    clip_feature_cls_token = torch.mean(clip_feature_map, dim=1)
 
             if not (-1 <= batch["gen_pixel_values"].min().item() <= batch["gen_pixel_values"].max().item() <= 1):
                 log_warn(
@@ -308,10 +312,8 @@ class BaseMapper(nn.Module):
             feature_map_batch_idxs = []
             gen_segmentations = []
             for i in range(bs):
-                if self.cfg.model.use_cls_token_only:
-                    original = batch["gen_segmentation"][i].permute(2, 0, 1)
-                    original[:] = 1
-                    original = original.bool()[:1]
+                if self.cfg.model.use_single_token or self.cfg.model.single_token:
+                    original = batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1]))
                 elif "gen_segmentation" in batch and self.cfg.model.use_dataset_segmentation:  # We have gt masks
                     original = batch["gen_segmentation"][i].permute(2, 0, 1).bool()
                 else:
@@ -392,12 +394,6 @@ class BaseMapper(nn.Module):
                 feature_map_batch_idxs=feature_map_batch_idxs,
                 clip_feature_cls_token=clip_feature_cls_token,
             )
-
-            if self.cfg.model.use_cls_token_only:
-                if isinstance(self.clip, TimmModel):
-                    pass
-                else:
-                    text_encoder_dict["clip_feature_cls_token"] = self.clip.forward_base_model(batch["disc_pixel_values"].to(device=device, dtype=dtype))
 
         input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
 

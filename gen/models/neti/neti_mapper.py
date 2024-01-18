@@ -85,7 +85,7 @@ class NeTIMapper(nn.Module):
 
         self.use_positional_encoding = use_positional_encoding
 
-        if self.cfg.model.use_cls_token_only:
+        if self.cfg.model.use_single_token:
             self.mapper = nn.Sequential(nn.Linear(self.cfg.model.cross_attn_dim, self.orig_output_dim))
         else:
             if self.cfg.model.use_fixed_position_encoding:

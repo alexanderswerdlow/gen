@@ -7,6 +7,7 @@ from pathlib import Path
 
 import hydra
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 import wandb
@@ -22,31 +23,57 @@ from tqdm.auto import tqdm
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
-from gen.models.controlnet_model import (controlnet_forward,
-                                         get_controlnet_model, log_validation,
-                                         pre_train_setup_controlnet)
+from gen.models.controlnet_model import controlnet_forward, get_controlnet_model, log_validation, pre_train_setup_controlnet
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
 from gen.utils.decoupled_utils import Profiler, is_main_process, write_to_file
 from gen.utils.logging_utils import log_info
-from gen.utils.trainer_utils import (TrainingState, check_every_n_epochs,
-                                     check_every_n_steps, handle_checkpointing)
+from gen.utils.trainer_utils import TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing
 
 
-def get_named_params_to_optimize(accelerator: Accelerator, cfg: BaseConfig, model: BaseMapper):
+def get_named_params_to_optimize(models: tuple[nn.Module]):
+    return dict(itertools.chain.from_iterable((model.named_parameters() for model in models)))
+
+
+def diffusers_forward(
+    cfg: BaseConfig,
+    batch: dict,
+    weight_dtype: torch.dtype,
+    model: BaseMapper,
+    noise_scheduler: nn.Module,
+    vae: nn.Module,
+):
+    batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
+
+    # Convert images to latent space
+    latents = vae.encode(batch["gen_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+    latents = latents * vae.config.scaling_factor
+
+    # Sample noise that we'll add to the latents
+    noise = torch.randn_like(latents)
+    bsz = latents.shape[0]
+    # Sample a random timestep for each image
+    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+    timesteps = timesteps.long()
+
+    # Add noise to the latents according to the noise magnitude at each timestep
+    # (this is the forward diffusion process)
+    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+
     match cfg.model.model_type:
-        case ModelType.CONTROLNET:
-            params_to_optimize = model.named_parameters()
         case ModelType.BASE_MAPPER:
-            assert cfg.model.model_type == ModelType.BASE_MAPPER
-            params_to_optimize = []
-            if not cfg.model.freeze_text_encoder:
-                params_to_optimize.append(accelerator.unwrap_model(model.text_encoder).named_parameters())
-            else:
-                params_to_optimize.append(accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.named_parameters())
-            params_to_optimize = dict(itertools.chain.from_iterable(params_to_optimize))
+            model_pred = model(batch, noisy_latents, timesteps, weight_dtype)
 
-    return params_to_optimize
+    # Get the target for loss depending on the prediction type
+    if noise_scheduler.config.prediction_type == "epsilon":
+        target = noise
+    elif noise_scheduler.config.prediction_type == "v_prediction":
+        target = noise_scheduler.get_velocity(latents, noise, timesteps)
+    else:
+        raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+
+    loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+    return loss
 
 
 def train(cfg: BaseConfig, accelerator: Accelerator):
@@ -65,6 +92,12 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     match cfg.model.model_type:
         case ModelType.CONTROLNET:
             tokenizer, noise_scheduler, text_encoder, vae, unet, controlnet = get_controlnet_model(cfg, accelerator)
+            vae, unet, text_encoder, controlnet = pre_train_setup_controlnet(weight_dtype, cfg, accelerator, vae, unet, text_encoder, controlnet)
+            models = (controlnet,)
+            if is_main_process():
+                summary(controlnet)
+        case ModelType.SODA:
+            pass
         case ModelType.BASE_MAPPER:
             assert cfg.model.model_type == ModelType.BASE_MAPPER
             model = BaseMapper(cfg)
@@ -72,28 +105,30 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.output_dir / "checkpoints")
             validator: ValidationHandler = ValidationHandler(cfg=cfg, weights_dtype=weight_dtype)
 
-    match cfg.model.model_type:
-        case ModelType.CONTROLNET:
-            vae, unet, text_encoder, controlnet = pre_train_setup_controlnet(weight_dtype, cfg, accelerator, vae, unet, text_encoder, controlnet)
-            if is_main_process():
-                summary(controlnet)
-        case ModelType.BASE_MAPPER:
             model.prepare_for_training(weight_dtype, accelerator)
             noise_scheduler, vae, unet, text_encoder = model.noise_scheduler, model.vae, model.unet, model.text_encoder
             if is_main_process():
                 summary(accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper, col_names=("trainable", "num_params"), verbose=2)
                 summary(model, col_names=("trainable", "num_params"), depth=3)
 
+            models = []
+
+            if cfg.model.freeze_text_encoder:
+                models.append(accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper)
+            else:
+                models.append(accelerator.unwrap_model(model.text_encoder))
+
+            if cfg.model.controlnet:
+                models.append(model.controlnet)
+
     optimizer_class = torch.optim.AdamW
     optimizer = optimizer_class(
-        get_named_params_to_optimize(accelerator, cfg, model).values(),
+        get_named_params_to_optimize(models).values(),
         lr=cfg.trainer.learning_rate,
         betas=(cfg.trainer.adam_beta1, cfg.trainer.adam_beta2),
         weight_decay=cfg.trainer.adam_weight_decay,
         eps=cfg.trainer.adam_epsilon,
     )
-
-    assert len([p for p in model.parameters() if p.requires_grad]) == len(get_named_params_to_optimize(accelerator, cfg, model))
 
     train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=True)(
         cfg=cfg, split=Split.TRAIN, tokenizer=tokenizer, accelerator=accelerator
@@ -191,14 +226,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             if is_main_process() and global_step == 1:
                 log_info(f'time to complete 1st step: {__import__("time").time() - load_time} seconds')
 
-            match cfg.model.model_type:
-                case ModelType.CONTROLNET:
-                    models = (controlnet,)
-                case ModelType.BASE_MAPPER:
-                    models = [text_encoder]
-                    if cfg.model.controlnet:
-                        models.append(model.controlnet)
-
+            avg_loss_per_global_step = 0
             with accelerator.accumulate(*models):
                 state: TrainingState = TrainingState(
                     epoch_step=step,
@@ -207,42 +235,20 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                     epoch=epoch,
                 )
 
-                batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
+                loss = diffusers_forward(
+                    cfg=cfg,
+                    batch=batch,
+                    weight_dtype=weight_dtype,
+                    model=model,
+                    noise_scheduler=noise_scheduler,
+                    vae=vae,
+                )
 
-                # Convert images to latent space
-                latents = vae.encode(batch["gen_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-                latents = latents * vae.config.scaling_factor
-
-                # Sample noise that we'll add to the latents
-                noise = torch.randn_like(latents)
-                bsz = latents.shape[0]
-                # Sample a random timestep for each image
-                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
-                timesteps = timesteps.long()
-
-                # Add noise to the latents according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-                match cfg.model.model_type:
-                    case ModelType.CONTROLNET:
-                        model_pred = controlnet_forward(batch, noisy_latents, timesteps, weight_dtype, unet, text_encoder, controlnet)
-                    case ModelType.BASE_MAPPER:
-                        model_pred = model(batch, noisy_latents, timesteps, weight_dtype)
-
-                # Get the target for loss depending on the prediction type
-                if noise_scheduler.config.prediction_type == "epsilon":
-                    target = noise
-                elif noise_scheduler.config.prediction_type == "v_prediction":
-                    target = noise_scheduler.get_velocity(latents, noise, timesteps)
-                else:
-                    raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-
-                loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                avg_loss_per_global_step += loss.detach().item()  # Only on the main process to avoid syncing
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(get_named_params_to_optimize(accelerator, cfg, model).values(), cfg.trainer.max_grad_norm)
+                    accelerator.clip_grad_norm_(get_named_params_to_optimize(models).values(), cfg.trainer.max_grad_norm)
 
                 optimizer.step()
                 lr_scheduler.step()
@@ -252,17 +258,18 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             # This is different from "step" which only counts the number of forward passes
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
+                avg_loss_per_global_step /= cfg.trainer.gradient_accumulation_steps
                 if is_main_process() and check_every_n_steps(state, cfg.trainer.checkpointing_steps, run_first=False):
-                        if cfg.model.model_type == ModelType.BASE_MAPPER:
-                            checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f"{global_step}")
-                        else:
-                            handle_checkpointing(cfg, accelerator, global_step)
+                    if cfg.model.model_type == ModelType.BASE_MAPPER:
+                        checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f"{global_step}")
+                    else:
+                        handle_checkpointing(cfg, accelerator, global_step)
 
-                if check_every_n_steps(state, cfg.trainer.eval_every_n_steps, run_first=cfg.trainer.eval_on_start, all_processes=True) or check_every_n_epochs(
-                    state, cfg.trainer.eval_every_n_epochs, all_processes=True
-                ):
+                if check_every_n_steps(
+                    state, cfg.trainer.eval_every_n_steps, run_first=cfg.trainer.eval_on_start, all_processes=True
+                ) or check_every_n_epochs(state, cfg.trainer.eval_every_n_epochs, all_processes=True):
                     log_info(f"Starting validation at step {global_step}, epoch {epoch}")
-                    param_keys = get_named_params_to_optimize(accelerator, cfg, model).keys()
+                    param_keys = get_named_params_to_optimize(models).keys()
                     write_to_file(path=Path(cfg.output_dir, cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
                     match cfg.model.model_type:
                         case ModelType.CONTROLNET:
@@ -284,14 +291,14 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                         validation_dataloader = accelerator.prepare(validation_dataloader)
 
                     log_info(f"Finished validation at step {global_step}, epoch {epoch}")
-                    
 
                 progress_bar.update(1)
                 global_step += 1
                 logs = {
-                    "loss": loss.detach().item() / cfg.trainer.gradient_accumulation_steps,
+                    "loss": avg_loss_per_global_step,
                     "lr": lr_scheduler.get_last_lr()[0],
                     f"gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
+                    "examples_seen": global_step * total_batch_size,
                 }
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)

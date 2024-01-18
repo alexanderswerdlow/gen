@@ -32,7 +32,7 @@ from gen.utils.attention_visualization_utils import (
     resize_net_attn_map,
 )
 from gen.utils.decoupled_utils import get_rank, is_main_process
-from gen.utils.logging_utils import log_info
+from gen.utils.logging_utils import log_info, log_warn
 from accelerate.utils import gather_object as accelerate_gather_object, gather as accelerate_gather
 
 
@@ -205,7 +205,7 @@ def run_inference_dataloader(
 
                 output_cols.append(orig_image_.resize(*desired_res).write_text(text_to_write, relative_font_scale=0.004))
 
-            all_output_attn_viz.append(Im.concat_vertical(attn_viz_, Im.concat_horizontal(output_cols, spacing=5)))
+            all_output_attn_viz.append(Im.concat_vertical(attn_viz_, Im.concat_horizontal(output_cols, spacing=5), Im(prompt_image).resize(*desired_res)))
 
             if is_main_process():
                 embeds_ = torch.stack([v[-1] for k, v in prompt_embeds[0].items() if "CONTEXT_TENSOR" in k and "BYPASS" not in k], dim=0)
@@ -227,32 +227,35 @@ def run_inference_dataloader(
                 if bypass_embeds_ is not None:
                     bypass_embeds_ = bypass_embeds_[:, : len(input_prompt[0])]
 
-                output_path_ = output_path / "tmp.png"
-                embeds_.plt.fig.savefig(output_path_)
-                log_with_accelerator(
-                    accelerator,
-                    [Im(output_path_)],
-                    global_step=(global_step if global_step is not None else i),
-                    name="embeds",
-                    save_folder=output_path,
-                )
-                if bypass_embeds_ is not None:
-                    bypass_embeds_.plt.fig.savefig(output_path_)
+                try:
+                    output_path_ = output_path / "tmp.png"
+                    embeds_.plt.fig.savefig(output_path_)
                     log_with_accelerator(
                         accelerator,
                         [Im(output_path_)],
                         global_step=(global_step if global_step is not None else i),
-                        name="bypass_embeds",
+                        name="embeds",
                         save_folder=output_path,
                     )
-                regular_embeds_.plt.fig.savefig(output_path_)
-                log_with_accelerator(
-                    accelerator,
-                    [Im(output_path_)],
-                    global_step=(global_step if global_step is not None else i),
-                    name="regular_embeds",
-                    save_folder=output_path,
-                )
+                    if bypass_embeds_ is not None:
+                        bypass_embeds_.plt.fig.savefig(output_path_)
+                        log_with_accelerator(
+                            accelerator,
+                            [Im(output_path_)],
+                            global_step=(global_step if global_step is not None else i),
+                            name="bypass_embeds",
+                            save_folder=output_path,
+                        )
+                    regular_embeds_.plt.fig.savefig(output_path_)
+                    log_with_accelerator(
+                        accelerator,
+                        [Im(output_path_)],
+                        global_step=(global_step if global_step is not None else i),
+                        name="regular_embeds",
+                        save_folder=output_path,
+                    )
+                except:
+                    log_warn("Nan likely found in embeds")
 
         if inference_cfg.num_masks_to_remove is not None:
             gen_segmentation = batch["gen_segmentation"]
@@ -276,7 +279,7 @@ def run_inference_dataloader(
                 images.append(Im.concat_vertical(prompt_image, mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
 
         gen_results = Im.concat_horizontal(images, spacing=5, fill=(128, 128, 128))
-        output_images = Im.concat_horizontal(gt_info, gen_results, spacing=50, fill=(255, 255, 255))
+        output_images = Im.concat_horizontal(gt_info, gen_results, spacing=10, fill=(255, 255, 255))
         all_output_images.append(output_images)
 
     device = batch["gen_pixel_values"].device
@@ -417,4 +420,4 @@ def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], gl
             np_images = np.stack([np.asarray(img) for img in images])
             tracker.writer.add_images(name, np_images, global_step, dataformats="NHWC")
         if tracker.name == "wandb":
-            tracker.log({name: [wandb.Image(image.pil) for i, image in enumerate(images)]}, step=global_step)
+            tracker.log({name: wandb.Image(Im.concat_horizontal(images, spacing=15).pil)}, step=global_step)

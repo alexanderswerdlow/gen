@@ -108,7 +108,7 @@ class Task:
         output = subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE).stdout.decode("utf-8")
         print(output)
 
-        num_processes = self.cfg.n_processes * self.cfg.n_nodes
+        num_processes = self.cfg.gpus * self.cfg.n_nodes
         machine_rank = dist_env.rank // self.cfg.n_processes
         deepspeed_str = ""
         if self.cfg.use_deepspeed:
