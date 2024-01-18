@@ -165,6 +165,7 @@ class ImageNetCustomDataset(AbstractDataset):
         augmentation: Optional[Augmentation] = Augmentation(),
         custom_split=None,
         num_objects=None,
+        subset=None,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args

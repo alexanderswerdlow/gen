@@ -24,3 +24,5 @@ class SlurmConfig:
     constraint: str = "A100|6000ADA|A5500"
 
 auto_store(SlurmConfig, name="default")
+auto_store(SlurmConfig, name="large_gpu", constraint='A100|6000ADA')
+auto_store(SlurmConfig, name="any", constraint=None)

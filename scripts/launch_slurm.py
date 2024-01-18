@@ -157,6 +157,11 @@ def main(cfg: BaseConfig):
         with open_dict(cfg):
             cfg.output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
 
+    with open_dict(cfg):
+        cfg.slurm.cpus_per_task = cfg.slurm.cpus_per_task * cfg.slurm.gpus
+        cfg.slurm.mem_gb = f"{int(cfg.slurm.mem_gb[:-2]) * cfg.slurm.gpus}{cfg.slurm.mem_gb[-2:]}"
+        print(f"Autoscaling to {cfg.slurm.cpus_per_task} CPUs and {cfg.slurm.mem_gb}GB of memory")
+
     executor = submitit.AutoExecutor(folder=cfg.output_dir, max_num_timeout=cfg.slurm.max_num_timeout)
 
     print_config(cfg.slurm)
@@ -167,6 +172,7 @@ def main(cfg: BaseConfig):
     }
 
     print(f"SLURM additional parameters: {slurm_additional_parameters}")
+    
 
     slurm_kwargs = {
         "slurm_job_name": cfg.slurm.job_name,
