@@ -318,7 +318,7 @@ class Profiler:
 
 def get_rank():
     if dist.is_available() and dist.is_initialized():
-        return dist.get_rank() == 0
+        return dist.get_rank()
     elif (rank := os.environ.get("RANK", None)) is not None:
         return rank
     else:

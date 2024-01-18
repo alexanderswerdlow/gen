@@ -167,6 +167,7 @@ def run_inference_dataloader(
             pipeline=pipeline,
             visualize_attention_map=inference_cfg.visualize_attention_map,
             inference_cfg=inference_cfg,
+            seed=int(str(i) + str(get_rank())),
         )
 
         full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
@@ -336,6 +337,7 @@ def run_inference_batch(
             truncation_idx=truncation_idx,
             timesteps=pipeline.scheduler.timesteps,
         )
+
     generator = torch.Generator(device="cuda").manual_seed(seed)
     images = sd_pipeline_call(
         pipeline,
@@ -395,7 +397,11 @@ def load_stable_diffusion_model(
     pipeline.scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
     pipeline.unet.set_attn_processor(XTIAttenProc())
 
-    accelerator.unwrap_model(text_encoder).eval()
+    if cfg.model.debug_tmp:
+        log_info("!!!! WARN NOT EVAL IN INFERENCE")
+        accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.eval()
+    else:
+        accelerator.unwrap_model(text_encoder).eval()
 
     if cfg.model.controlnet:
         accelerator.unwrap_model(pipeline.controlnet).set_attn_processor(XTIAttenProc())

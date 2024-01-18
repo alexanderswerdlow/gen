@@ -42,6 +42,7 @@ class MoviDataset(AbstractDataset, Dataset):
         custom_split: Optional[str] = None,
         subset: Optional[tuple[str]] = None,
         return_video: bool = False,
+        fake_return_n: Optional[int] = None,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -51,6 +52,7 @@ class MoviDataset(AbstractDataset, Dataset):
         self.resolution = resolution
         self.legacy_transforms = legacy_transforms
         self.return_video = return_video
+        self.fake_return_n = fake_return_n
         local_split = ("train" if self.split == Split.TRAIN else "validation")
         local_split = local_split if custom_split is None else custom_split
         self.root_dir = self.root / self.dataset / local_split
@@ -85,6 +87,9 @@ class MoviDataset(AbstractDataset, Dataset):
         return torch.utils.data.default_collate(batch)
 
     def __getitem__(self, index):
+        if self.fake_return_n:
+            index = 0
+            
         video_idx = index // self.num_dataset_frames
         frame_idx = index % self.num_dataset_frames
 
@@ -185,6 +190,8 @@ class MoviDataset(AbstractDataset, Dataset):
         return ret
 
     def __len__(self):
+        if self.fake_return_n is not None:
+            return self.fake_return_n
         return len(self.files) * self.num_dataset_frames
 
 

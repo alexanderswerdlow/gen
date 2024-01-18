@@ -35,6 +35,7 @@ class InferenceConfig:
     guidance_scale: float = 7.5
     empty_string_cfg: bool = True
     resolution: int = "${model.resolution}"
+    set_seed: bool = False
 
 
 auto_store(InferenceConfig, name="basemapper")

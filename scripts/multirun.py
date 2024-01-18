@@ -29,6 +29,7 @@ def int_to_lowercase_letter(integer):
 @app.command()
 def main(
     init_cmds: str = f"""cd {REPO_DIR} && source {Path.home() / 'anaconda3/bin/activate'} {CONDA_ENV}""",
+    env_var: Annotated[Optional[List[str]], typer.Option()] = None,
     args: Annotated[Optional[List[str]], typer.Argument()] = None,
     prod: Annotated[Optional[List[str]], typer.Option()] = None,
     slurm: Annotated[Optional[List[str]], typer.Option()] = None,
@@ -59,6 +60,7 @@ def main(
     constraint_args = 'slurm.constraint="A100|6000ADA" ' if big_gpu else ""
     timeout_args = 'slurm.time="72:00:00" ' if long_job else ""
     launch_args = f"""{gpu_args}{constraint_args}{timeout_args} 'slurm.job_name="{job_name}"' {custom_slurm_cmd}"""
+    env_vars = (" && ".join((f"export {var}=\'{os.environ[var]}\'" for var in env_var))) + " && " if env_var is not None else ""
 
     # Generating and printing all combinations
     for idx, combination in enumerate(itertools.product(*data.values())):
@@ -77,7 +79,7 @@ def main(
 
         sweep_args = f"sweep_id={job_name} sweep_run_id={run_id} " if is_sweep else ""
         output_file_ = output_dir_ / "submitit.log"
-        command = f"""{init_cmds} && python scripts/launch_slurm.py {launch_args} 'output_dir="{output_dir_}"' 'slurm.cmd="{sweep_args}reference_dir={output_dir_} {regular_args}{prod_args}"' """
+        command = f"""{env_vars}{init_cmds} && python scripts/launch_slurm.py {launch_args} 'output_dir="{output_dir_}"' 'slurm.cmd="{sweep_args}reference_dir={output_dir_} {regular_args}{prod_args}"' """
 
         if dry_run:
             print(command)

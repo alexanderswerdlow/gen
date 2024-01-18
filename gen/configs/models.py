@@ -76,6 +76,8 @@ class ModelConfig:
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
 
+    debug_tmp: bool = False
+
 
 @dataclass
 class ControlNetConfig(ModelConfig):

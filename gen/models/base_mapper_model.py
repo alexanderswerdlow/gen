@@ -39,7 +39,7 @@ class BaseMapper(nn.Module):
 
         self.initialize_pretrained_models()
         if self.cfg.model.enable_neti:
-            self._add_concept_token_to_tokenizer()
+            self.token_embeds, self.placeholder_token_id = self._add_concept_token_to_tokenizer()
         else:
             self._add_concept_token_to_tokenizer_no_neti()
 
@@ -94,7 +94,11 @@ class BaseMapper(nn.Module):
         self.vae.requires_grad_(False)
         self.unet.requires_grad_(False)
 
-        if self.cfg.model.freeze_text_encoder:
+        if self.cfg.model.debug_tmp:
+            self.text_encoder.text_model.encoder.requires_grad_(False)
+            self.text_encoder.text_model.final_layer_norm.requires_grad_(False)
+            self.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
+        elif self.cfg.model.freeze_text_encoder:
             self.text_encoder.requires_grad_(False)
             self.text_encoder.train()
         else:
@@ -180,7 +184,7 @@ class BaseMapper(nn.Module):
             device=batch["gen_pixel_values"].device,
             dtype=self.weight_dtype,
             per_timestep=True,
-            disable_conditioning=disable_conditioning,
+            disable_conditioning=disable_conditioning or self.cfg.model.enable_neti,
         )
 
         # Compute embeddings for each timestep and each U-Net layer
@@ -412,7 +416,7 @@ class BaseMapper(nn.Module):
         return _hs, input_prompt
 
     def forward(self, batch, noisy_latents, timesteps, weight_dtype):
-        encoder_hidden_states, input_prompt = self.get_hidden_state(batch, timesteps, device=noisy_latents.device, dtype=weight_dtype)
+        encoder_hidden_states, input_prompt = self.get_hidden_state(batch, timesteps, device=noisy_latents.device, dtype=weight_dtype, disable_conditioning=self.cfg.model.enable_neti)
 
         if self.cfg.model.controlnet:
             controlnet_image = batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=weight_dtype)

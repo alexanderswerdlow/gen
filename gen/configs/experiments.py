@@ -2,7 +2,7 @@ from hydra_zen import builds
 from gen import IMAGENET_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import mode_store
 from gen.utils.encoder_utils import ResNet50
-
+from accelerate.utils import PrecisionType
 
 def get_override_dict(**kwargs):
     return dict(
@@ -19,6 +19,7 @@ shared_overfit_movi_args = dict(
     augmentation=dict(minimal_source_augmentation=True, enable_crop=False),
 )
 
+
 def get_experiments():
     # Tmp debugging params
     mode_store(
@@ -34,7 +35,6 @@ def get_experiments():
             overfit=False,
         ),
     )
-
 
     mode_store(
         name="overfit_movi_single_frame",
@@ -72,7 +72,15 @@ def get_experiments():
 
     mode_store(
         name="overfit_neti",
-        model=dict(enable_norm_scale=True, use_fixed_position_encoding=False, nested_dropout_prob=0.5, mask_cross_attn=False, output_bypass=True, enable_neti=True),
+        model=dict(
+            enable_norm_scale=True,
+            use_fixed_position_encoding=False,
+            nested_dropout_prob=0.5,
+            mask_cross_attn=False,
+            output_bypass=True,
+            enable_neti=True,
+            use_single_token=False,
+        ),
     )
 
     mode_store(
@@ -105,4 +113,12 @@ def get_experiments():
         inference=dict(guidance_scale=0.0),
         model=dict(use_dataset_segmentation=True, mask_cross_attn=False, use_cls_token_only=True),
         trainer=dict(learning_rate=1e-5),
+    )
+
+    mode_store(
+        name="neti_training",
+        trainer=dict(learning_rate=1e-3, enable_dynamic_grad_accum=False, gradient_accumulation_steps=4, scale_lr_batch_size=True, mixed_precision=PrecisionType.NO, log_parameters=True, eval_every_n_steps=100, log_gradients=10, tracker_project_name='textual_inversion'),
+        dataset=dict(train_dataset=dict(batch_size=2, fake_return_n=8)),
+        model=dict(debug_tmp=True),
+        inference=dict(visualize_attention_map=False)
     )

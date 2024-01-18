@@ -32,3 +32,10 @@ wget https://huggingface.co/datasets/huggingface/documentation-images/resolve/ma
 
 python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo_exp dataset.train_batch_size=2 'dataset.validation_image=[data/conditioning_image_1.png,data/conditioning_image_2.png]' dataset.validation_prompt="red circle with blue background" trainer.eval_every_n_steps=10 exp=example_exp_name tags='[example_tag_1,example_tag_2]'
 ```
+
+## Training
+
+Global Step: A single gradient update step over all GPUs.
+
+True Step: A single forward pass over all GPUs
+
