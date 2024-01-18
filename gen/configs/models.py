@@ -48,7 +48,7 @@ class ModelConfig:
     output_bypass: bool = True
 
     model_type: ModelType = ModelType.BASE_MAPPER
-    placeholder_token: str = "place"
+    placeholder_token: str = "<android>"
     placeholder_token_id: Optional[int] = None
     super_category_token: str = "object"
 
@@ -59,6 +59,7 @@ class ModelConfig:
     freeze_text_encoder: bool = True
     controlnet: bool = False
     use_fixed_position_encoding: bool = False
+    use_timestep_layer_encoding: bool = True
     enable_norm_scale: bool = True
     enable_neti: bool = False
     cross_attn_residual: bool = True

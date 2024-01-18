@@ -38,7 +38,10 @@ class BaseMapper(nn.Module):
             self.initialize_model()
 
         self.initialize_pretrained_models()
-        self._add_concept_token_to_tokenizer()
+        if self.cfg.model.enable_neti:
+            self._add_concept_token_to_tokenizer()
+        else:
+            self._add_concept_token_to_tokenizer_no_neti()
 
     def initialize_pretrained_models(self):
         self.clip = hydra.utils.instantiate(self.cfg.model.encoder, _recursive_=True, num_from_back=3, tensor_input=True)
@@ -202,23 +205,21 @@ class BaseMapper(nn.Module):
             hidden_states_per_timestep.append(_hs)
         return hidden_states_per_timestep, input_prompt
 
+    def _add_concept_token_to_tokenizer_no_neti(self) -> Tuple[torch.Tensor, int]:
+        self.placeholder_token_id = self.tokenizer.encode(self.cfg.model.placeholder_token, add_special_tokens=False)[0]
+        self.cfg.model.placeholder_token_id = self.placeholder_token_id
+    
     def _add_concept_token_to_tokenizer(self) -> Tuple[torch.Tensor, int]:
         """
         Adds the concept token to the tokenizer and initializes it with the embeddings of the super category token.
         The super category token will also be used for computing the norm for rescaling the mapper output.
         """
-        # num_added_tokens = self.tokenizer.add_tokens(self.cfg.model.placeholder_token)
-        # if num_added_tokens == 0:
-        #     raise ValueError(
-        #         f"The tokenizer already contains the token {self.cfg.model.placeholder_token}. "
-        #         f"Please pass a different `placeholder_token` that is not already in the tokenizer."
-        #     )
-
-        self.placeholder_token_id = self.tokenizer.encode(self.cfg.model.placeholder_token, add_special_tokens=False)[0]
-        self.cfg.model.placeholder_token_id = self.placeholder_token_id
-
-        if not self.cfg.model.enable_neti:
-            return
+        num_added_tokens = self.tokenizer.add_tokens(self.cfg.model.placeholder_token)
+        if num_added_tokens == 0:
+            raise ValueError(
+                f"The tokenizer already contains the token {self.cfg.model.placeholder_token}. "
+                f"Please pass a different `placeholder_token` that is not already in the tokenizer."
+            )
 
         # Convert the super_category_token, placeholder_token to ids
         token_ids = self.tokenizer.encode(self.cfg.model.super_category_token, add_special_tokens=False)
@@ -226,18 +227,23 @@ class BaseMapper(nn.Module):
         # Check if super_category_token is a single token or a sequence of tokens
         if len(token_ids) > 1:
             raise ValueError("The super category token must be a single token.")
-        
+
         super_category_token_id = token_ids[0]
+        placeholder_token_id = self.tokenizer.convert_tokens_to_ids(self.cfg.model.placeholder_token)
+
+        # Resize the token embeddings as we are adding new special tokens to the tokenizer
         self.text_encoder.resize_token_embeddings(len(self.tokenizer))
-        
+
+        # Initialize the newly added placeholder token with the embeddings of the super category token
         token_embeds = self.text_encoder.get_input_embeddings().weight.data
         token_embeds[placeholder_token_id] = token_embeds[super_category_token_id].clone()
 
+        # Compute the norm of the super category token embedding for scaling mapper output
         self.cfg.model.target_norm = None
         if self.cfg.model.normalize_mapper_output:
             self.cfg.model.target_norm = token_embeds[super_category_token_id].norm().item()
-        
-        return
+
+        return token_embeds, placeholder_token_id
 
     def _init_neti_mapper(self) -> Tuple[NeTIMapper, Optional[int]]:
         loaded_iteration = None
@@ -283,6 +289,7 @@ class BaseMapper(nn.Module):
         # viz()
         text_encoder_dict = dict()
         if not disable_conditioning:
+            clip_feature_cls_token = None
             if isinstance(self.clip, TimmModel):
                 clip_feature_map = self.clip(((batch["gen_pixel_values"] + 1) / 2).to(device=device, dtype=dtype))
                 clip_feature_map = rearrange(clip_feature_map, "b d h w -> b (h w) d")

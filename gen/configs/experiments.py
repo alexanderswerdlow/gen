@@ -26,7 +26,7 @@ def get_experiments():
         debug=True,
         inference=dict(num_masks_to_remove=None, visualize_attention_map=True, empty_string_cfg=True, guidance_scale=7.5),
         trainer=dict(
-            gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=100
+            gradient_accumulation_steps=1, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=100
         ),
         dataset=dict(
             train_dataset=dict(batch_size=8, random_subset=None, **shared_overfit_movi_args),
@@ -41,7 +41,23 @@ def get_experiments():
         dataset=dict(
             train_dataset=dict(num_dataset_frames=1, subset=("video_0015",)),
             validation_dataset=dict(num_dataset_frames=1, subset=("video_0015",)),
+            overfit=True,
         ),
+    )
+
+    mode_store(
+        name="overfit_debug_large",
+        trainer=dict(scale_lr_batch_size=True, enable_dynamic_grad_accum=True, gradient_accumulation_steps=1),
+        model=dict(dropout_masks=0.0, use_fixed_position_encoding=True, use_dataset_segmentation=True, use_timestep_layer_encoding=False),
+        dataset=dict(
+            train_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=True)),
+            validation_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=False, enable_horizontal_flip=False), random_subset=4),
+            overfit=False,
+        ),
+        hydra_defaults=[
+            "_self_",
+            {"override /dataset": "imagenet"},
+        ],
     )
 
     mode_store(
@@ -56,7 +72,7 @@ def get_experiments():
 
     mode_store(
         name="overfit_neti",
-        model=dict(enable_norm_scale=True, use_fixed_position_encoding=False, nested_dropout_prob=0.5, mask_cross_attn=False, output_bypass=True),
+        model=dict(enable_norm_scale=True, use_fixed_position_encoding=False, nested_dropout_prob=0.5, mask_cross_attn=False, output_bypass=True, enable_neti=True),
     )
 
     mode_store(

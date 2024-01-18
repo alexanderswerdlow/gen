@@ -18,8 +18,7 @@ from gen import DEFAULT_PROMPT, IMAGENET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
-from gen.datasets.utils import (get_open_clip_transforms_v2,
-                                get_stable_diffusion_transforms)
+from gen.datasets.utils import get_open_clip_transforms_v2, get_stable_diffusion_transforms
 
 torchvision.disable_beta_transforms_warning()
 from ipdb import set_trace as st
@@ -205,6 +204,7 @@ if __name__ == "__main__":
     dataloader = dataset.get_dataloader()
     for batch in dataloader:
         from image_utils import Im
+
         gen_ = Im((batch["gen_pixel_values"] + 1) / 2)
         disc_ = Im(batch["disc_pixel_values"]).denormalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
         st()

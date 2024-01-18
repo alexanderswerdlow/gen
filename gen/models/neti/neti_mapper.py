@@ -89,7 +89,8 @@ class NeTIMapper(nn.Module):
             self.mapper = nn.Sequential(nn.Linear(self.cfg.model.cross_attn_dim, self.orig_output_dim))
         else:
             if self.cfg.model.use_fixed_position_encoding:
-                self.encoder = FourierPositionalEncodingNDims(dim=output_dim, sigmas=[pe_sigmas.sigma_t, pe_sigmas.sigma_l])
+                if self.cfg.model.use_timestep_layer_encoding:
+                    self.encoder = FourierPositionalEncodingNDims(dim=output_dim, sigmas=[pe_sigmas.sigma_t, pe_sigmas.sigma_l])
                 self.learnable_token = nn.Parameter(torch.randn(output_dim))
             elif self.use_positional_encoding:
                 self.encoder = NeTIPositionalEncoding(sigma_t=pe_sigmas.sigma_t, sigma_l=pe_sigmas.sigma_l).cuda()
@@ -129,7 +130,9 @@ class NeTIMapper(nn.Module):
 
     def forward(self, timestep: torch.Tensor, unet_layer: torch.Tensor, truncation_idx: int = None) -> torch.Tensor:
         if self.cfg.model.use_fixed_position_encoding:
-            embedding = self.learnable_token[None, :] + self.encoder(torch.stack((timestep, unet_layer), dim=-1))
+            embedding = self.learnable_token[None, :].repeat(timestep.shape[0], 1)
+            if self.cfg.model.use_timestep_layer_encoding:
+                embedding = embedding + self.encoder(torch.stack((timestep, unet_layer), dim=-1))
         else:
             embedding = self.extract_hidden_representation(timestep, unet_layer)
             if self.use_nested_dropout:
