@@ -290,9 +290,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     log_info(f'load_time: {__import__("time").time() - load_time} seconds')
     
     print(f"Dataloader Size: {len(train_dataloader)}")
-    if cfg.model.tmp_revert_to_neti_logic:
-        text_encoder.train()
-
     examples_seen_one_gpu = 0
     avg_loss_per_global_step = 0
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
@@ -316,7 +313,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             #     wandb.log({"avg_eval_loss": avg_loss_eval}, step=global_step)
 
             with accelerator.accumulate(*models):
-                # print(f'Step: {global_step}, local_step: {step}, shape: {batch["gen_pixel_values"].shape}')
                 examples_seen_one_gpu += batch["gen_pixel_values"].shape[0]
                 state: TrainingState = TrainingState(
                     epoch_step=step,
@@ -353,10 +349,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             # This is different from "step" which only counts the number of forward passes
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                # print(accelerator.unwrap_model(model.text_encoder).get_input_embeddings().weight[model.placeholder_token_id].sum().item())
-                # print(accelerator.unwrap_model(model.text_encoder).get_input_embeddings().weight.sum().item())
-                # print(module_hash(accelerator.unwrap_model(model.text_encoder).get_input_embeddings()))
-    
                 if is_main_process() and check_every_n_steps(state, cfg.trainer.checkpointing_steps, run_first=False):
                     if cfg.model.model_type == ModelType.BASE_MAPPER:
                         checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f"{global_step}")
@@ -366,6 +358,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 if check_every_n_steps(
                     state, cfg.trainer.eval_every_n_steps, run_first=cfg.trainer.eval_on_start, all_processes=True
                 ) or check_every_n_epochs(state, cfg.trainer.eval_every_n_epochs, all_processes=True):
+                    validation_start_time = __import__("time").time()
                     if cfg.dataset.reset_validation_dataset_every_epoch:
                         if state.epoch == 0:
                             validation_dataset_holder.subset_size = 1
@@ -391,9 +384,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                                 global_step=global_step,
                             )
 
-                    log_info(f"Finished validation at global step {global_step}, epoch {epoch}. Wandb URL: {cfg.wandb_url}")
-                    if cfg.model.tmp_revert_to_neti_logic:
-                        text_encoder.train()
+                    log_info(f"Finished validation at global step {global_step}, epoch {epoch}. Wandb URL: {cfg.wandb_url}. Took: {__import__('time').time() - validation_start_time:.2f} seconds")
 
                 avg_loss_per_global_step /= cfg.trainer.gradient_accumulation_steps
                 progress_bar.update(1)

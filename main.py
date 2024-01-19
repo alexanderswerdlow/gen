@@ -21,7 +21,7 @@ from image_utils import library_ops  # This overrides repr() for tensors
 from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig
-from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, is_main_process, set_global_breakpoint
+from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint
 from gen.utils.logging_utils import log_error, log_info, log_warn, set_logger
 from inference import inference
 from train import train
@@ -68,6 +68,7 @@ def main(cfg: BaseConfig):
         except:
             log_warn(f"Could not symlink {reference_dir} to {symlink_dir}")
 
+    cfg.trainer.seed = cfg.trainer.seed + int(get_rank())
     if cfg.trainer.seed is not None:
         np.random.seed(cfg.trainer.seed)
         random.seed(cfg.trainer.seed)

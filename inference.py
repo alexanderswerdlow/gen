@@ -398,12 +398,7 @@ def load_stable_diffusion_model(
     pipeline.scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
     pipeline.unet.set_attn_processor(XTIAttenProc())
 
-    if cfg.model.tmp_revert_to_neti_logic:
-        log_info("!!!! WARN NOT EVAL IN INFERENCE")
-        accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.eval()
-    else:
-        accelerator.unwrap_model(text_encoder).eval()
-
+    accelerator.unwrap_model(text_encoder).eval()
     if cfg.model.controlnet:
         accelerator.unwrap_model(pipeline.controlnet).set_attn_processor(XTIAttenProc())
         accelerator.unwrap_model(pipeline.controlnet).eval()

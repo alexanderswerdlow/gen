@@ -94,11 +94,7 @@ class BaseMapper(nn.Module):
         self.vae.requires_grad_(False)
         self.unet.requires_grad_(False)
 
-        if self.cfg.model.tmp_revert_to_neti_logic:
-            self.text_encoder.text_model.encoder.requires_grad_(False)
-            self.text_encoder.text_model.final_layer_norm.requires_grad_(False)
-            self.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
-        elif self.cfg.model.freeze_text_encoder:
+        if self.cfg.model.freeze_text_encoder:
             self.text_encoder.requires_grad_(False)
             self.text_encoder.train()
         else:

@@ -39,3 +39,8 @@ Global Step: A single gradient update step over all GPUs.
 
 True Step: A single forward pass over all GPUs
 
+## SLURM
+
+Ideally, since we are using Hydra, we would use the submitit hydra plugin to launch jobs and support hyperparam sweeps with multirun. However, this plugin pickles the python code and calls it directly, making it difficult to call with wrappers (e.g., torchrun or accelerate launch).
+
+Instead, we have `multirun.py` which generates a sequence of calls (through `os.system()`), each of which are a single training run. `launch_slurm.py` then runs a SLURM job.

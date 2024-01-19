@@ -326,12 +326,7 @@ def get_rank():
 
 
 def is_main_process():
-    if dist.is_available() and dist.is_initialized():
-        return dist.get_rank() == 0
-    elif (rank := os.environ.get("RANK", None)) is not None:
-        return int(rank) == 0
-    else:
-        return True
+    return get_rank() == 0
 
 
 def get_num_gpus():

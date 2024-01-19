@@ -123,7 +123,6 @@ mode_store(
 mode_store(
     name="overfit",
     debug=True,
-    inference=dict(num_masks_to_remove=2, num_denoising_steps=50),
     trainer=dict(
         num_train_epochs=1000,
         eval_every_n_epochs=10,
@@ -133,16 +132,6 @@ mode_store(
     dataset=dict(
         train_dataset=dict(batch_size=4, subset_size=8, num_workers=0),
         overfit=True,
-    ),
-)
-
-mode_store(
-    name="quick",
-    debug=True,
-    inference=dict(num_denoising_steps=50),
-    trainer=dict(eval_on_start=True),
-    dataset=dict(
-        validation_dataset=dict(subset_size=1)
     ),
 )
 

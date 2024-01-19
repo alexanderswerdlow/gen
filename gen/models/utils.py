@@ -39,7 +39,6 @@ class FourierPositionalEncodingNDims(nn.Module):
         self.sigmas = sigmas
         self.dim = dim
         nfeats = len(sigmas)
-        torch.manual_seed(seed)
 
         # generate the random features
         self.w = torch.randn((dim // 2, nfeats))

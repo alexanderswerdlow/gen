@@ -34,7 +34,7 @@ def main(
     prod: Annotated[Optional[List[str]], typer.Option()] = None,
     slurm: Annotated[Optional[List[str]], typer.Option()] = None,
     output_dir: Path = REPO_DIR / "outputs" / "slurm",
-    job_name: str = f'{datetime.now().strftime("%Y_%m_%d_%H_%M")}',
+    name: str = f'{datetime.now().strftime("%Y_%m_%d_%H_%M")}',
     gpus: Optional[int] = None,
     big_gpu: bool = False,
     long_job: bool = False,
@@ -45,8 +45,8 @@ def main(
     """
 
     is_sweep = os.environ.get("SWEEP") is not None or prod is not None
-    job_name = os.environ.get("SWEEP", job_name + ("_sweep" if is_sweep else ""))
-    sweep_dir = output_dir / job_name
+    name = os.environ.get("SWEEP", name + ("_sweep" if is_sweep else ""))
+    sweep_dir = output_dir / name
     regular_args = " ".join(args)
 
     if prod is None:
@@ -59,7 +59,6 @@ def main(
     gpu_args = f"slurm.gpus={gpus} " if gpus is not None else ""
     constraint_args = 'slurm.constraint="A100|6000ADA" ' if big_gpu else ""
     timeout_args = 'slurm.time="72:00:00" ' if long_job else ""
-    launch_args = f"""{gpu_args}{constraint_args}{timeout_args} 'slurm.job_name="{job_name}"' {custom_slurm_cmd}"""
     env_vars = (" && ".join((f"export {var}=\'{os.environ[var]}\'" for var in env_var))) + " && " if (env_var is not None and len(env_var) > 1) else ""
 
     # Generating and printing all combinations
@@ -77,8 +76,12 @@ def main(
             output_dir_ = output_dir_ / run_id
         output_dir_.mkdir(parents=True, exist_ok=True)
 
-        sweep_args = f"sweep_id={job_name} sweep_run_id={run_id} " if is_sweep else ""
+        sweep_args = f"sweep_id={name} sweep_run_id={run_id} " if is_sweep else (f"exp={name} ")
         output_file_ = output_dir_ / "submitit.log"
+
+        append_run_id = f"_{run_id}" if is_sweep else ""
+        launch_args = f"""{gpu_args}{constraint_args}{timeout_args} 'slurm.job_name="{name}{append_run_id}"' {custom_slurm_cmd}"""
+        
         command = f"""{env_vars}{init_cmds} && python scripts/launch_slurm.py {launch_args} 'output_dir="{output_dir_}"' 'slurm.cmd="{sweep_args}reference_dir={output_dir_} {regular_args}{prod_args}"' """
 
         if dry_run:
@@ -90,9 +93,9 @@ def main(
                 # Note: Processes are started and will run concurrently. Their outputs will be appended to the output file.
                 process = subprocess.Popen(command, shell=True, stdout=file, stderr=subprocess.STDOUT)
 
-        print(f"Running: {command}")
-        print(f"Output: {output_file_}")
-        print("\n\n")
+        print(f"Running job {idx}: {command}\n")
+        print(f"Output file: {output_file_}")
+        print("\n\n\n")
 
 
 if __name__ == "__main__":
