@@ -237,6 +237,10 @@ def lora_attn_call2_0(self, attn: Attention, hidden_states, *args, **kwargs):
     return attn.processor(attn, hidden_states, *args, **kwargs)
 
 
+def remove_last_map():
+    for _, attn_maps_layer_ in attn_maps.items():
+        attn_maps_layer_.pop()
+
 def cross_attn_init():
     AttnProcessor.__call__ = attn_call
     AttnProcessor2_0.__call__ = attn_call  # attn_call is faster

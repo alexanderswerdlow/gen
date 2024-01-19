@@ -5,6 +5,7 @@ from diffusers.pipelines.stable_diffusion import StableDiffusionPipeline, Stable
 from diffusers.pipelines.controlnet import StableDiffusionControlNetPipeline
 
 from gen.utils.logging_utils import log_info, log_warn
+from gen.utils.attention_visualization_utils import remove_last_map
 
 
 @torch.no_grad()
@@ -99,7 +100,7 @@ def sd_pipeline_call(
             embed = prompt_embeds[i] if type(prompt_embeds) == list else prompt_embeds
             if do_classifier_free_guidance:
                 # negative_prompt_embed = negative_prompt_embeds[i] if type(negative_prompt_embeds) == list else negative_prompt_embeds
-                
+
                 # # log_warn("UNCOMMENT THIS FOR CFG")
                 # for k in embed.keys():
                 #     if "CONTEXT_TENSOR" in k:
@@ -111,6 +112,8 @@ def sd_pipeline_call(
                     encoder_hidden_states=negative_prompt_embeds.repeat(num_images_per_prompt, 1, 1),
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
+
+                remove_last_map()
 
             if isinstance(pipeline, StableDiffusionControlNetPipeline):
                 log_info("Running ControlNet inference.")

@@ -48,7 +48,7 @@ class ModelConfig:
     output_bypass: bool = True
 
     model_type: ModelType = ModelType.BASE_MAPPER
-    placeholder_token: str = "<android>"
+    placeholder_token: str = "android"
     placeholder_token_id: Optional[int] = None
     super_category_token: str = "object"
 

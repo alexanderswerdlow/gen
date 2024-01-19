@@ -406,6 +406,8 @@ class BaseMapper(nn.Module):
                 clip_feature_cls_token=clip_feature_cls_token,
             )
 
+            breakpoint()
+
         input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
 
         if per_timestep:

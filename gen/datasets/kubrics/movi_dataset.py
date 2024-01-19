@@ -43,6 +43,7 @@ class MoviDataset(AbstractDataset, Dataset):
         subset: Optional[tuple[str]] = None,
         return_video: bool = False,
         fake_return_n: Optional[int] = None,
+        use_single_mask: bool = False, # Force using a single mask with all 1s
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -53,6 +54,7 @@ class MoviDataset(AbstractDataset, Dataset):
         self.legacy_transforms = legacy_transforms
         self.return_video = return_video
         self.fake_return_n = fake_return_n
+        self.use_single_mask = use_single_mask
         local_split = ("train" if self.split == Split.TRAIN else "validation")
         local_split = local_split if custom_split is None else custom_split
         self.root_dir = self.root / self.dataset / local_split
@@ -172,6 +174,10 @@ class MoviDataset(AbstractDataset, Dataset):
             source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
             target_data.image = target_data.image.squeeze(0)
             target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+
+            if self.use_single_mask:
+                source_data.segmentation = torch.ones_like(source_data.segmentation)[..., [0]]
+                target_data.segmentation = torch.ones_like(target_data.segmentation)[..., [0]]
 
             ret = {
                 "gen_pixel_values": target_data.image,
