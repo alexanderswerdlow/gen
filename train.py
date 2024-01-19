@@ -193,10 +193,12 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
         eps=cfg.trainer.adam_epsilon,
     )
 
+    log_info("Creating train_dataset + train_dataloader")
     train_dataloader: DataLoader = hydra.utils.instantiate(cfg.dataset.train_dataset, _recursive_=True)(
         cfg=cfg, split=Split.TRAIN, tokenizer=tokenizer, accelerator=accelerator
     ).get_dataloader()
 
+    log_info("Creating validation_dataset + validation_dataloader")
     validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=True)(
         cfg=cfg, split=Split.VALIDATION, tokenizer=tokenizer, accelerator=accelerator
     )
@@ -287,9 +289,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
 
     log_info(f'load_time: {__import__("time").time() - load_time} seconds')
     
-
-
-
     print(f"Dataloader Size: {len(train_dataloader)}")
     if cfg.model.tmp_revert_to_neti_logic:
         text_encoder.train()
@@ -367,7 +366,13 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 if check_every_n_steps(
                     state, cfg.trainer.eval_every_n_steps, run_first=cfg.trainer.eval_on_start, all_processes=True
                 ) or check_every_n_epochs(state, cfg.trainer.eval_every_n_epochs, all_processes=True):
-                    log_info(f"Starting validation at step {global_step}, epoch {epoch}")
+                    if cfg.dataset.reset_validation_dataset_every_epoch:
+                        if state.epoch == 0:
+                            validation_dataset_holder.subset_size = 1
+                        else:
+                            validation_dataset_holder.subset_size = cfg.dataset.validation_dataset.subset_size
+                        validation_dataloader = validation_dataset_holder.get_dataloader()
+                        validation_dataloader = accelerator.prepare(validation_dataloader)
                     param_keys = get_named_params_to_optimize(models).keys()
                     write_to_file(path=Path(cfg.output_dir, cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
                     match cfg.model.model_type:
@@ -385,11 +390,8 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                                 vae=vae,
                                 global_step=global_step,
                             )
-                    if cfg.dataset.reset_validation_dataset_every_epoch:
-                        validation_dataloader = validation_dataset_holder.get_dataloader()
-                        validation_dataloader = accelerator.prepare(validation_dataloader)
 
-                    log_info(f"Finished validation at step {global_step}, epoch {epoch}")
+                    log_info(f"Finished validation at global step {global_step}, epoch {epoch}. Wandb URL: {cfg.wandb_url}")
                     if cfg.model.tmp_revert_to_neti_logic:
                         text_encoder.train()
 

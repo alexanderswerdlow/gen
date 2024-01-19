@@ -28,7 +28,7 @@ class CocoCaptions(AbstractDataset):
         ):
         # Note: The super __init__ is handled by inherit_parent_args
         self.allow_shuffle = False
-        self.allow_random_subset = False
+        self.allow_subset = False
         self.tokenizer = tokenizer
         self.path = path
         self.gen_image_transforms = transforms.Compose([
@@ -50,8 +50,8 @@ class CocoCaptions(AbstractDataset):
         if self.shuffle:
             dataset = dataset.shuffle(100)
         dataset = dataset.decode("pil").map(self.make_sample)
-        if self.random_subset:
-            dataset = dataset.with_length(self.random_subset)
+        if self.subset_size:
+            dataset = dataset.with_length(self.subset_size)
         return dataset
 
     def collate_fn(self, batch):

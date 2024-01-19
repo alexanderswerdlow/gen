@@ -17,7 +17,13 @@ from gen.configs.slurm import SlurmConfig
 
 from gen.utils.logging_utils import log_info
 
-
+def is_a5500_gpu():
+    try:
+        result = subprocess.check_output("nvidia-smi -L", shell=True).decode()
+        return "A5500" in result
+    except subprocess.CalledProcessError:
+        return False
+    
 def nvidia_smi_gpu_memory_stats():
     """
     Parse the nvidia-smi output and extract the memory used stats.
@@ -82,12 +88,17 @@ class Task:
         os.environ.update(
             **{
                 "CUDA_LAUNCH_BLOCKING": "0",
-                #    "NCCL_DEBUG": "info",
                 "OMP_NUM_THREADS": "1",
                 "NCCL_P2P_DISABLE": "0",
                 "PROJECT_ROOT": str(REPO_DIR),
+                #"NCCL_DEBUG": "info",
             }
         )
+        
+        if is_a5500_gpu():
+            os.environ["NCCL_P2P_DISABLE"] = "1"
+            print("Running on A5500, setting NCCL_P2P_DISABLE=1")
+
         print(nvidia_smi_gpu_memory_stats())
         print(f"master: {dist_env.master_addr}:{dist_env.master_port}")
         print(f"rank: {dist_env.rank}")

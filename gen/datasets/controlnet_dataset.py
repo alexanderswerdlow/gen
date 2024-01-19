@@ -55,7 +55,7 @@ class ControlnetDataset(AbstractDataset):
         ):
 
         # Note: The super __init__ is handled by inherit_parent_args
-        self.allow_random_subset = False
+        self.allow_subset = False
         self.allow_shuffle = False
         self.resolution = resolution
         self.tokenizer = tokenizer
@@ -177,8 +177,8 @@ class ControlnetDataset(AbstractDataset):
         with accelerator.main_process_first():
             if self.shuffle:
                 dataset["train"] = dataset["train"].shuffle(seed=self.cfg.trainer.seed)
-            if self.random_subset is not None:
-                dataset["train"] = dataset["train"].select(range(self.random_subset))
+            if self.subset_size is not None:
+                dataset["train"] = dataset["train"].select(range(self.subset_size))
             # Set the training transforms
             train_dataset = dataset["train"].with_transform(preprocess_train)
 

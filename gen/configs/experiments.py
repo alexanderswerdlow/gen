@@ -30,12 +30,12 @@ def get_experiments():
         debug=True,
         inference=dict(num_masks_to_remove=None, visualize_attention_map=True, empty_string_cfg=True, guidance_scale=7.5),
         trainer=dict(
-            gradient_accumulation_steps=1, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, eval_on_start=False, log_gradients=100
+            gradient_accumulation_steps=1, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, log_gradients=100
         ),
         dataset=dict(
-            train_dataset=dict(batch_size=8, random_subset=None, **shared_overfit_movi_args),
-            validation_dataset=dict(random_subset=4, evenly_spaced_subset=False, **shared_overfit_movi_args),
-            overfit=False,
+            train_dataset=dict(batch_size=8, subset_size=None, **shared_overfit_movi_args),
+            validation_dataset=dict(subset_size=4, random_subset=False, **shared_overfit_movi_args),
+            overfit=True,
         ),
         model=dict(use_dataset_segmentation=True),
     )
@@ -45,7 +45,6 @@ def get_experiments():
         dataset=dict(
             train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False)),
             validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False)),
-            overfit=True,
         ),
         hydra_defaults=[
             "_self_",
@@ -68,7 +67,6 @@ def get_experiments():
         dataset=dict(
             train_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=False, enable_horizontal_flip=False)),
             validation_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=False, enable_horizontal_flip=False)),
-            overfit=False,
         ),
         hydra_defaults=[
             "_self_",
@@ -117,7 +115,7 @@ def get_experiments():
             log_gradients=10,
             tracker_project_name="textual_inversion",
         ),
-        dataset=dict(train_dataset=dict(batch_size=2, fake_return_n=8), validation_dataset=dict(random_subset=8)),
+        dataset=dict(train_dataset=dict(batch_size=2, fake_return_n=8), validation_dataset=dict(subset_size=8)),
         model=dict(tmp_revert_to_neti_logic=True),
         inference=dict(visualize_attention_map=False),
     )

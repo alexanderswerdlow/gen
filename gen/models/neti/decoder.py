@@ -66,7 +66,7 @@ class DecoderTransformer(nn.Module):
     def __init__(
         self,
         embed_dim: int = 1024,
-        depth: int = 1,
+        depth: int = 2,
         num_heads: int = 8,
         mlp_ratio: float = 4.0,
         qkv_bias=True,

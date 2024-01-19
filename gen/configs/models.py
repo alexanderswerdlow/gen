@@ -103,7 +103,7 @@ store_child_config(
     dropout_masks=0.2,
     enable_norm_scale=False,
     use_timestep_layer_encoding=True,
-    nested_dropout_prob=0,
+    nested_dropout_prob=0.5,
 )
 store_child_config(
     cls=ModelConfig,

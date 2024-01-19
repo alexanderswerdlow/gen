@@ -52,6 +52,7 @@ class BaseConfig:
     reference_dir: Optional[Path] = None  # Used to symlink slurm logs
 
     run_name: Optional[str] = None  # Run name used for wandb
+    wandb_url: Optional[str] = None # Set in code
     cwd: Optional[Path] = None
     defaults: List[Any] = field(default_factory=lambda: defaults)
 
@@ -88,7 +89,7 @@ exp_store(
     inference=dict(visualize_attention_map=True),
     trainer=dict(
         num_train_epochs=1000,
-        checkpointing_steps=1000,
+        checkpointing_steps=10000,
         gradient_accumulation_steps=4,
         learning_rate=5e-5,
         eval_every_n_epochs=None,
@@ -99,7 +100,7 @@ exp_store(
     dataset=dict(
         num_validation_images=1,
         train_dataset=dict(batch_size=8),
-        validation_dataset=dict(batch_size=1, random_subset=4),
+        validation_dataset=dict(batch_size=1, subset_size=4),
         reset_validation_dataset_every_epoch=True,
     ),
     model=dict(),
@@ -115,7 +116,7 @@ mode_store(
     debug=True,
     trainer=dict(num_train_epochs=1, eval_every_n_epochs=1, eval_every_n_steps=None),
     dataset=dict(
-        train_dataset=dict(batch_size=8, random_subset=16, num_workers=0), validation_dataset=dict(batch_size=1, random_subset=2, num_workers=0)
+        train_dataset=dict(batch_size=8, subset_size=16, num_workers=0), validation_dataset=dict(batch_size=1, subset_size=2, num_workers=0)
     ),
 )
 
@@ -130,7 +131,7 @@ mode_store(
         checkpointing_steps=1000,
     ),
     dataset=dict(
-        train_dataset=dict(batch_size=4, random_subset=8, num_workers=0),
+        train_dataset=dict(batch_size=4, subset_size=8, num_workers=0),
         overfit=True,
     ),
 )
@@ -141,7 +142,7 @@ mode_store(
     inference=dict(num_denoising_steps=50),
     trainer=dict(eval_on_start=True),
     dataset=dict(
-        validation_dataset=dict(random_subset=1)
+        validation_dataset=dict(subset_size=1)
     ),
 )
 

@@ -18,7 +18,9 @@ from gen import DEFAULT_PROMPT, IMAGENET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
-from gen.datasets.utils import get_open_clip_transforms_v2, get_stable_diffusion_transforms
+from gen.datasets.utils import (get_open_clip_transforms_v2,
+                                get_stable_diffusion_transforms)
+from gen.utils.logging_utils import log_info, log_warn
 
 torchvision.disable_beta_transforms_warning()
 from ipdb import set_trace as st
@@ -145,8 +147,8 @@ class ImageNetDataset(ImageNetBase):
             }
 
         # We make dummy segmentation maps to make things easier for now
-        ret["gen_segmentation"] = torch.ones((ret["gen_pixel_values"].shape[1], ret["gen_pixel_values"].shape[2], 2), dtype=torch.long)
-        ret["disc_segmentation"] = torch.ones((ret["disc_pixel_values"].shape[1], ret["disc_pixel_values"].shape[2], 2), dtype=torch.long)
+        ret["gen_segmentation"] = torch.ones((ret["gen_pixel_values"].shape[1], ret["gen_pixel_values"].shape[2], 1), dtype=torch.long)
+        ret["disc_segmentation"] = torch.ones((ret["disc_pixel_values"].shape[1], ret["disc_pixel_values"].shape[2], 1), dtype=torch.long)
 
         return ret
 
@@ -181,6 +183,7 @@ class ImageNetCustomDataset(AbstractDataset):
         )
 
     def get_dataset(self):
+        log_info(f"Returning ImageNet dataset from {self.dataset.root}")
         return self.dataset
 
     def collate_fn(self, batch):
@@ -197,7 +200,7 @@ if __name__ == "__main__":
         num_workers=0,
         batch_size=10,
         shuffle=True,
-        random_subset=None,
+        subset_size=None,
         tokenizer=tokenizer,
         augmentation=Augmentation(minimal_source_augmentation=False),
     )

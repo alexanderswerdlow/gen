@@ -187,14 +187,14 @@ def run_inference_dataloader(
             output_cols = []
 
             # fmt: off
-            attn_viz_ = Im.concat_vertical((
+            attn_viz_ = Im.concat_vertical(list(
                     Im.concat_horizontal(attn_maps, spacing=5).write_text(f"Timestep: {pipeline.scheduler.timesteps[idx].item()}", relative_font_scale=0.004)
                     for idx, attn_maps in enumerate(attn_maps_img_by_timestep)
-            ),spacing=5)
+            )[::5],spacing=5)
             # fmt: on
 
             for _, (attn_map, token) in enumerate(zip(attn_maps_img_by_timestep[0], tokens)):
-                if token == "place":
+                if token == model.cfg.model.placeholder_token:
                     mask_bool = batch["gen_segmentation"][..., mask_idx].squeeze(0).cpu().bool().numpy()
                     orig_image_ = orig_image.np.copy()
                     orig_image_[~mask_bool] = 0
@@ -209,7 +209,7 @@ def run_inference_dataloader(
 
             all_output_attn_viz.append(Im.concat_vertical(attn_viz_, Im.concat_horizontal(output_cols, spacing=5), Im(prompt_image).resize(*desired_res)))
 
-            if is_main_process():
+            if is_main_process() and inference_cfg.visualize_embeds:
                 embeds_ = torch.stack([v[-1] for k, v in prompt_embeds[0].items() if "CONTEXT_TENSOR" in k and "BYPASS" not in k], dim=0)
                 bypass_embeds_ = None
                 if any("BYPASS" in k for k in prompt_embeds[0].keys()):

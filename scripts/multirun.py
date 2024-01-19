@@ -60,7 +60,7 @@ def main(
     constraint_args = 'slurm.constraint="A100|6000ADA" ' if big_gpu else ""
     timeout_args = 'slurm.time="72:00:00" ' if long_job else ""
     launch_args = f"""{gpu_args}{constraint_args}{timeout_args} 'slurm.job_name="{job_name}"' {custom_slurm_cmd}"""
-    env_vars = (" && ".join((f"export {var}=\'{os.environ[var]}\'" for var in env_var))) + " && " if env_var is not None else ""
+    env_vars = (" && ".join((f"export {var}=\'{os.environ[var]}\'" for var in env_var))) + " && " if (env_var is not None and len(env_var) > 1) else ""
 
     # Generating and printing all combinations
     for idx, combination in enumerate(itertools.product(*data.values())):
@@ -70,7 +70,7 @@ def main(
                 run_id = "".join(random.choices(string.ascii_letters, k=3))
         else:
             prod_args = " " + " ".join([f"{keys[i]}={value}" for i, value in enumerate(combination)])
-            run_id = sanitize_filename(" ".join([f"{keys[i]}={value}" for i, value in enumerate(combination)]))
+            run_id = sanitize_filename("__".join([f"{keys[i]}={value}" for i, value in enumerate(combination)]))
 
         output_dir_ = sweep_dir
         if is_sweep:

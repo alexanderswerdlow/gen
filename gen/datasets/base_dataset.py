@@ -22,8 +22,8 @@ class AbstractDataset(ABC):
             num_workers: int = 2, 
             batch_size: int = 2, 
             shuffle: bool = True, 
-            random_subset: Optional[int] = None,
-            evenly_spaced_subset: bool = False
+            subset_size: Optional[int] = None,
+            random_subset: bool = False
         ):
         from gen.configs import BaseConfig
         self.cfg: BaseConfig = cfg
@@ -31,12 +31,12 @@ class AbstractDataset(ABC):
         self.num_workers = num_workers
         self.batch_size = batch_size
         self.shuffle = shuffle
-        self.random_subset = random_subset
-        self.evenly_spaced_subset = evenly_spaced_subset
+        self.subset_size = subset_size
+        self.random_subset = random_subset # Either get random indices or a determinstic, evenly spaced subset
 
         # Subclasses may control these properties inside get_dataset
         self.allow_shuffle = True
-        self.allow_random_subset = True
+        self.allow_subset = True
 
     @abstractmethod
     def get_dataset(self):
@@ -48,21 +48,21 @@ class AbstractDataset(ABC):
 
     def get_dataloader(self):
         orig_dataset = self.get_dataset()
-        if self.allow_random_subset and self.random_subset is not None:
-            if self.evenly_spaced_subset:
+        if self.allow_subset and self.subset_size is not None:
+            if self.random_subset:
+                dataset = Subset(orig_dataset, list(RandomSampler(orig_dataset, num_samples=self.subset_size)))
+            else:
                 idxs = list(range(len(orig_dataset)))
 
-                if self.random_subset > len(orig_dataset):
+                if self.subset_size > len(orig_dataset):
                     pass
-                elif self.random_subset == 1:
+                elif self.subset_size == 1:
                     idxs = [len(orig_dataset) // 2]
                 else:
-                    step = (len(idxs) - 1) / (self.random_subset - 1)
-                    idxs = [idxs[int(round(step * i))] for i in range(self.random_subset)]
+                    step = (len(idxs) - 1) / (self.subset_size - 1)
+                    idxs = [idxs[int(round(step * i))] for i in range(self.subset_size)]
                     
                 dataset = Subset(orig_dataset, idxs)
-            else:
-                dataset = Subset(orig_dataset, list(RandomSampler(orig_dataset, num_samples=self.random_subset)))
         else: 
             dataset = orig_dataset
         dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=self.allow_shuffle and self.shuffle, collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=True)

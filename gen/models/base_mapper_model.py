@@ -333,9 +333,14 @@ class BaseMapper(nn.Module):
                     max_masks = 4
                     masks = masks[:max_masks]  # We only have 77 tokens
                     original = torch.from_numpy(np.array([masks[i]["segmentation"] for i in range(len(masks))]))
+                    if original.shape[0] == 0:
+                        original = batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1])).cpu()
+                    else:
+                        # Add additional mask to capture any pixels that are not part of any mask
+                        original = torch.cat((original, (~original.any(dim=0))[None]), dim=0)
                     if original.shape[0] != 0 and not custom_ddp_unwrap(self.text_encoder).text_model.embeddings.mapper.training:
                         gen_segmentation_ = original.permute(1, 2, 0).long().clone()
-                        gen_segmentations.append(torch.nn.functional.pad(gen_segmentation_, (0, max_masks - gen_segmentation_.shape[-1]), "constant", 0))
+                        gen_segmentations.append(torch.nn.functional.pad(gen_segmentation_, (0, (max_masks + 1) - gen_segmentation_.shape[-1]), "constant", 0))
 
                 if original.shape[0] == 0:
                     log_info("Warning, no masks found for this image")

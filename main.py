@@ -127,6 +127,7 @@ def main(cfg: BaseConfig):
             init_kwargs=dict(wandb=dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.output_dir, sync_tensorboard=cfg.profile)),
         )
         wandb.run.log_code(include_fn=lambda path: any(path.endswith(f) for f in (".py", ".yaml", ".yml", ".txt", ".md")))
+        cfg.wandb_url = wandb.run.get_url()
         log_info(OmegaConf.to_yaml(cfg))
 
     check_gpu_memory_usage()

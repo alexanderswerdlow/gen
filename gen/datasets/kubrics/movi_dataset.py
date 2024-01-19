@@ -212,7 +212,7 @@ if __name__ == "__main__":
         num_workers=0,
         batch_size=1,
         shuffle=True,
-        random_subset=None,
+        subset_size=None,
         dataset="movi_e",
         augment=False,
         num_frames=24,
