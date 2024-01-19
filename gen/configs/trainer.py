@@ -19,7 +19,7 @@ class TrainerConfig:
     limit_num_checkpoints: int = 1
     dynamo_backend: DynamoBackend = DynamoBackend.NO
     max_train_steps: Optional[int] = None
-    checkpointing_steps: int = 500
+    checkpointing_steps: int = 10000
     checkpoints_total_limit: Optional[int] = None
     resume_from_checkpoint: Optional[str] = None
     gradient_accumulation_steps: int = 1
