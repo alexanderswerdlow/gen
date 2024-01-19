@@ -19,15 +19,16 @@ from torch import Tensor
 
 from gen.utils.logging_utils import log_info
 
+log_func = log_info # Can revert to standard print() if needed
 
 def get_info():
     return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE).stdout.decode("utf-8")
 
 
 def print_params(model):
-    log_info(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
-    log_info(f"Unfrozen Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
-    log_info(f"Frozen Parameters: {sum(p.numel() for p in model.parameters() if not p.requires_grad):,}")
+    log_func(f"Total Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    log_func(f"Unfrozen Parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+    log_func(f"Frozen Parameters: {sum(p.numel() for p in model.parameters() if not p.requires_grad):,}")
 
 
 def calculate_storage_size(obj, storage_view_sizes, count_views=False):
@@ -46,7 +47,7 @@ def calculate_storage_size(obj, storage_view_sizes, count_views=False):
             print_size = 0 if not count_views or not obj._is_view() else view_size
 
         if count_views or not obj._is_view():
-            log_info(f"{'View' if obj._is_view() else 'Storage'} Tensor: " f"shape {obj.size()}, size {print_size / (1024 ** 2):.2f} MB")
+            log_func(f"{'View' if obj._is_view() else 'Storage'} Tensor: " f"shape {obj.size()}, size {print_size / (1024 ** 2):.2f} MB")
 
         return print_size if count_views or not obj._is_view() else 0  # Count views only if requested
     elif isinstance(obj, dict):
@@ -68,12 +69,12 @@ def calculate_total_size(obj, count_views=False):
     storage_view_sizes = defaultdict(int)
     total_size = calculate_storage_size(obj, storage_view_sizes, count_views)
     total_unique_storage_size = sum(storage_view_sizes.values())
-    log_info(f"Total unique storage size: {total_unique_storage_size / (1024 ** 2):.2f} MB")
+    log_func(f"Total unique storage size: {total_unique_storage_size / (1024 ** 2):.2f} MB")
     if count_views:  # Only add view sizes to total if requested
         total_view_size = total_size - total_unique_storage_size
-        log_info(f"Total view size (if counted): {total_view_size / (1024 ** 2):.2f} MB")
+        log_func(f"Total view size (if counted): {total_view_size / (1024 ** 2):.2f} MB")
     else:
-        log_info(f"Total size (without counting views): {total_size / (1024 ** 2):.2f} MB")
+        log_func(f"Total size (without counting views): {total_size / (1024 ** 2):.2f} MB")
 
     return total_size
 
@@ -129,8 +130,8 @@ def find_diff_params(state_dict_1, state_dict_2):
 
 
 def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=False, truncate=None, only_incl=None, verbose=True):
-    log_info(f"Loading {module.__class__.__name__} from checkpoint: {path}")
-    log_info(f"Strict Load: {strict}, Ignoring: {ignore_keys}, Unfreezing: {unfrozen_keys}, Truncating: {truncate}")
+    log_func(f"Loading {module.__class__.__name__} from checkpoint: {path}")
+    log_func(f"Strict Load: {strict}, Ignoring: {ignore_keys}, Unfreezing: {unfrozen_keys}, Truncating: {truncate}")
 
     if ignore_keys is None:
         ignore_keys = ()
@@ -153,7 +154,7 @@ def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=Fa
                 del sd[k]
 
     for k, v in num_deleted.items():
-        log_info(f"Deleted {v} keys due to ignore_key: {k}")
+        log_func(f"Deleted {v} keys due to ignore_key: {k}")
 
     if truncate is not None:
         for k in list(sd):
@@ -168,7 +169,7 @@ def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=Fa
                 if ik in n:
                     num_ignored[ik] += 1
                 else:
-                    log_info(f"Missing {n}")
+                    log_func(f"Missing {n}")
 
     if only_incl is not None:
         for k in list(sd):
@@ -180,19 +181,19 @@ def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=Fa
                 del sd[k]
 
     for k, v in num_ignored.items():
-        log_info(f"Missing {v} keys due to ignore_key: {k}")
+        log_func(f"Missing {v} keys due to ignore_key: {k}")
 
     for n in sd.keys():
         if n not in module.state_dict().keys():
-            log_info(f"Unexpected {n}")
+            log_func(f"Unexpected {n}")
 
     checkpoint_keys = set(sd.keys())
     current_keys = set(module.state_dict().keys())
 
     if verbose:
-        log_info(f"Loading: {checkpoint_keys.intersection(current_keys)}")
+        log_func(f"Loading: {checkpoint_keys.intersection(current_keys)}")
     else:
-        log_info(f"Loading {len(checkpoint_keys.intersection(current_keys))} keys into the model: {str(module.__class__)}")
+        log_func(f"Loading {len(checkpoint_keys.intersection(current_keys))} keys into the model: {str(module.__class__)}")
 
     module.load_state_dict(sd, strict=strict)
 
@@ -202,9 +203,9 @@ def init_from_ckpt(module, path, ignore_keys=None, unfrozen_keys=None, strict=Fa
             for unfrozen_name in unfrozen_keys:
                 if unfrozen_name in n:
                     p.requires_grad_ = True
-                    log_info(f"Unfreezing: {n}")
+                    log_func(f"Unfreezing: {n}")
 
-    log_info(f"Restored from {path}")
+    log_func(f"Restored from {path}")
 
 
 def check_gpu_memory_usage():
@@ -220,9 +221,9 @@ def check_gpu_memory_usage():
     allocated_percent = (allocated / total_memory) * 100
     reserved_percent = (reserved / total_memory) * 100
 
-    log_info(f"Allocated memory: {allocated_percent:.2f}%")
-    log_info(f"Reserved memory: {reserved_percent:.2f}%")
-    log_info(f'Available devices (CUDA_VISIBLE_DEVICES): {os.environ.get("CUDA_VISIBLE_DEVICES")}')
+    log_func(f"Allocated memory: {allocated_percent:.2f}%")
+    log_func(f"Reserved memory: {reserved_percent:.2f}%")
+    log_func(f'Available devices (CUDA_VISIBLE_DEVICES): {os.environ.get("CUDA_VISIBLE_DEVICES")}')
 
     assert allocated_percent <= 25
     assert reserved_percent <= 25
@@ -239,7 +240,7 @@ def load_checkpoint_from_url(url: str, file_path: Optional[str] = None) -> Path:
 
     file_path.parent.mkdir(parents=True, exist_ok=True)
     if not os.path.exists(file_path):
-        log_info(f'Downloading: "{url}" to {file_path}\n')
+        log_func(f'Downloading: "{url}" to {file_path}\n')
         torch.hub.download_url_to_file(url, file_path, progress=True)
 
     return file_path
@@ -307,12 +308,12 @@ class Profiler:
         torch.cuda.memory._record_memory_history(enabled=None)
         os.system(f"python -m torch.cuda._memory_viz trace_plot {self.profile_dir}/memory_snapshot.pickle -o {self.profile_dir}/memory_snapshot.html")
 
-        log_info(f"Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle")
-        log_info(f"Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008")
+        log_func(f"Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle")
+        log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008")
 
         traces = glob.glob(f"{self.profile_dir}/*.pt.trace.json*")
         for trace in traces:
-            log_info(f"Adding {trace}")
+            log_func(f"Adding {trace}")
             wandb.save(trace, base_path=self.profile_dir, policy="now")
 
 
@@ -336,7 +337,7 @@ def get_num_gpus():
 def _breakpoint():
     if is_main_process():
         frame = sys._getframe()
-        print("Breakpoint triggered. You may need to type \"up\" to get to the correct frame")
+        log_func("Breakpoint triggered. You may need to type \"up\" to get to the correct frame")
         ipdb.set_trace(frame)
 
     if dist.is_available() and dist.is_initialized():
@@ -350,6 +351,9 @@ def set_global_breakpoint():
     builtins.st = ipdb.set_trace  # We import st everywhere
 
 def write_to_file(path: Path, text: str):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, 'a') as file:
-        file.write(text + '\n')
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'a') as file:
+            file.write(text + '\n')
+    except:
+        log_func(f"Could not write to {path}")

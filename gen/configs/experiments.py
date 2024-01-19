@@ -34,7 +34,7 @@ def get_experiments():
         ),
         dataset=dict(
             train_dataset=dict(batch_size=8, subset_size=None, **shared_overfit_movi_args),
-            validation_dataset=dict(subset_size=4, random_subset=False, **shared_overfit_movi_args),
+            validation_dataset=dict(subset_size=4, **shared_overfit_movi_args),
             overfit=True,
         ),
         model=dict(use_dataset_segmentation=True),

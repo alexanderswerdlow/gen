@@ -23,7 +23,7 @@ class AbstractDataset(ABC):
             batch_size: int = 2, 
             shuffle: bool = True, 
             subset_size: Optional[int] = None,
-            random_subset: bool = False
+            random_subset: bool = True
         ):
         from gen.configs import BaseConfig
         self.cfg: BaseConfig = cfg
