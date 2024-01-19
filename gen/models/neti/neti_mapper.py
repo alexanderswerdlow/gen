@@ -85,10 +85,10 @@ class NeTIMapper(nn.Module):
 
         self.use_positional_encoding = use_positional_encoding
 
-        if self.cfg.model.use_single_token:
+        if self.cfg.model.encode_token_without_tl:
             self.mapper = nn.Sequential(nn.Linear(self.cfg.model.cross_attn_dim, self.orig_output_dim))
         else:
-            if self.cfg.model.use_fixed_position_encoding:
+            if self.cfg.model.use_custom_position_encoding:
                 if self.cfg.model.use_timestep_layer_encoding:
                     self.encoder = FourierPositionalEncodingNDims(dim=output_dim, sigmas=[pe_sigmas.sigma_t, pe_sigmas.sigma_l])
                 self.learnable_token = nn.Parameter(torch.randn(output_dim))
@@ -99,7 +99,7 @@ class NeTIMapper(nn.Module):
                 self.encoder = BasicEncoder().cuda()
                 self.input_dim = 2
 
-            if not self.cfg.model.use_fixed_position_encoding:
+            if not self.cfg.model.use_custom_position_encoding:
                 self.set_net(num_unet_layers=len(unet_layers), num_time_anchors=num_pe_time_anchors, output_dim=output_dim)
 
             if self.cfg.model.mask_cross_attn:
@@ -129,7 +129,7 @@ class NeTIMapper(nn.Module):
         return input_layer
 
     def forward(self, timestep: torch.Tensor, unet_layer: torch.Tensor, truncation_idx: int = None) -> torch.Tensor:
-        if self.cfg.model.use_fixed_position_encoding:
+        if self.cfg.model.use_custom_position_encoding:
             embedding = self.learnable_token[None, :].repeat(timestep.shape[0], 1)
             if self.cfg.model.use_timestep_layer_encoding:
                 embedding = embedding + self.encoder(torch.stack((timestep, unet_layer), dim=-1))

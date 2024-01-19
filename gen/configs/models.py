@@ -58,25 +58,25 @@ class ModelConfig:
     dropout_masks: Optional[float] = None
     freeze_text_encoder: bool = True
     controlnet: bool = False
-    use_fixed_position_encoding: bool = False
-    use_timestep_layer_encoding: bool = True
+    
     enable_norm_scale: bool = True
     enable_neti: bool = False
     cross_attn_residual: bool = True
     use_dataset_segmentation: bool = True
 
-    use_single_token: bool = False
-    use_cls_token_projected: bool = False
+    use_custom_position_encoding: bool = False # Whether to use original the NeTI mapper or our custom T+L mapper
+    use_timestep_layer_encoding: bool = True # Whether to use T+L in our custom mapper, otherwise just a learned emb
+
+    encode_token_without_tl: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
+    use_cls_token_projected: bool = False # These define where to get the single token
     use_cls_token_final_layer: bool = False
     use_cls_token_mean: bool = False
+    tmp_revert_to_neti_logic: bool = False
 
     cross_attn_dim: int = 1024
-    single_token: bool = False
 
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
-
-    debug_tmp: bool = False
 
 
 @dataclass
@@ -102,7 +102,7 @@ store_child_config(
     unfreeze_last_n_clip_layers=None,
     dropout_masks=0.2,
     enable_norm_scale=False,
-    use_fixed_position_encoding=True,
+    use_timestep_layer_encoding=True,
     nested_dropout_prob=0,
 )
 store_child_config(
@@ -111,7 +111,7 @@ store_child_config(
     parent="basemapper",
     child="neti",
     enable_norm_scale=False,
-    use_fixed_position_encoding=False,
+    use_timestep_layer_encoding=False,
     nested_dropout_prob=0.5,
     mask_cross_attn=False,
     output_bypass=False,

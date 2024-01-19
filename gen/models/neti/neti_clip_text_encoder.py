@@ -120,7 +120,7 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
         elif batch is not None:
             input_shape = batch.input_ids.size()
             batch.input_ids = batch.input_ids.view(-1, input_shape[-1])
-            if self.cfg.model.use_single_token:
+            if self.cfg.model.encode_token_without_tl:
                 hidden_states, _, mapper_outputs, position_embeddings = self.embeddings(input_ids=batch.input_ids, position_ids=position_ids)
             else:
                 # embeddings holds the main NeTI code, mapping from Timestep + Layer -> Some embedding
@@ -130,10 +130,10 @@ class NeTICLIPTextTransformer(CLIPTextTransformer):
             raise ValueError("You have to specify either batch or input_ids!")
         
         feature_map_batch_idxs = kwargs.get('feature_map_batch_idxs', [])
-        enable_conditioning = (batch is not None) and (self.cfg.model.use_single_token or (self.cfg.model.mask_cross_attn and len(feature_map_batch_idxs) > 0))
+        enable_conditioning = (batch is not None) and (self.cfg.model.encode_token_without_tl or (self.cfg.model.mask_cross_attn and len(feature_map_batch_idxs) > 0))
         if enable_conditioning:
             learnable_idxs = (batch.input_ids == batch.placeholder_token_id).nonzero(as_tuple=True)
-            if self.cfg.model.use_single_token:
+            if self.cfg.model.encode_token_without_tl:
                 clip_feature_cls_token = kwargs.pop('clip_feature_cls_token', None)
                 output = self.embeddings.mapper.mapper(clip_feature_cls_token)
                 hidden_states[learnable_idxs[0], learnable_idxs[1]] = output[feature_map_batch_idxs] + position_embeddings.squeeze(0)[learnable_idxs[1]]

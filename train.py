@@ -291,7 +291,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
 
 
     print(f"Dataloader Size: {len(train_dataloader)}")
-    if cfg.model.debug_tmp:
+    if cfg.model.tmp_revert_to_neti_logic:
         text_encoder.train()
 
     examples_seen_one_gpu = 0
@@ -301,7 +301,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             if is_main_process() and global_step == 1:
                 log_info(f'time to complete 1st step: {__import__("time").time() - load_time} seconds')
 
-            # if cfg.model.debug_tmp:
+            # if cfg.model.tmp_revert_to_neti_logic:
             #     avg_loss_eval = diffusers_eval(
             #         cfg=cfg,
             #         accelerator=accelerator,
@@ -390,7 +390,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                         validation_dataloader = accelerator.prepare(validation_dataloader)
 
                     log_info(f"Finished validation at step {global_step}, epoch {epoch}")
-                    if cfg.model.debug_tmp:
+                    if cfg.model.tmp_revert_to_neti_logic:
                         text_encoder.train()
 
                 avg_loss_per_global_step /= cfg.trainer.gradient_accumulation_steps

@@ -9,6 +9,7 @@ import inspect
 from typing import Optional, get_type_hints
 from omegaconf import DictConfig, OmegaConf
 
+
 def destructure(x):
     x = default_to_config(x)  # apply the default auto-config logic of `store`
     if is_dataclass(x):
@@ -21,17 +22,44 @@ def destructure(x):
 
 destructure_store = store(to_config=destructure)
 
+
 def global_store(name: str, group: str, hydra_defaults: Optional[list[Any]] = None, **kwargs):
     from gen.configs.base import BaseConfig
 
+    cfg = make_config(
+        hydra_defaults=hydra_defaults if hydra_defaults is not None else ["_self_"],
+        bases=(BaseConfig,),
+        zen_dataclass={"kw_only": True},
+        **kwargs,
+    )
     destructure_store(
-        make_config(
-            hydra_defaults=hydra_defaults if hydra_defaults is not None else ["_self_"], bases=(BaseConfig,), zen_dataclass={"kw_only": True}, **kwargs,
-        ),
+        cfg,
         group=group,
         package="_global_",
         name=name,
     )
+    return cfg
+
+
+def global_store_parent(name: str, group: str, parents: str, hydra_defaults: Optional[list[Any]] = None, **kwargs):
+    from gen.configs.base import BaseConfig
+
+    cfg = make_config(
+        hydra_defaults=hydra_defaults if hydra_defaults is not None else ["_self_"],
+        bases=(*parents, BaseConfig),
+        zen_dataclass={"kw_only": True},
+        **kwargs,
+    )
+
+    print(name)
+
+    destructure_store(
+        OmegaConf.merge(*parents, cfg),
+        group=group,
+        package="_global_",
+        name=name,
+    )
+    return cfg
 
 
 def store_child_config(cls: Any, group: str, parent: str, child: str, **kwargs):
@@ -41,6 +69,8 @@ def store_child_config(cls: Any, group: str, parent: str, child: str, **kwargs):
 auto_store = store(group=lambda cfg: cfg.name)
 exp_store = partial(global_store, group="experiment")
 mode_store = partial(global_store, group="modes")
+
+inherit_mode_store = partial(global_store_parent, group="modes")
 
 
 def inherit_parent_args(cls):

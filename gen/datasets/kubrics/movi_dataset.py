@@ -88,10 +88,11 @@ class MoviDataset(AbstractDataset, Dataset):
 
     def __getitem__(self, index):
         if self.fake_return_n:
-            index = 0
-            
-        video_idx = index // self.num_dataset_frames
-        frame_idx = index % self.num_dataset_frames
+            video_idx = 0
+            frame_idx = index % self.num_dataset_frames
+        else:
+            video_idx = index // self.num_dataset_frames
+            frame_idx = index % self.num_dataset_frames
 
         try:
             path = self.files[video_idx]
@@ -191,7 +192,7 @@ class MoviDataset(AbstractDataset, Dataset):
 
     def __len__(self):
         if self.fake_return_n is not None:
-            return self.fake_return_n
+            return len(self.files) * self.num_dataset_frames * self.fake_return_n
         return len(self.files) * self.num_dataset_frames
 
 

@@ -94,7 +94,7 @@ class BaseMapper(nn.Module):
         self.vae.requires_grad_(False)
         self.unet.requires_grad_(False)
 
-        if self.cfg.model.debug_tmp:
+        if self.cfg.model.tmp_revert_to_neti_logic:
             self.text_encoder.text_model.encoder.requires_grad_(False)
             self.text_encoder.text_model.final_layer_norm.requires_grad_(False)
             self.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
@@ -323,7 +323,7 @@ class BaseMapper(nn.Module):
             feature_map_batch_idxs = []
             gen_segmentations = []
             for i in range(bs):
-                if self.cfg.model.use_single_token or self.cfg.model.single_token:
+                if self.cfg.model.encode_token_without_tl:
                     original = batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1]))
                 elif "gen_segmentation" in batch and self.cfg.model.use_dataset_segmentation:  # We have gt masks
                     original = batch["gen_segmentation"][i].permute(2, 0, 1).bool()

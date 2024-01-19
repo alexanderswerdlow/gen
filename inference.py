@@ -175,8 +175,9 @@ def run_inference_dataloader(
 
         if inference_cfg.visualize_attention_map:
             desired_res = (64, 64)
+            # inference_cfg.guidance_scale > 1.0
             attn_maps_per_timestep = retrieve_attn_maps_per_timestep(
-                image_size=prompt_image.size, timesteps=pipeline.scheduler.timesteps.shape[0], chunk=inference_cfg.guidance_scale > 1.0
+                image_size=prompt_image.size, timesteps=pipeline.scheduler.timesteps.shape[0], chunk=False
             )
             if attn_maps_per_timestep[0].shape[-2] != desired_res[0] or attn_maps_per_timestep[0].shape[-1] != desired_res[1]:
                 attn_maps_per_timestep = resize_net_attn_map(attn_maps_per_timestep, desired_res)
@@ -397,7 +398,7 @@ def load_stable_diffusion_model(
     pipeline.scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
     pipeline.unet.set_attn_processor(XTIAttenProc())
 
-    if cfg.model.debug_tmp:
+    if cfg.model.tmp_revert_to_neti_logic:
         log_info("!!!! WARN NOT EVAL IN INFERENCE")
         accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.eval()
     else:
