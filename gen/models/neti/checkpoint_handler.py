@@ -13,7 +13,7 @@ from gen.models.neti.neti_mapper import NeTIMapper
 from gen.models.neti.positional_encoding import BasicEncoder, NeTIPositionalEncoding
 from gen.utils.decoupled_utils import module_hash, tensor_hash
 from gen.utils.logging_utils import log_info
-
+from gen.utils.trainer_utils import unwrap
 
 class CheckpointHandler:
     def __init__(self, cfg: BaseConfig, save_root: Path):
@@ -36,7 +36,7 @@ class CheckpointHandler:
         Save learned embeddings. This embedding isn't really learned, but we'll add it to the tokenizer at inference
         to take the place of our placeholder token.
         """
-        learned_embeds = accelerator.unwrap_model(model.text_encoder).get_input_embeddings().weight[self.cfg.model.placeholder_token_id]
+        learned_embeds = unwrap(model.text_encoder).get_input_embeddings().weight[self.cfg.model.placeholder_token_id]
         print(f"learned_embeds Hash: {tensor_hash(learned_embeds)}")
         learned_embeds = learned_embeds.detach().cpu()
         learned_embeds_dict = {self.cfg.model.placeholder_token: learned_embeds}
@@ -45,11 +45,12 @@ class CheckpointHandler:
     def save_mapper(self, accelerator: Accelerator, model: BaseMapper, save_name: str):
         """Save the mapper and config to be used at inference."""
         state_dict = {
-            "state_dict": accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.state_dict(),
-            # "encoder": accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.encoder,
-            "cfg": OmegaConf.to_container(self.cfg),
-            "clip_state_dict": accelerator.unwrap_model(model.clip).state_dict(),
+            "state_dict": unwrap(model.text_encoder).text_model.embeddings.mapper.state_dict(),
+            "cfg": OmegaConf.to_container(self.cfg, resolve=True),   
         }
+
+        if not self.cfg.model.freeze_clip:
+            state_dict["clip_state_dict"] = unwrap(model.clip).state_dict()
 
         print(f'mapper param Hash: {module_hash(state_dict=state_dict["state_dict"])}')
         torch.save(state_dict, self.save_root / f"mapper-steps-{save_name}.pt")
@@ -73,6 +74,7 @@ class CheckpointHandler:
             output_bypass=cfg.model.output_bypass,
             cfg=cfg,
         )
+        
         print(f'mapper param Hash: {module_hash(state_dict=mapper_ckpt["state_dict"])}')
         neti_mapper.load_state_dict(mapper_ckpt["state_dict"], strict=True)
         encoder = mapper_ckpt["encoder"]

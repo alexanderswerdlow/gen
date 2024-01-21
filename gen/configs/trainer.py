@@ -10,18 +10,21 @@ from gen.configs.utils import auto_store
 @dataclass
 class TrainerConfig:
     name: ClassVar[str] = "trainer"
+    log_with: Optional[LoggerType] = LoggerType.WANDB
     tracker_project_name: str = "controlnet"  # wandb project name
     mixed_precision: PrecisionType = PrecisionType.BF16
+    dynamo_backend: DynamoBackend = DynamoBackend.NO
+
     gradient_accumulation_steps: int = 1
-    log_with: Optional[LoggerType] = LoggerType.WANDB
+    
     seed: int = 42
     num_train_epochs: int = 10
-    limit_num_checkpoints: int = 1
-    dynamo_backend: DynamoBackend = DynamoBackend.NO
-    max_train_steps: Optional[int] = None
+    max_train_steps: Optional[int] = None # Global step
+
     checkpointing_steps: int = 10000
     checkpoints_total_limit: Optional[int] = None
-    resume_from_checkpoint: Optional[str] = None
+    resume: Optional[str] = None
+    load_only: bool = False
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
     learning_rate: float = 5e-6
@@ -37,7 +40,6 @@ class TrainerConfig:
     adam_epsilon: float = 1e-08
     max_grad_norm: float = 1.0
     set_grads_to_none: bool = True
-    max_train_samples: Optional[int] = None
     eval_every_n_steps: Optional[int] = 100
     eval_every_n_epochs: Optional[int] = None
     eval_on_start: bool = True
@@ -49,6 +51,10 @@ class TrainerConfig:
 
     dynamic_grad_accum_default_gpus: int = 4
     enable_dynamic_grad_accum: bool = False
+
+    save_accelerator_format: bool = False
+    load_model_only: bool = False
+    finetune_learning_rate: Optional[float] = None
 
     # Set in code
     num_gpus: Optional[int] = None

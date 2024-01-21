@@ -1,11 +1,8 @@
 import logging
 from typing import Optional
-from accelerate.logging import get_logger as get_accelerate_logger, MultiProcessAdapter
-from accelerate.state import PartialState
+from rich.logging import RichHandler
 
-log_format = format = "[%(asctime)s][%(name)s][%(levelname)s] - %(message)s"
-date_format = "%Y-%m-%d %H:%M:%S"
-logging.basicConfig(format=log_format, datefmt=date_format, level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format= "%(message)s", datefmt="[%X]", handlers=[RichHandler()])
 
 logger: Optional[logging.Logger] = None
 
@@ -21,6 +18,8 @@ def get_logger():
 
 
 def set_log_file(log_file_path):
+    log_format = format = "[%(asctime)s][%(name)s][%(levelname)s] - %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
     formatter = logging.Formatter(fmt=log_format, datefmt=date_format)
     file_handler = logging.FileHandler(log_file_path)
     file_handler.setFormatter(formatter)

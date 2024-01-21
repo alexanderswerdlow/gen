@@ -30,7 +30,7 @@ def get_experiments():
         debug=True,
         inference=dict(num_masks_to_remove=None, visualize_attention_map=True, empty_string_cfg=True, guidance_scale=7.5),
         trainer=dict(
-            gradient_accumulation_steps=1, num_train_epochs=10000, eval_every_n_steps=100, learning_rate=1e-3, log_gradients=100
+            gradient_accumulation_steps=4, num_train_epochs=10000, eval_every_n_steps=500, learning_rate=1e-3, log_gradients=100
         ),
         dataset=dict(
             train_dataset=dict(batch_size=8, subset_size=None, **shared_overfit_movi_args),
@@ -59,7 +59,7 @@ def get_experiments():
 
     mode_store(
         name="movi_single_frame",
-        dataset=dict(train_dataset=dict(num_dataset_frames=1), validation_dataset=dict(num_dataset_frames=1)),
+        dataset=dict(train_dataset=dict(num_dataset_frames=1, fake_return_n=256), validation_dataset=dict(num_dataset_frames=1, fake_return_n=256)),
     )
 
     mode_store(
@@ -118,4 +118,34 @@ def get_experiments():
         dataset=dict(train_dataset=dict(batch_size=2, fake_return_n=8), validation_dataset=dict(subset_size=8)),
         model=dict(tmp_revert_to_neti_logic=True),
         inference=dict(visualize_attention_map=False),
+    )
+
+
+    mode_store(
+        name="unet_finetune",
+        dataset=dict(train_dataset=dict(batch_size=6)),
+        trainer=dict(
+            learning_rate=1e-3,
+            enable_dynamic_grad_accum=True,
+            gradient_accumulation_steps=4,
+            scale_lr_batch_size=True,
+            log_parameters=False,
+            log_gradients=50,
+            gradient_checkpointing=True,
+            finetune_learning_rate=2e-8,
+        ),
+        model=dict(freeze_unet=True, unfreeze_unet_after_n_steps=500),
+    )
+
+    mode_store(
+        name="train_cross_attn_only",
+        model=dict(mask_cross_attn=True),
+        trainer=dict(max_train_steps=10000, checkpointing_steps=500, save_accelerator_format=True)
+    )
+
+    mode_store(
+        name="finetune_cross_attn_unet",
+        model=dict(mask_cross_attn=True, freeze_unet=False),
+        trainer=dict(gradient_checkpointing=True, learning_rate=2e-7, compile=False, save_accelerator_format=True),
+        dataset=dict(train_dataset=dict(batch_size=6)),
     )

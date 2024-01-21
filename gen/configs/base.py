@@ -5,6 +5,7 @@ from typing import Any, List, Optional
 
 from hydra_zen import MISSING, store
 from omegaconf import OmegaConf
+from gen import CHECKPOINT_DIR
 
 from gen.configs.datasets import DatasetConfig
 from gen.configs.experiments import get_experiments
@@ -46,6 +47,7 @@ class BaseConfig:
     second_level_output_path: Optional[Path] = None  # Auto generated if not specified
 
     logging_dir: Path = Path("logs")  # Folder inside the experiment folder
+    checkpoint_dir: Path = CHECKPOINT_DIR
 
     sweep_id: Optional[str] = None  # ID of the entire sweep
     sweep_run_id: Optional[str] = None  # ID of the specific run in a sweep
@@ -53,6 +55,7 @@ class BaseConfig:
 
     run_name: Optional[str] = None  # Run name used for wandb
     wandb_url: Optional[str] = None # Set in code
+    wandb_run_id: Optional[str] = None # Set in code
     cwd: Optional[Path] = None
     defaults: List[Any] = field(default_factory=lambda: defaults)
 
@@ -96,6 +99,7 @@ exp_store(
         eval_every_n_steps=1000,
         tracker_project_name="gen",
         enable_dynamic_grad_accum=True,
+        checkpoints_total_limit=10
     ),
     dataset=dict(
         num_validation_images=1,

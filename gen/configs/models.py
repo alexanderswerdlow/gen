@@ -52,9 +52,12 @@ class ModelConfig:
     placeholder_token_id: Optional[int] = None
     super_category_token: str = "object"
 
-    mask_cross_attn: bool = True
     freeze_clip: bool = True
     unfreeze_last_n_clip_layers: Optional[int] = None
+    freeze_unet: bool = True
+    lora_unet: bool = False
+
+    mask_cross_attn: bool = True
     dropout_masks: Optional[float] = None
     freeze_text_encoder: bool = True
     controlnet: bool = False
@@ -74,6 +77,8 @@ class ModelConfig:
     tmp_revert_to_neti_logic: bool = False
 
     cross_attn_dim: int = 1024
+
+    unfreeze_unet_after_n_steps: Optional[int] = None
 
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)

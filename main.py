@@ -1,9 +1,12 @@
 import autoroot
 
 import os
+import pickle
 import random
+import string
 from pathlib import Path
 
+import cloudpickle
 import diffusers
 import hydra
 import numpy as np
@@ -21,7 +24,9 @@ from image_utils import library_ops  # This overrides repr() for tensors
 from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig
-from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint
+from gen.utils.decoupled_utils import (check_gpu_memory_usage, get_num_gpus,
+                                       get_rank, is_main_process,
+                                       set_global_breakpoint)
 from gen.utils.logging_utils import log_error, log_info, log_warn, set_logger
 from inference import inference
 from train import train
@@ -53,7 +58,33 @@ def main(cfg: BaseConfig):
         debugpy.wait_for_client()
 
     cfg.output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
-    logging_dir = Path(cfg.output_dir, cfg.logging_dir)
+
+    if cfg.trainer.resume is not None and not cfg.trainer.load_only:
+        if Path(cfg.trainer.resume).is_file():
+            top_level_dir = Path(cfg.trainer.resume).parent.parent.parent
+        else:
+            top_level_dir = Path(cfg.trainer.resume).parent.parent
+        with open(top_level_dir / '.hydra' / 'final_config.pkl', "rb") as f:
+            loaded_cfg = pickle.load(f)
+
+        # We take these old params and overwrite everything else
+        cfg.wandb_run_id = loaded_cfg.wandb_run_id
+        cfg.run_name = loaded_cfg.run_name
+        cfg.output_dir = loaded_cfg.output_dir
+        cfg.sweep_id = loaded_cfg.sweep_id
+        cfg.sweep_run_id = loaded_cfg.sweep_run_id
+    
+    cfg.logging_dir = Path(cfg.output_dir, cfg.logging_dir)
+    if cfg.checkpoint_dir.is_absolute():
+        cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.output_dir.name
+        if cfg.checkpoint_dir.exists() and not (cfg.trainer.resume and not cfg.trainer.load_only):
+            cfg.checkpoint_dir = cfg.checkpoint_dir / "".join(random.choices(string.ascii_letters, k=10))
+
+        cfg.checkpoint_dir.mkdir(exist_ok=True, parents=True)
+        symlink_dir = cfg.output_dir / "checkpoints"
+        symlink_dir.symlink_to(reference_dir)
+    else:
+        cfg.checkpoint_dir = Path(cfg.output_dir, cfg.checkpoint_dir)
 
     # log_file_path = logging_dir / "output.log"
     # log_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +112,8 @@ def main(cfg: BaseConfig):
     cudnn.benchmark = True
     cudnn.allow_tf32 = True  # https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     cuda.matmul.allow_tf32 = True
-    torch.set_float32_matmul_precision("medium")
+    torch.set_float32_matmul_precision("high")
+    log_warn("Setting matmul precision to high. Setting to medium may be faster.")
 
     num_gpus = get_num_gpus()
     if cfg.trainer.enable_dynamic_grad_accum:
@@ -108,7 +140,7 @@ def main(cfg: BaseConfig):
         cfg.trainer.learning_rate = cfg.trainer.learning_rate * cfg.dataset.train_dataset.batch_size
         log_info(f"Scaling learning rate by {cfg.dataset.train_dataset.batch_size} to {cfg.trainer.learning_rate}.")
 
-    accelerator_project_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=logging_dir)
+    accelerator_project_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=cfg.logging_dir)
     gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=cfg.trainer.gradient_accumulation_steps, adjust_scheduler=False)
     accelerator = Accelerator(
         mixed_precision=cfg.trainer.mixed_precision,
@@ -122,14 +154,30 @@ def main(cfg: BaseConfig):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if is_main_process():
+        wandb_kwargs = dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.output_dir, sync_tensorboard=cfg.profile)
+        if cfg.wandb_run_id is None:
+            cfg.wandb_run_id = wandb.util.generate_id()
+        
+        wandb_kwargs['id'] = cfg.wandb_run_id
+
+        if cfg.trainer.resume is not None and not cfg.trainer.load_only:
+            wandb_kwargs['resume'] = 'must'
+            
         accelerator.init_trackers(
             cfg.trainer.tracker_project_name + ("_inference" if cfg.run_inference else ""),
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
-            init_kwargs=dict(wandb=dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.output_dir, sync_tensorboard=cfg.profile)),
+            init_kwargs=dict(wandb=wandb_kwargs),
         )
         wandb.run.log_code(include_fn=lambda path: any(path.endswith(f) for f in (".py", ".yaml", ".yml", ".txt", ".md")))
         cfg.wandb_url = wandb.run.get_url()
+
         log_info(OmegaConf.to_yaml(cfg))
+        
+        with open(cfg.output_dir / '.hydra' / 'final_config.pkl', "wb") as f:
+            cloudpickle.dump(cfg, f)
+        
+        # If the code changes, we may be unable to load the pickled config so we also save the yaml.
+        OmegaConf.save(config=cfg, f=cfg.output_dir / '.hydra' / 'final_config.yaml', resolve=True)
 
     check_gpu_memory_usage()
 

@@ -36,8 +36,11 @@ python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo
 ## Training
 
 Global Step: A single gradient update step over all GPUs.
-
 True Step: A single forward pass over all GPUs
+
+We set the effective batch size to be the same regardless of the number of GPUs by setting `enable_dynamic_grad_accum`. This accumulates gradients over multiple forward passes which is equivalent to a single DDP step.
+
+We also scale learning rate as this is required with HF accelerate: `scale_lr_gpus_grad_accum`
 
 ## SLURM
 

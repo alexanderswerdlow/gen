@@ -27,7 +27,7 @@ from gen.models.sam import HQSam, find_true_indices_batched
 from gen.utils.decoupled_utils import is_main_process
 from gen.utils.encoder_utils import ClipFeatureExtractor, TimmModel
 from gen.utils.logging_utils import log_info, log_warn
-from gen.utils.trainer_utils import custom_ddp_unwrap
+from gen.utils.trainer_utils import unwrap
 
 
 class BaseMapper(nn.Module):
@@ -92,7 +92,18 @@ class BaseMapper(nn.Module):
 
         # Set train/eval and freeze/unfreeze
         self.vae.requires_grad_(False)
-        self.unet.requires_grad_(False)
+        self.unet.requires_grad_(not self.cfg.model.freeze_unet)
+        
+        assert not (not self.cfg.model.freeze_unet and (self.cfg.model.unfreeze_unet_after_n_steps is not None or self.cfg.model.lora_unet))
+        if self.cfg.model.lora_unet:
+            from peft import LoraConfig
+            unet_lora_config = LoraConfig(
+                r=4,
+                lora_alpha=4,
+                init_lora_weights="gaussian",
+                target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+            )
+            self.unet.add_adapter(unet_lora_config)
 
         if self.cfg.model.freeze_text_encoder:
             self.text_encoder.requires_grad_(False)
@@ -115,18 +126,24 @@ class BaseMapper(nn.Module):
 
         self.text_encoder: NeTICLIPTextModel = accelerator.prepare(self.text_encoder)
 
+
+        if not self.cfg.model.freeze_unet:
+            self.unet: UNet2DConditionModel = accelerator.prepare(self.unet)
+            self.unet.train()
+
         if self.cfg.model.controlnet:
             self.controlnet: ControlNetModel = accelerator.prepare(self.controlnet)
             self.controlnet.train()
-            accelerator.unwrap_model(self.controlnet).set_attn_processor(XTIAttenProc())  # TODO: Don't do this
+            unwrap(self.controlnet).set_attn_processor(XTIAttenProc())  # TODO: Don't do this
 
         if self.cfg.trainer.gradient_checkpointing:
-            self.text_encoder.enable_gradient_checkpointing()
+            unwrap(self.unet).enable_gradient_checkpointing()
+            # unwrap(self.text_encoder).enable_gradient_checkpointing()
             if self.cfg.model.controlnet:
-                self.controlnet.enable_gradient_checkpointing()
+                unwrap(self.controlnet).enable_gradient_checkpointing()
 
-        if not bypass_dtype_check and accelerator.unwrap_model(self.text_encoder).dtype != torch.float32:
-            raise ValueError(f"text_encoder loaded as datatype {accelerator.unwrap_model(self.text_encoder).dtype}.")
+        if not bypass_dtype_check and unwrap(self.text_encoder).dtype != torch.float32:
+            raise ValueError(f"text_encoder loaded as datatype {unwrap(self.text_encoder).dtype}.")
 
         # Move vae, unet and text_encoder to device and cast to weight_dtype
         self.vae.to(accelerator.device, dtype=weight_dtype)
@@ -290,11 +307,12 @@ class BaseMapper(nn.Module):
         text_encoder_dict = dict()
         if not disable_conditioning:
             clip_feature_cls_token = None
-            if isinstance(self.clip, TimmModel):
+            # isinstance fails with torch dynamo
+            if 'resnet' in self.clip.model_name:
                 clip_feature_map = self.clip(((batch["gen_pixel_values"] + 1) / 2).to(device=device, dtype=dtype))
                 clip_feature_map = rearrange(clip_feature_map, "b d h w -> b (h w) d")
                 clip_feature_cls_token = torch.mean(clip_feature_map, dim=1)
-            elif isinstance(self.clip, ClipFeatureExtractor):
+            else:
                 clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype)).permute(1, 0, 2)
                 clip_feature_map = rearrange(clip_feature_map, "l b d -> b l d")
                 clip_feature_map = clip_feature_map[:, 1:, :]
@@ -334,7 +352,7 @@ class BaseMapper(nn.Module):
                     else:
                         # Add additional mask to capture any pixels that are not part of any mask
                         original = torch.cat((original, (~original.any(dim=0))[None]), dim=0)
-                    if original.shape[0] != 0 and not custom_ddp_unwrap(self.text_encoder).text_model.embeddings.mapper.training:
+                    if original.shape[0] != 0 and not unwrap(self.text_encoder).text_model.embeddings.mapper.training:
                         gen_segmentation_ = original.permute(1, 2, 0).long().clone()
                         gen_segmentations.append(torch.nn.functional.pad(gen_segmentation_, (0, (max_masks + 1) - gen_segmentation_.shape[-1]), "constant", 0))
 
@@ -342,7 +360,7 @@ class BaseMapper(nn.Module):
                     log_info("Warning, no masks found for this image")
                     continue
 
-                if self.cfg.model.dropout_masks is not None and custom_ddp_unwrap(self.text_encoder).text_model.embeddings.mapper.training:
+                if self.cfg.model.dropout_masks is not None and unwrap(self.text_encoder).text_model.embeddings.mapper.training:
                     mask = torch.rand(original.size(0)) > self.cfg.model.dropout_masks
                     mask[0] = True  # We always keep the background mask
                     original = original[mask]

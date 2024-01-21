@@ -1,5 +1,6 @@
 wandb
 hydra-core
+cloudpickle
 jaxtyping
 hickle
 numpy
@@ -35,6 +36,7 @@ transformers
 open_clip_torch
 webdataset
 rich
+peft
 diffusers==0.25.*
 git+https://github.com/alexanderswerdlow/image_utils.git
 git+https://github.com/alexanderswerdlow/kornia.git@keypoint_visibility

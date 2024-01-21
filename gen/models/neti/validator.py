@@ -6,6 +6,7 @@ from transformers import CLIPTokenizer
 from gen.configs.base import BaseConfig
 from gen.models.base_mapper_model import BaseMapper
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
+from gen.utils.trainer_utils import unwrap
 from inference import load_stable_diffusion_model, run_inference_dataloader
 
 
@@ -49,6 +50,7 @@ class ValidationHandler:
 
         del pipeline
         torch.cuda.empty_cache()
-        accelerator.unwrap_model(text_encoder).text_model.embeddings.mapper.train()
-        if self.cfg.model.controlnet: accelerator.unwrap_model(model).controlnet.train()
-        if not self.cfg.model.freeze_text_encoder: accelerator.unwrap_model(text_encoder).train()
+        unwrap(text_encoder).text_model.embeddings.mapper.train()
+        if self.cfg.model.controlnet: unwrap(model).controlnet.train()
+        if not self.cfg.model.freeze_text_encoder: unwrap(text_encoder).train()
+        if not self.cfg.model.freeze_unet: unwrap(model).unet.train()

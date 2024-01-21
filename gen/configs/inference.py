@@ -37,6 +37,7 @@ class InferenceConfig:
     empty_string_cfg: bool = True
     resolution: int = "${model.resolution}"
     set_seed: bool = False
+    batched_cfg: bool = False # WARNING: This may silently break things
 
 
 auto_store(InferenceConfig, name="basemapper")

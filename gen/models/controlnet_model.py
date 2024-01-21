@@ -20,7 +20,7 @@ from diffusers import (
 from diffusers.utils.import_utils import is_xformers_available
 from gen.configs import BaseConfig
 import wandb
-
+from gen.utils.trainer_utils import unwrap
 
 
 def image_grid(imgs, rows, cols):
@@ -129,8 +129,8 @@ def pre_train_setup_controlnet(weight_dtype: torch.dtype, cfg: BaseConfig, accel
     if cfg.trainer.gradient_checkpointing:
         controlnet.enable_gradient_checkpointing()
 
-    if accelerator.unwrap_model(controlnet).dtype != torch.float32:
-        raise ValueError(f"Controlnet loaded as datatype {accelerator.unwrap_model(controlnet).dtype}.")
+    if unwrap(controlnet).dtype != torch.float32:
+        raise ValueError(f"Controlnet loaded as datatype {unwrap(controlnet).dtype}.")
 
     # Move vae, unet and text_encoder to device and cast to weight_dtype
     vae.to(accelerator.device, dtype=weight_dtype)
@@ -175,7 +175,7 @@ def controlnet_forward(batch, noisy_latents, timesteps, weight_dtype, unet, text
 def log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg: BaseConfig, accelerator, weight_dtype, step):
     log("Running validation... ")
 
-    controlnet = accelerator.unwrap_model(controlnet)
+    controlnet = unwrap(controlnet)
 
     pipeline = StableDiffusionControlNetPipeline.from_pretrained(
         cfg.model.pretrained_model_name_or_path,

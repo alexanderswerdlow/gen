@@ -4,8 +4,10 @@ import itertools
 import math
 import os
 from pathlib import Path
+from typing import Any, Dict, Iterator, Union
 
 import hydra
+from numpy import isin
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,13 +15,12 @@ import torch.utils.checkpoint
 import wandb
 from accelerate import Accelerator
 from diffusers.optimization import get_scheduler
-from diffusers.utils import check_min_version
 from diffusers.utils.import_utils import is_xformers_available
-from ipdb import set_trace
+from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchinfo import summary
 from tqdm.auto import tqdm
-
+from gen.utils.trainer_utils import unwrap
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
@@ -27,73 +28,30 @@ from gen.models.controlnet_model import get_controlnet_model, log_validation, pr
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
 from gen.utils.decoupled_utils import Profiler, is_main_process, module_hash, write_to_file
-from gen.utils.logging_utils import log_info, log_warn
+from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.trainer_utils import TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing
 
 
-def get_named_params_to_optimize(models: tuple[nn.Module]):
-    return dict(itertools.chain.from_iterable((model.named_parameters() for model in models)))
+def get_named_params_to_optimize(models: tuple[Union[nn.Module, Iterator]]):
+    return dict(
+        itertools.chain(
+            *(model.named_parameters() for model in models if isinstance(model, nn.Module)), *(np for np in models if isinstance(np, Iterator))
+        )
+    )
 
 
-import torch
-from torch import nn
-import torch.nn.functional as F
-from typing import Dict, Any
+def checkpoint(cfg: BaseConfig, accelerator: Accelerator, global_step: int, model: nn.Module, checkpoint_handler: CheckpointHandler):
+    if cfg.model.lora_unet:
+        log_error("LoRA UNet checkpointing not implemented")
 
-@torch.no_grad()
-def diffusers_eval(
-    cfg: BaseConfig,
-    accelerator: Accelerator,
-    batch: Dict[str, Any],
-    weight_dtype: torch.dtype,
-    model: BaseMapper,
-    noise_scheduler: nn.Module,
-    vae: nn.Module,
-    n: int,
-    max_batch_size: int,
-):
-    
-    accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.eval()
-    batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
-    latents = vae.encode(batch["gen_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-    latents = latents * vae.config.scaling_factor
-
-    # Split timesteps into smaller batches if n is larger than max_batch_size
-    total_timesteps = torch.linspace(0, noise_scheduler.config.num_train_timesteps - 1, steps=n).long()
-    batched_timesteps = total_timesteps.split(max_batch_size)
-        
-
-    total_loss = 0.0
-    from einops import repeat
-
-    for timesteps in batched_timesteps:
-        bsz = timesteps.shape[0]
-        repeated_latents = latents.repeat(bsz, 1, 1, 1)[:bsz]
-        batch_ = {}
-        for k in batch.keys():
-            batch_[k] = repeat(batch[k][0], '... -> h ...', h=bsz)
-
-        noise = torch.randn_like(repeated_latents)
-        noisy_latents = noise_scheduler.add_noise(repeated_latents, noise, timesteps.to(latents.device))
-
-        match cfg.model.model_type:
-            case ModelType.BASE_MAPPER:
-                model_pred = model(batch_, noisy_latents, timesteps.to(latents.device), weight_dtype)
-
-        if noise_scheduler.config.prediction_type == "epsilon":
-            target = noise
-        elif noise_scheduler.config.prediction_type == "v_prediction":
-            target = noise_scheduler.get_velocity(repeated_latents, noise, timesteps.to(latents.device))
-        else:
-            raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-
-        loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-        total_loss += loss.item()
-
-    avg_loss = total_loss / len(batched_timesteps)
-    accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper.train()
-    accelerator.unwrap_model(model.text_encoder).train()
-    return avg_loss
+    if cfg.model.model_type == ModelType.BASE_MAPPER:
+        checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f"{global_step}")
+        if cfg.trainer.save_accelerator_format:
+            handle_checkpointing(cfg, accelerator, global_step)
+            save_path = cfg.checkpoint_dir / f"checkpoint-model-{global_step}"
+            accelerator.save_model(model, save_path, safe_serialization=False)
+    else:
+        handle_checkpointing(cfg, accelerator, global_step)
 
 
 def diffusers_forward(
@@ -150,6 +108,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
 
+    models, models_to_accumulate_only = [], []
     match cfg.model.model_type:
         case ModelType.CONTROLNET:
             tokenizer, noise_scheduler, text_encoder, vae, unet, controlnet = get_controlnet_model(cfg, accelerator)
@@ -169,16 +128,21 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             model.prepare_for_training(weight_dtype, accelerator)
             noise_scheduler, vae, unet, text_encoder = model.noise_scheduler, model.vae, model.unet, model.text_encoder
             if is_main_process():
-                summary(accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper, col_names=("trainable", "num_params"), verbose=2)
+                summary(unwrap(model.text_encoder).text_model.embeddings, col_names=("trainable", "num_params"), verbose=2)
                 summary(model, col_names=("trainable", "num_params"), depth=3)
-                summary(accelerator.unwrap_model(model.text_encoder).text_model.embeddings, col_names=("trainable", "num_params"), verbose=2)
-
-            models = []
 
             if cfg.model.freeze_text_encoder:
-                models.append(accelerator.unwrap_model(model.text_encoder).text_model.embeddings.mapper)
+                models.append(unwrap(model.text_encoder).text_model.embeddings.mapper)
             else:
-                models.append(accelerator.unwrap_model(model.text_encoder))
+                models.append(unwrap(model.text_encoder))
+
+            if not cfg.model.freeze_unet:
+                models.append(model.unet)
+
+            if cfg.model.lora_unet:
+                # We want to only have gradients for the LoRA weights but accumulate needs an nn.Module
+                models.append(filter(lambda p: p.requires_grad, model.unet.parameters()))
+                models_to_accumulate_only.append(model.unet)
 
             if cfg.model.controlnet:
                 models.append(model.controlnet)
@@ -218,8 +182,8 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     lr_scheduler = get_scheduler(
         cfg.trainer.lr_scheduler,
         optimizer=optimizer,
-        num_warmup_steps=cfg.trainer.lr_warmup_steps * accelerator.num_processes,
-        num_training_steps=cfg.trainer.max_train_steps * accelerator.num_processes,
+        num_warmup_steps=cfg.trainer.lr_warmup_steps * cfg.trainer.num_gpus,  # TODO: We might not need to scale here. See src/accelerate/scheduler.py
+        num_training_steps=cfg.trainer.max_train_steps * cfg.trainer.num_gpus,
         num_cycles=cfg.trainer.lr_num_cycles,
         power=cfg.trainer.lr_power,
     )
@@ -238,43 +202,58 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     cfg.trainer.num_train_epochs = math.ceil(cfg.trainer.max_train_steps / num_update_steps_per_epoch)
 
     # Train!
-    total_batch_size = cfg.dataset.train_dataset.batch_size * accelerator.num_processes * cfg.trainer.gradient_accumulation_steps
+    total_batch_size = cfg.dataset.train_dataset.batch_size * cfg.trainer.num_gpus * cfg.trainer.gradient_accumulation_steps
 
     log_info("***** Running training *****")
     log_info(f"  Num examples = {len(train_dataloader.dataset)}")
     log_info(f"  Num batches each epoch = {len(train_dataloader)}")
     log_info(f"  Num Epochs = {cfg.trainer.num_train_epochs}")
     log_info(f"  Instantaneous batch size per device = {cfg.dataset.train_dataset.batch_size}")
-    log_info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     log_info(f"  Gradient Accumulation steps = {cfg.trainer.gradient_accumulation_steps}")
+    log_info(f"  Num GPUs = {cfg.trainer.num_gpus}")
+    log_info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     log_info(f"  Total optimization steps = {cfg.trainer.max_train_steps}")
+
+    if len(train_dataloader.dataset) < total_batch_size:
+        log_warn("The training dataloader is smaller than the total batch size. This may lead to unexpected behaviour.")
 
     true_step = 0
     global_step = 0
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
-    if cfg.trainer.resume_from_checkpoint:
-        if cfg.trainer.resume_from_checkpoint != "latest":
-            path = os.path.basename(cfg.trainer.resume_from_checkpoint)
-        else:
+    if cfg.trainer.resume:
+        if cfg.trainer.resume == "latest":
             # Get the most recent checkpoint
-            dirs = os.listdir(cfg.output_dir)
+            dirs = os.listdir(cfg.checkpoint_dir)
             dirs = [d for d in dirs if d.startswith("checkpoint")]
             dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
             path = dirs[-1] if len(dirs) > 0 else None
+        else:
+            path = Path(cfg.trainer.resume)
 
         if path is None:
-            log_info(f"Checkpoint '{cfg.trainer.resume_from_checkpoint}' does not exist. Starting a new training run.")
-            cfg.trainer.resume_from_checkpoint = None
+            log_info(f"Checkpoint '{cfg.trainer.resume}' does not exist. Starting a new training run.")
+            cfg.trainer.resume = None
             initial_global_step = 0
         else:
             log_info(f"Resuming from checkpoint {path}")
-            accelerator.load_state(os.path.join(cfg.output_dir, path))
-            global_step = int(path.split("-")[1])
+            if path.is_file() or cfg.trainer.load_model_only:
+                from accelerate.utils.modeling import load_checkpoint_in_model
+
+                load_checkpoint_in_model(model, str(path))
+            else:
+                accelerator.load_state(path)
+
+            if path.is_file():
+                global_step = int(path.parent.name.split("-")[-1])
+            else:
+                global_step = int(path.name.split("-")[1])
+                
 
             initial_global_step = global_step
             first_epoch = global_step // num_update_steps_per_epoch
+            log_info(f"Continuing training from epoch {first_epoch} and global step {global_step}")
     else:
         initial_global_step = 0
 
@@ -288,8 +267,9 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
         # wandb.define_metric("loss_per_true_step", step_metric="true_step")
 
     log_info(f'load_time: {__import__("time").time() - load_time} seconds')
-    
-    print(f"Dataloader Size: {len(train_dataloader)}")
+
+    log_info(f"Train Dataloader Size on single GPU: {len(train_dataloader)}")
+
     examples_seen_one_gpu = 0
     avg_loss_per_global_step = 0
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
@@ -297,22 +277,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             if is_main_process() and global_step == 1:
                 log_info(f'time to complete 1st step: {__import__("time").time() - load_time} seconds')
 
-            # if cfg.model.tmp_revert_to_neti_logic:
-            #     avg_loss_eval = diffusers_eval(
-            #         cfg=cfg,
-            #         accelerator=accelerator,
-            #         batch=batch,
-            #         weight_dtype=weight_dtype,
-            #         model=model,
-            #         noise_scheduler=noise_scheduler,
-            #         vae=vae,
-            #         n=200,
-            #         max_batch_size=20,
-            #     )
-            #     log_info(f"Eval loss: {avg_loss_eval} at step {global_step}")
-            #     wandb.log({"avg_eval_loss": avg_loss_eval}, step=global_step)
-
-            with accelerator.accumulate(*models):
+            with accelerator.accumulate(*filter(lambda x: isinstance(x, nn.Module), models), *models_to_accumulate_only):
                 examples_seen_one_gpu += batch["gen_pixel_values"].shape[0]
                 state: TrainingState = TrainingState(
                     epoch_step=step,
@@ -343,29 +308,28 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=cfg.trainer.set_grads_to_none)
-                
 
             # Important Note: Right now a single "global_step" is a single gradient update step (same if we don't have grad accum)
             # This is different from "step" which only counts the number of forward passes
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                if is_main_process() and check_every_n_steps(state, cfg.trainer.checkpointing_steps, run_first=False):
-                    if cfg.model.model_type == ModelType.BASE_MAPPER:
-                        checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name=f"{global_step}")
-                    else:
-                        handle_checkpointing(cfg, accelerator, global_step)
+                if check_every_n_steps(state, cfg.trainer.checkpointing_steps, run_first=False):
+                    checkpoint(cfg, accelerator, global_step, model, checkpoint_handler)
 
-                if check_every_n_steps(
-                    state, cfg.trainer.eval_every_n_steps, run_first=cfg.trainer.eval_on_start, all_processes=True
-                ) or check_every_n_epochs(state, cfg.trainer.eval_every_n_epochs, all_processes=True):
+                if (
+                    check_every_n_steps(state, cfg.trainer.eval_every_n_steps, run_first=cfg.trainer.eval_on_start, all_processes=True)
+                    or (cfg.trainer.eval_on_start and global_step == initial_global_step)
+                    or check_every_n_epochs(state, cfg.trainer.eval_every_n_epochs, all_processes=True)
+                ):
                     validation_start_time = __import__("time").time()
                     if cfg.dataset.reset_validation_dataset_every_epoch:
                         if state.epoch == 0:
-                            validation_dataset_holder.subset_size = 1
+                            validation_dataset_holder.subset_size = cfg.trainer.num_gpus
                         else:
                             validation_dataset_holder.subset_size = cfg.dataset.validation_dataset.subset_size
                         validation_dataloader = validation_dataset_holder.get_dataloader()
                         validation_dataloader = accelerator.prepare(validation_dataloader)
+
                     param_keys = get_named_params_to_optimize(models).keys()
                     write_to_file(path=Path(cfg.output_dir, cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
                     match cfg.model.model_type:
@@ -384,18 +348,44 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                                 global_step=global_step,
                             )
 
-                    log_info(f"Finished validation at global step {global_step}, epoch {epoch}. Wandb URL: {cfg.wandb_url}. Took: {__import__('time').time() - validation_start_time:.2f} seconds")
+                    log_info(
+                        f"Finished validation at global step {global_step}, epoch {epoch}. Wandb URL: {cfg.wandb_url}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
+                    )
+
+                if cfg.model.unfreeze_unet_after_n_steps and global_step == cfg.model.unfreeze_unet_after_n_steps:
+                    log_warn(f"Unfreezing UNet at {global_step} steps")
+                    cfg.model.freeze_unet = False
+                    model.unet.requires_grad_(True)
+                    models.append(model.unet)
+                    del optimizer
+                    optimizer = optimizer_class(
+                        get_named_params_to_optimize(models).values(),
+                        lr=cfg.trainer.finetune_learning_rate,
+                        betas=(cfg.trainer.adam_beta1, cfg.trainer.adam_beta2),
+                        weight_decay=cfg.trainer.adam_weight_decay,
+                        eps=cfg.trainer.adam_epsilon,
+                    )
+                    del lr_scheduler
+                    lr_scheduler = get_scheduler(
+                        cfg.trainer.lr_scheduler,
+                        optimizer=optimizer,
+                        num_warmup_steps=cfg.trainer.lr_warmup_steps * cfg.trainer.num_gpus,
+                        num_training_steps=cfg.trainer.max_train_steps * cfg.trainer.num_gpus,
+                        num_cycles=cfg.trainer.lr_num_cycles,
+                        power=cfg.trainer.lr_power,
+                    )
+                    optimizer, lr_scheduler = accelerator.prepare(optimizer, lr_scheduler)
+                    summary(model)
 
                 avg_loss_per_global_step /= cfg.trainer.gradient_accumulation_steps
                 progress_bar.update(1)
                 global_step += 1
                 logs = {
                     "loss": avg_loss_per_global_step,
-                    "neti_loss": loss.detach().item(),
                     "lr": lr_scheduler.get_last_lr()[0],
                     f"gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
                     "examples_seen": global_step * total_batch_size,
-                    "examples_seen_one_gpu": examples_seen_one_gpu
+                    "examples_seen_one_gpu": examples_seen_one_gpu,
                 }
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
@@ -408,11 +398,11 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 log_info(f"Profiling finished at step: {global_step}")
                 break
 
-            # TODO: Something weird happens with webdataset:
-            # UserWarning: Length of IterableDataset <abc.WebDataset_Length object at 0x7f0748da4640> was reported to be 2 (when accessing len(dataloader)), but 3 samples have been fetched.
-            # if step >= len(train_dataloader) - 1:
-            #     log_info(f"Exited early at step {global_step}")
-            #     break
+        # TODO: Something weird happens with webdataset:
+        # UserWarning: Length of IterableDataset <abc.WebDataset_Length object at 0x7f0748da4640> was reported to be 2 (when accessing len(dataloader)), but 3 samples have been fetched.
+        # if step >= len(train_dataloader) - 1:
+        #     log_info(f"Exited early at step {global_step}")
+        #     break
 
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
@@ -421,11 +411,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             profiler.finish()
             exit()
 
-        match cfg.model.model_type:
-            case ModelType.CONTROLNET:
-                controlnet = accelerator.unwrap_model(controlnet)
-                controlnet.save_pretrained(cfg.output_dir)
-            case ModelType.BASE_MAPPER:
-                checkpoint_handler.save_model(model=model, accelerator=accelerator, save_name="last")
+        checkpoint(cfg, accelerator, global_step, model, checkpoint_handler)
 
     accelerator.end_training()

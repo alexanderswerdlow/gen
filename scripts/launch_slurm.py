@@ -1,4 +1,4 @@
-import autoroot
+from typing import Optional
 
 import os
 import random
@@ -6,16 +6,33 @@ import subprocess
 import sys
 from pathlib import Path
 
-import hydra
-import rich.syntax
-import rich.tree
 import submitit
-from omegaconf import DictConfig, OmegaConf, open_dict
 from gen import REPO_DIR
-from gen.configs.base import BaseConfig
-from gen.configs.slurm import SlurmConfig
 
-from gen.utils.logging_utils import log_info
+from dataclasses import dataclass
+from typing import Optional
+from rich.pretty import pprint
+
+@dataclass(kw_only=True)
+class SlurmConfig:
+    init_cmds: Optional[str] = None
+    output_dir: Optional[Path] = None
+    cmd: Optional[str] = None
+    program: str = "main.py"
+    use_accelerate: bool = True
+    job_name: str = "gen"
+    partition: str = "kate_reserved" # kate_reserved, deepaklong
+    time: str = "24:00:00"
+    gpus: int = 1
+    mem_gb: str = "48GB"
+    cpus_per_task: int = 8
+    n_processes: int = 1
+    n_nodes: int = 1
+    max_num_timeout: int = 5
+    use_deepspeed: bool = False
+    exclude: Optional[str] = None
+    constraint: str = "A100|6000ADA|A5500"
+    env_vars: Optional[dict[str, str]] = None
 
 def is_a5500_gpu():
     try:
@@ -45,9 +62,9 @@ def nvidia_smi_gpu_memory_stats():
                 gpu_key = f"gpu_{gpu_idx}_mem_used_gb"
                 out_dict[gpu_key] = int(mem_used.strip().split(" ")[0]) / 1024
     except FileNotFoundError:
-        log_info("Failed to find the 'nvidia-smi' executable for printing GPU stats")
+        print("Failed to find the 'nvidia-smi' executable for printing GPU stats")
     except subprocess.CalledProcessError as e:
-        log_info(f"nvidia-smi returned non zero error code: {e.returncode}")
+        print(f"nvidia-smi returned non zero error code: {e.returncode}")
 
     return out_dict
 
@@ -56,30 +73,17 @@ def get_nvidia_smi_gpu_memory_stats_str():
     return f"nvidia-smi stats: {nvidia_smi_gpu_memory_stats()}"
 
 
-def print_config(cfg: DictConfig):
-    style = "bright"
-    tree = rich.tree.Tree("CONFIG", style=style, guide_style=style)
-    fields = cfg.keys()
-    for field in fields:
-        branch = tree.add(field, style=style, guide_style=style)
-        config_section = cfg.get(field)
-        branch_content = str(config_section)
-        if isinstance(config_section, DictConfig):
-            branch_content = OmegaConf.to_yaml(config_section, resolve=True)
-        branch.add(rich.syntax.Syntax(branch_content, "yaml"))
-    rich.print(tree)
-
-
 DEEPSPEED_MULTINODE = "<is_deepspeed_multinode>"
 
 
-class Task:
-    def __init__(self, output_dir: Path, cfg: SlurmConfig):
-        self.output_dir = output_dir
+class Task(submitit.helpers.Checkpointable):
+    def __init__(self, cfg: SlurmConfig):
         self.cfg = cfg
 
-    def __call__(self):
-        print("Running task on slurm")
+    def __call__(self, *args, **kwargs):
+        print(f"Running task on slurm")
+        pprint(self.cfg)
+
         print("exporting PyTorch distributed environment variables")
         dist_env = submitit.helpers.TorchDistributedEnvironment()
         rng = random.Random(dist_env._job_env.job_id)
@@ -94,6 +98,9 @@ class Task:
                 #"NCCL_DEBUG": "info",
             }
         )
+
+        if self.cfg.env_vars is not None:
+            os.environ.update(**self.cfg.env_vars)
         
         if is_a5500_gpu():
             os.environ["NCCL_P2P_DISABLE"] = "1"
@@ -108,13 +115,14 @@ class Task:
         print("Running training script")
         print(f"Local rank {dist_env.local_rank}: {os.environ['CUDA_VISIBLE_DEVICES']=}")
         if "CUDA_VISIBLE_DEVICES" in os.environ:
+            print(f"Removing CUDA_VISIBLE_DEVICES: {os.environ['CUDA_VISIBLE_DEVICES']=}")
             os.environ.pop("CUDA_VISIBLE_DEVICES")
 
-        with open(Path(self.output_dir) / "env_vars.txt", "w") as file:
+        with open(Path(self.cfg.output_dir) / "env_vars.txt", "w") as file:
             for key, value in os.environ.items():
                 file.write(f"{key}={value}\n")
 
-        print_config(self.cfg)
+        print(self.cfg)
         print(get_nvidia_smi_gpu_memory_stats_str())
         output = subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE).stdout.decode("utf-8")
         print(output)
@@ -130,7 +138,8 @@ class Task:
         else:
             init_cmd = f"python"
 
-        cmd = f"{init_cmd} {self.cfg.program} {self.cfg.cmd}"
+        shell_init = f"{self.cfg.init_cmds} && " if self.cfg.init_cmds else ""
+        cmd = f"{shell_init}{init_cmd} {self.cfg.program} {self.cfg.cmd}"
 
         if self.cfg.n_nodes > 1:
             hostfile_dir = "hostfiles"
@@ -154,54 +163,53 @@ class Task:
         if exit_code != 0:
             raise RuntimeError(f"Command {cmd} failed with exit code {exit_code}")
 
-    def checkpoint(self):
-        print("checkpointing")
-        return submitit.helpers.DelayedSubmission(self)
+    def checkpoint(self, *args, **kwargs):
+        print("Checkpointing task on slurm")
+        print(args)
+        print(kwargs)
+        return submitit.helpers.DelayedSubmission(self, *args, **kwargs)
 
 
-@hydra.main(config_path=None, config_name="config", version_base=None)
-def main(cfg: BaseConfig):
+global_jobs = []
+
+def add_job(cfg: SlurmConfig):
     """
     This script uses submitit to execute a training run on a SLURM cluster. Although it takes a BaseConfig it only actually uses the SLURM submodule. The rest of the config is ignored.
     """
-    if cfg.output_dir is None:
-        with open_dict(cfg):
-            cfg.output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    cfg.cpus_per_task = cfg.cpus_per_task * cfg.gpus
+    cfg.mem_gb = f"{int(cfg.mem_gb[:-2]) * cfg.gpus}{cfg.mem_gb[-2:]}"
+    print(f"Autoscaling to {cfg.cpus_per_task} CPUs and {cfg.mem_gb}GB of memory")
 
-    with open_dict(cfg):
-        cfg.slurm.cpus_per_task = cfg.slurm.cpus_per_task * cfg.slurm.gpus
-        cfg.slurm.mem_gb = f"{int(cfg.slurm.mem_gb[:-2]) * cfg.slurm.gpus}{cfg.slurm.mem_gb[-2:]}"
-        print(f"Autoscaling to {cfg.slurm.cpus_per_task} CPUs and {cfg.slurm.mem_gb}GB of memory")
-
-    executor = submitit.AutoExecutor(folder=cfg.output_dir, max_num_timeout=cfg.slurm.max_num_timeout)
-
-    print_config(cfg.slurm)
+    executor = submitit.AutoExecutor(folder=cfg.output_dir, max_num_timeout=cfg.max_num_timeout)
 
     slurm_additional_parameters = {
-        "ntasks_per_node": cfg.slurm.n_processes,
-        "constraint": cfg.slurm.constraint,
+        "ntasks_per_node": cfg.n_processes,
+        "constraint": cfg.constraint,
     }
 
     print(f"SLURM additional parameters: {slurm_additional_parameters}")
     
-
     slurm_kwargs = {
-        "slurm_job_name": cfg.slurm.job_name,
-        "slurm_partition": cfg.slurm.partition,
-        "slurm_nodes": cfg.slurm.n_nodes,
+        "slurm_job_name": cfg.job_name,
+        "slurm_partition": cfg.partition,
+        "slurm_nodes": cfg.n_nodes,
         "slurm_additional_parameters": slurm_additional_parameters,
-        "slurm_cpus_per_task": cfg.slurm.cpus_per_task,
-        "slurm_time": cfg.slurm.time,
-        "slurm_exclude": cfg.slurm.exclude if cfg.slurm.exclude else "",
+        "slurm_cpus_per_task": cfg.cpus_per_task,
+        "slurm_time": cfg.time,
+        "slurm_exclude": cfg.exclude if cfg.exclude else "",
         "stderr_to_stdout": True,
-        "slurm_mem": cfg.slurm.mem_gb,
-        "slurm_gres": f"gpu:{cfg.slurm.gpus}",
+        "slurm_mem": cfg.mem_gb,
+        "slurm_gres": f"gpu:{cfg.gpus}",
     }
     executor.update_parameters(**slurm_kwargs)
 
-    task = Task(cfg.output_dir, cfg.slurm)
-    job = executor.submit(task)
-    submitit.helpers.monitor_jobs([job])
+    task = Task(cfg)
+    job = executor.submit(task, resume=False)
+    global_jobs.append(job)
+    return job
+
+def watch():
+    submitit.helpers.monitor_jobs(global_jobs)
 
 
 if __name__ == "__main__":

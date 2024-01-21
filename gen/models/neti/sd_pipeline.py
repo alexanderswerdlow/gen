@@ -26,9 +26,14 @@ def sd_pipeline_call(
     callback_steps: int = 1,
     cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     num_inference_steps: Optional[int] = None,
+    batched_cfg: bool = False,
 ):
     """Modification of the standard SD pipeline call to support NeTI embeddings passed with prompt_embeds argument."""
     log_info(f"Running SD pipeline with {num_inference_steps} inference steps.")
+
+    if batched_cfg:
+        log_warn("Using batched cfg, where we have a single forward pass for each timestep with bs=2. This may silently break things with the custom attention processor.")
+
     # 0. Default height and width to unet
     height = height or pipeline.unet.config.sample_size * pipeline.vae_scale_factor
     width = width or pipeline.unet.config.sample_size * pipeline.vae_scale_factor
@@ -90,8 +95,7 @@ def sd_pipeline_call(
     num_warmup_steps = len(timesteps) - num_inference_steps * pipeline.scheduler.order
     with pipeline.progress_bar(total=num_inference_steps) as progress_bar:
         for i, t in enumerate(timesteps):
-            # latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-            latent_model_input = latents
+            latent_model_input = torch.cat([latents] * 2) if (do_classifier_free_guidance and batched_cfg) else latents
             latent_model_input = pipeline.scheduler.scale_model_input(latent_model_input, t)
 
             ###############################################################
@@ -99,21 +103,19 @@ def sd_pipeline_call(
             ###############################################################
             embed = prompt_embeds[i] if type(prompt_embeds) == list else prompt_embeds
             if do_classifier_free_guidance:
-                # negative_prompt_embed = negative_prompt_embeds[i] if type(negative_prompt_embeds) == list else negative_prompt_embeds
-
-                # # log_warn("UNCOMMENT THIS FOR CFG")
-                # for k in embed.keys():
-                #     if "CONTEXT_TENSOR" in k:
-                #         embed[k] = torch.cat([negative_prompt_embed, embed[k]])
-                # noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred_uncond = pipeline.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=negative_prompt_embeds.repeat(num_images_per_prompt, 1, 1),
-                    cross_attention_kwargs=cross_attention_kwargs,
-                ).sample
-
-                remove_last_map()
+                if batched_cfg:
+                    negative_prompt_embed = negative_prompt_embeds[i] if type(negative_prompt_embeds) == list else negative_prompt_embeds
+                    for k in embed.keys():
+                        if "CONTEXT_TENSOR" in k:
+                            embed[k] = torch.cat([negative_prompt_embed, embed[k]])
+                else:
+                    noise_pred_uncond = pipeline.unet(
+                        latent_model_input,
+                        t,
+                        encoder_hidden_states=negative_prompt_embeds.repeat(num_images_per_prompt, 1, 1),
+                        cross_attention_kwargs=cross_attention_kwargs,
+                    ).sample
+                    remove_last_map()
 
             if isinstance(pipeline, StableDiffusionControlNetPipeline):
                 log_info("Running ControlNet inference.")
@@ -138,12 +140,17 @@ def sd_pipeline_call(
                     return_dict=False,
                 )[0]
             else:
-                noise_pred_text = pipeline.unet(
+                noise_pred_ = pipeline.unet(
                     latent_model_input,
                     t,
                     encoder_hidden_states=embed,
                     cross_attention_kwargs=cross_attention_kwargs,
                 ).sample
+
+                if batched_cfg:
+                    noise_pred_uncond, noise_pred_text = noise_pred_.chunk(2)
+                else:
+                    noise_pred_text = noise_pred_
 
             # perform guidance
             if do_classifier_free_guidance:
@@ -162,7 +169,7 @@ def sd_pipeline_call(
         image = latents
     elif output_type == "pil":
         # 8. Post-processing
-        image = pipeline.decode_latents(latents)
+        image = pipeline.decode_latents(latents.to(pipeline.vae.dtype))
         # 9. Run safety checker (Disabled)
         # 10. Convert to PIL
         image = pipeline.numpy_to_pil(image)

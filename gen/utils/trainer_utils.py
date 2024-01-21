@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import wraps
 
 from accelerate import Accelerator
+from accelerate.state import PartialState
 from accelerate.utils import extract_model_from_parallel
 
 from gen.configs.base import BaseConfig
@@ -14,7 +15,7 @@ from gen.utils.logging_utils import log_info
 def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step: int):
     # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
     if cfg.trainer.checkpoints_total_limit is not None:
-        checkpoints = os.listdir(cfg.output_dir)
+        checkpoints = os.listdir(cfg.checkpoint_dir)
         checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
         checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
 
@@ -27,11 +28,11 @@ def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step:
             log_info(f"removing checkpoints: {', '.join(removing_checkpoints)}")
 
             for removing_checkpoint in removing_checkpoints:
-                removing_checkpoint = os.path.join(cfg.output_dir, removing_checkpoint)
+                removing_checkpoint = os.path.join(cfg.checkpoint_dir, removing_checkpoint)
                 shutil.rmtree(removing_checkpoint)
 
-    save_path = os.path.join(cfg.output_dir, f"checkpoint-{global_step}")
-    accelerator.save_state(save_path)
+    save_path = cfg.checkpoint_dir / f"checkpoint-{global_step}"
+    accelerator.save_state(save_path, safe_serialization=False)
     log_info(f"Saved state to {save_path}")
 
 
@@ -77,14 +78,20 @@ def every_n_epochs(func, *wrapper_args, **wrapper_kwargs):
     return wrapper
 
 
-def custom_ddp_unwrap(model):
-    return extract_model_from_parallel(model)
-
-    # from torch.nn.parallel import DistributedDataParallel
-    # if isinstance(model, DistributedDataParallel):
-    #     return model.module
-    # else:
-    #     return model
+def unwrap(model):
+    """
+    In DDP/torch.compile and some other situations, our nn.Module is wrapped so to access class attributes we often need to unwrap it.
+    """
+    # equiv to. unwrap
+    if PartialState._shared_state == {}:
+        # Accelerate is initialized
+        return extract_model_from_parallel(model)
+    else:
+        from torch.nn.parallel import DistributedDataParallel
+        if isinstance(model, DistributedDataParallel):
+            return model.module
+        else:
+            return model
 
 
 if __name__ == "__main__":

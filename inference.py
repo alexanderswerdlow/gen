@@ -9,7 +9,11 @@ import torch
 import wandb
 from accelerate import Accelerator
 from accelerate.utils import PrecisionType
-from diffusers import AutoencoderKL, DPMSolverMultistepScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
+from accelerate.utils import gather as accelerate_gather
+from accelerate.utils import gather_object as accelerate_gather_object
+from diffusers import (AutoencoderKL, DPMSolverMultistepScheduler,
+                       StableDiffusionControlNetPipeline,
+                       StableDiffusionPipeline, UNet2DConditionModel)
 from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
 from tqdm import tqdm
@@ -24,16 +28,12 @@ from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.sd_pipeline import sd_pipeline_call
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.attention_visualization_utils import (
-    cross_attn_init,
-    get_all_net_attn_maps,
-    retrieve_attn_maps_per_timestep,
-    register_cross_attention_hook,
-    unregister_cross_attention_hook,
-    resize_net_attn_map,
-)
+    cross_attn_init, get_all_net_attn_maps, register_cross_attention_hook,
+    resize_net_attn_map, retrieve_attn_maps_per_timestep,
+    unregister_cross_attention_hook)
 from gen.utils.decoupled_utils import get_rank, is_main_process
 from gen.utils.logging_utils import log_info, log_warn
-from accelerate.utils import gather_object as accelerate_gather_object, gather as accelerate_gather
+from gen.utils.trainer_utils import unwrap
 
 
 def gather(device: torch.device, img: Union[Im, Iterable[Im]], gather_different: bool = False):
@@ -153,12 +153,13 @@ def run_inference_dataloader(
 
     log_info(f"Running inference. Dataloder size: {len(dataloader)}")
     for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
+        from image_utils import Im
         log_info(f"Generating with batch {i}")
         orig_input_ids = batch["input_ids"].clone()
 
         images = []
         orig_image = Im((batch["gen_pixel_values"].squeeze(0) + 1) / 2)
-        gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
+        gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(text="GT")
 
         batch["input_ids"] = orig_input_ids.clone()
         prompt_image, input_prompt, prompt_embeds = run_inference_batch(
@@ -171,7 +172,7 @@ def run_inference_dataloader(
         )
 
         full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
-        images.append(Im.concat_vertical(prompt_image, full_seg))
+        images.append(Im.concat_vertical(prompt_image, full_seg).write_text(text="Gen"))
 
         if inference_cfg.visualize_attention_map:
             desired_res = (64, 64)
@@ -292,6 +293,7 @@ def run_inference_dataloader(
         save_folder=output_path,
         name="validation",
         global_step=(global_step if global_step is not None else i),
+        spacing=25,
     )
 
     if inference_cfg.visualize_attention_map:
@@ -319,7 +321,7 @@ def run_inference_batch(
 ) -> Image.Image:
     assert num_images_per_prompt == 1, "Only num_images_per_prompt=1 is supported for now"
     if visualize_attention_map:
-        cross_attn_init()
+        # cross_attn_init()
         pipeline.unet = register_cross_attention_hook(pipeline.unet)
 
     negative_prompt_embeds = None
@@ -347,6 +349,7 @@ def run_inference_batch(
         generator=generator,
         num_images_per_prompt=num_images_per_prompt,
         guidance_scale=inference_cfg.guidance_scale,
+        batched_cfg=inference_cfg.batched_cfg,
     ).images[0]
 
     if visualize_attention_map:
@@ -370,7 +373,7 @@ def load_stable_diffusion_model(
     cls = StableDiffusionControlNetPipeline if cfg.model.controlnet else StableDiffusionPipeline
     pretrained_model_name_or_path = cfg.model.pretrained_model_name_or_path
 
-    kwargs = dict(pretrained_model_name_or_path=pretrained_model_name_or_path, torch_dtype=torch_dtype, unet=unet, vae=vae)
+    kwargs = dict(pretrained_model_name_or_path=pretrained_model_name_or_path, torch_dtype=torch_dtype, unet=unwrap(unet), vae=vae)
 
     if cfg.model.controlnet:
         kwargs["controlnet"] = model.controlnet
@@ -398,15 +401,18 @@ def load_stable_diffusion_model(
     pipeline.scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
     pipeline.unet.set_attn_processor(XTIAttenProc())
 
-    accelerator.unwrap_model(text_encoder).eval()
+    unwrap(text_encoder).eval()
     if cfg.model.controlnet:
-        accelerator.unwrap_model(pipeline.controlnet).set_attn_processor(XTIAttenProc())
-        accelerator.unwrap_model(pipeline.controlnet).eval()
+        unwrap(pipeline.controlnet).set_attn_processor(XTIAttenProc())
+        unwrap(pipeline.controlnet).eval()
+
+    if not cfg.model.freeze_unet:
+        unwrap(pipeline.unet).eval()
 
     return pipeline
 
 
-def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], global_step: int, name: str, save_folder: Optional[Path] = None):
+def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], global_step: int, name: str, save_folder: Optional[Path] = None, spacing: int = 15):
     save_folder.parent.mkdir(exist_ok=True)
 
     if len(images) == 1:
@@ -422,4 +428,4 @@ def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], gl
             np_images = np.stack([np.asarray(img) for img in images])
             tracker.writer.add_images(name, np_images, global_step, dataformats="NHWC")
         if tracker.name == "wandb":
-            tracker.log({name: wandb.Image(Im.concat_horizontal(images, spacing=15).pil)}, step=global_step)
+            tracker.log({name: wandb.Image(Im.concat_horizontal(images, spacing=spacing).pil)}, step=global_step)

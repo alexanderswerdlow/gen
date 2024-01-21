@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 from torch.utils.data import DataLoader, RandomSampler, Subset
 
-from gen.utils.logging_utils import log_info
+from gen.utils.logging_utils import log_info, log_warn
 
 
 class Split(Enum):
@@ -23,7 +23,8 @@ class AbstractDataset(ABC):
             batch_size: int = 2, 
             shuffle: bool = True, 
             subset_size: Optional[int] = None,
-            random_subset: bool = True
+            random_subset: bool = True,
+            drop_last: bool = True,
         ):
         from gen.configs import BaseConfig
         self.cfg: BaseConfig = cfg
@@ -33,6 +34,7 @@ class AbstractDataset(ABC):
         self.shuffle = shuffle
         self.subset_size = subset_size
         self.random_subset = random_subset # Either get random indices or a determinstic, evenly spaced subset
+        self.drop_last = drop_last
 
         # Subclasses may control these properties inside get_dataset
         self.allow_shuffle = True
@@ -65,6 +67,10 @@ class AbstractDataset(ABC):
                 dataset = Subset(orig_dataset, idxs)
         else: 
             dataset = orig_dataset
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=self.allow_shuffle and self.shuffle, collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=True)
-        log_info(f"Original dataset size: {len(orig_dataset)}, Final dataset size: {len(dataset)}, Dataloader size: {len(dataloader)}")
+
+        if self.drop_last:
+            log_warn("Dropping last batch if it exists")
+
+        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=self.allow_shuffle and self.shuffle, collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=True, drop_last=self.drop_last)
+        log_info(f"Dataset size: {len(orig_dataset)}, Dataset size after subset: {len(dataset)}, Combined dataloader size (all GPUs): {len(dataloader)}")
         return dataloader
