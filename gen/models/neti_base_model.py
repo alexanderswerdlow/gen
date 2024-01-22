@@ -284,7 +284,7 @@ class BaseMapper(nn.Module):
                     layer_hidden_state_bypass = layer_hidden_state_bypass[0].to(dtype=self.weight_dtype)
                     _hs[f"CONTEXT_TENSOR_BYPASS_{layer_idx}"] = layer_hidden_state_bypass.repeat(num_images_per_prompt, 1, 1)
             hidden_states_per_timestep.append(_hs)
-        return hidden_states_per_timestep, input_prompt
+        return dict(prompt_embeds=hidden_states_per_timestep), input_prompt
 
     def get_hidden_state(self, batch, dtype, device):
         bs: int = batch["disc_pixel_values"].shape[0]
@@ -416,9 +416,27 @@ class BaseMapper(nn.Module):
 
         return text_encoder_dict, input_prompt
 
-    def forward(self, batch, noisy_latents, timesteps, weight_dtype):
+    def forward(self, batch: dict):
+        batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
+
+        # Convert images to latent space
+        latents = self.vae.encode(batch["gen_pixel_values"].to(dtype=self.weight_dtype)).latent_dist.sample()
+        latents = latents * self.vae.config.scaling_factor
+
+        # Sample noise that we'll add to the latents
+        noise = torch.randn_like(latents)
+        bsz = latents.shape[0]
+        # Sample a random timestep for each image
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+        timesteps = timesteps.long()
+
+        # Add noise to the latents according to the noise magnitude at each timestep
+        # (this is the forward diffusion process)
+        noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+
+ 
         text_encoder_dict, _ = self.get_hidden_state(
-            batch, timesteps, device=noisy_latents.device, dtype=weight_dtype, disable_conditioning=self.cfg.model.enable_neti
+            batch, timesteps, device=noisy_latents.device, dtype=self.weight_dtype, disable_conditioning=self.cfg.model.enable_neti
         )
 
         encoder_hidden_states = self.get_neti_text_embedding_for_batch(
@@ -427,4 +445,13 @@ class BaseMapper(nn.Module):
 
         model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample
 
-        return model_pred
+        # Get the target for loss depending on the prediction type
+        if self.noise_scheduler.config.prediction_type == "epsilon":
+            target = noise
+        elif self.noise_scheduler.config.prediction_type == "v_prediction":
+            target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
+        else:
+            raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
+
+        loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+        return loss

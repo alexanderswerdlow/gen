@@ -94,15 +94,6 @@ def get_experiments():
     )
 
     mode_store(
-        name="controlnet",
-        model=dict(controlnet=True),
-        trainer=dict(learning_rate=5e-6, scale_lr_batch_size=True),
-        dataset=dict(
-            train_dataset=dict(batch_size=4),
-        ),
-    )
-
-    mode_store(
         name="neti_training",
         trainer=dict(
             learning_rate=1e-3,
@@ -151,15 +142,15 @@ def get_experiments():
     )
 
     mode_store(
-        name="lora_disable_timestep_layer_encoding",
-        model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_mapper=False, freeze_unet=True, lora_unet=True, use_timestep_layer_encoding=False, use_custom_position_encoding=True, output_bypass=False),
+        name="new_model",
+        model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_mapper=False, freeze_unet=True, lora_unet=True),
         inference=(dict(use_custom_pipeline=False)),
     )
 
     mode_store(
-        name="lora_new_model",
-        model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_mapper=False, freeze_unet=True, lora_unet=True, use_timestep_layer_encoding=False),
-        inference=(dict(use_custom_pipeline=False)),
+        name="controlnet",
+        model=dict(controlnet=True),
+        trainer=dict(learning_rate=5e-6, scale_lr_batch_size=True),
     )
 
     mode_store(

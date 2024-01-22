@@ -19,7 +19,7 @@ from transformers.models.clip.modeling_clip import CLIPTextModel
 from gen.utils.encoder_utils import ClipFeatureExtractor, TimmModel, BaseModel
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import unwrap
-from gen.models.utils import _init_weights, find_true_indices_batched
+from gen.models.utils import Trainable, _init_weights, find_true_indices_batched
 from gen.models.conditioning_models import CrossAttn
 from jaxtyping import Float
 from torch import Tensor
@@ -36,10 +36,12 @@ class Mapper(nn.Module):
         self.cross_attn = CrossAttn(cfg=cfg, input_dim=self.cfg.model.cross_attn_dim, output_dim=cfg.model.token_embedding_dim)
         self.apply(_init_weights)
 
-class BaseMapper(nn.Module):
+class BaseMapper(Trainable):
     def __init__(self, cfg: BaseConfig, init_modules: bool = True):
         super().__init__()
         self.cfg: BaseConfig = cfg
+        self.weight_dtype = getattr(torch, cfg.trainer.dtype.split(".")[-1])
+        self.module_device = cfg.trainer.device
         if init_modules:
             self.initialize_diffusers_models()
 
@@ -74,12 +76,11 @@ class BaseMapper(nn.Module):
         if self.cfg.model.controlnet:
             self.controlnet: ControlNetModel = ControlNetModel.from_unet(self.unet, conditioning_channels=2)
 
-    def add_adapters(self, dtype: torch.dtype, device: torch.device):
-        self.weight_dtype = dtype
-
-        self.vae.to(device=device, dtype=dtype)
-        self.unet.to(device=device, dtype=dtype)
-        self.text_encoder.to(device=device, dtype=dtype)
+    def add_adapters(self):
+        self.vae.to(device=self.module_device, dtype=self.weight_dtype)
+        self.unet.to(device=self.module_device, dtype=self.weight_dtype)
+        self.text_encoder.to(device=self.module_device, dtype=self.weight_dtype)
+        if self.cfg.model.controlnet: self.controlnet.to(device=self.module_device, dtype=self.weight_dtype)
 
         self.set_training_mode(set_grad=True)
 
@@ -179,7 +180,11 @@ class BaseMapper(nn.Module):
         hidden_state = self.get_hidden_state(batch, add_mask_conditioning=disable_conditioning is False)
         bs = batch["disc_pixel_values"].shape[0]
         input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
-        return hidden_state, input_prompt
+        pipeline_kwargs = dict(prompt_embeds=hidden_state)
+        if self.cfg.model.controlnet:
+            pipeline_kwargs["image"] = self.get_controlnet_conditioning(batch)
+
+        return pipeline_kwargs, input_prompt
     
     def check_add_segmentation(self, batch: dict):
         """
@@ -348,12 +353,32 @@ class BaseMapper(nn.Module):
             encoder_hidden_states = self.add_mask_conditioning(batch, encoder_hidden_states)
 
         return encoder_hidden_states
+    
+    def get_controlnet_conditioning(self, batch):
+        return batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=self.weight_dtype)
 
-    def forward(self, batch, noisy_latents, timesteps, weight_dtype):
+    def forward(self, batch: dict):
+        batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
+
+        # Convert images to latent space
+        latents = self.vae.encode(batch["gen_pixel_values"].to(dtype=self.weight_dtype)).latent_dist.sample()
+        latents = latents * self.vae.config.scaling_factor
+
+        # Sample noise that we'll add to the latents
+        noise = torch.randn_like(latents)
+        bsz = latents.shape[0]
+        # Sample a random timestep for each image
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+        timesteps = timesteps.long()
+
+        # Add noise to the latents according to the noise magnitude at each timestep
+        # (this is the forward diffusion process)
+        noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+        
         encoder_hidden_states = self.get_hidden_state(batch)
 
         if self.cfg.model.controlnet:
-            controlnet_image = batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=weight_dtype)
+            controlnet_image = self.get_controlnet_conditioning(batch)
             down_block_res_samples, mid_block_res_sample = self.controlnet(
                 noisy_latents,
                 timesteps,
@@ -366,13 +391,23 @@ class BaseMapper(nn.Module):
             model_pred = self.unet(
                 noisy_latents,
                 timesteps,
-                encoder_hidden_states=encoder_hidden_states,
-                down_block_additional_residuals=[sample.to(dtype=weight_dtype) for sample in down_block_res_samples],
-                mid_block_additional_residual=mid_block_res_sample.to(dtype=weight_dtype),
+                encoder_hidden_states=encoder_hidden_states.to(torch.float32),
+                down_block_additional_residuals=[sample.to(dtype=self.weight_dtype) for sample in down_block_res_samples],
+                mid_block_additional_residual=mid_block_res_sample.to(dtype=self.weight_dtype),
             ).sample
         else:
             # Predict the noise residual
             # TODO: We shouldn't need to cast to FP32 here
             model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states.to(torch.float32)).sample
 
-        return model_pred
+        # Get the target for loss depending on the prediction type
+        if self.noise_scheduler.config.prediction_type == "epsilon":
+            target = noise
+        elif self.noise_scheduler.config.prediction_type == "v_prediction":
+            target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
+        else:
+            raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
+
+        loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+        return loss

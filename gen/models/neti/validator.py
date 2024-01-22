@@ -20,20 +20,16 @@ class ValidationHandler:
         accelerator: Accelerator,
         validation_dataloader: torch.utils.data.DataLoader,
         model: BaseMapper,
-        tokenizer: CLIPTokenizer,
-        text_encoder: NeTICLIPTextModel,
-        unet: UNet2DConditionModel,
-        vae: AutoencoderKL,
         global_step: int,
     ):
         """Runs inference during our training scheme."""
         pipeline = load_stable_diffusion_model(
             cfg=self.cfg,
             accelerator=accelerator,
-            tokenizer=tokenizer,
-            text_encoder=text_encoder,
-            unet=unet,
-            vae=vae,
+            tokenizer=model.tokenizer,
+            text_encoder=model.text_encoder,
+            unet=model.unet,
+            vae=model.vae,
             model=model,
             torch_dtype=self.weight_dtype,
         )

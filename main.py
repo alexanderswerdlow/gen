@@ -160,6 +160,15 @@ def main(cfg: BaseConfig):
     assert accelerator.num_processes == num_gpus
     cfg.trainer.num_gpus = accelerator.num_processes
 
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
+
+    cfg.trainer.dtype = str(weight_dtype)
+    cfg.trainer.device = accelerator.device
+
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if is_main_process():

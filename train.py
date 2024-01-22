@@ -71,65 +71,17 @@ def checkpoint(cfg: BaseConfig, accelerator: Accelerator, global_step: int, mode
         handle_checkpointing(cfg, accelerator, global_step)
 
 
-def diffusers_forward(
-    cfg: BaseConfig,
-    batch: dict,
-    weight_dtype: torch.dtype,
-    model: BaseMapper,
-    noise_scheduler: nn.Module,
-    vae: nn.Module,
-):
-    batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
-
-    # Convert images to latent space
-    latents = vae.encode(batch["gen_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-    latents = latents * vae.config.scaling_factor
-
-    # Sample noise that we'll add to the latents
-    noise = torch.randn_like(latents)
-    bsz = latents.shape[0]
-    # Sample a random timestep for each image
-    timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
-    timesteps = timesteps.long()
-
-    # Add noise to the latents according to the noise magnitude at each timestep
-    # (this is the forward diffusion process)
-    noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-    match cfg.model.model_type:
-        case ModelType.BASE_MAPPER:
-            model_pred = model(batch, noisy_latents, timesteps, weight_dtype)
-
-    # Get the target for loss depending on the prediction type
-    if noise_scheduler.config.prediction_type == "epsilon":
-        target = noise
-    elif noise_scheduler.config.prediction_type == "v_prediction":
-        target = noise_scheduler.get_velocity(latents, noise, timesteps)
-    else:
-        raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
-
-    loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-    return loss
-
-
 def train(cfg: BaseConfig, accelerator: Accelerator):
     # TODO: Define a better interface for different models once we get a better idea of the requires inputs/outputs
     # Right now we just conditionally call methods in the respective files based on the model_type enum
     assert is_xformers_available()
 
-    # For mixed precision training we cast the text_encoder and vae weights to half-precision
-    # as these models are only used for inference, keeping weights in full precision is not required.
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
-
+    weight_dtype = getattr(torch, cfg.trainer.dtype.split(".")[-1])
     models, models_to_accumulate_only = [], []
     match cfg.model.model_type:
         case ModelType.CONTROLNET:
             tokenizer, noise_scheduler, text_encoder, vae, unet, controlnet = get_controlnet_model(cfg, accelerator)
-            vae, unet, text_encoder, controlnet = pre_train_setup_controlnet(weight_dtype, cfg, accelerator, vae, unet, text_encoder, controlnet)
+            vae, unet, text_encoder, controlnet = pre_train_setup_controlnet(cfg.trainer.dtype, cfg, accelerator, vae, unet, text_encoder, controlnet)
             models = (controlnet,)
             if is_main_process():
                 summary(controlnet)
@@ -139,7 +91,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             assert cfg.model.model_type == ModelType.BASE_MAPPER
             if cfg.model.per_timestep_conditioning:
                 model = OriginalBaseMapper(cfg)
-                model.prepare_for_training(weight_dtype, accelerator)
+                model.prepare_for_training(cfg.trainer.dtype, accelerator)
 
                 if cfg.model.freeze_text_encoder:
                     models.append(unwrap(model.text_encoder).text_model.embeddings.mapper)
@@ -155,7 +107,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 summary(unwrap(model.text_encoder).text_model.embeddings, col_names=("trainable", "num_params"), verbose=2)
             else:
                 model = BaseMapper(cfg)
-                model.add_adapters(dtype=weight_dtype, device=accelerator.device)
+                model.add_adapters()
                 models.append(model)
                 model = accelerator.prepare(model)
 
@@ -163,7 +115,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.checkpoint_dir)
             validator: ValidationHandler = ValidationHandler(cfg=cfg, weights_dtype=weight_dtype)
             
-            noise_scheduler, vae, unet, text_encoder = model.noise_scheduler, model.vae, model.unet, model.text_encoder
             if is_main_process():
                 summary(model, col_names=("trainable", "num_params"), depth=3)
 
@@ -307,14 +258,9 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                     epoch=epoch,
                 )
 
-                loss = diffusers_forward(
-                    cfg=cfg,
-                    batch=batch,
-                    weight_dtype=weight_dtype,
-                    model=model,
-                    noise_scheduler=noise_scheduler,
-                    vae=vae,
-                )
+                match cfg.model.model_type:
+                    case ModelType.BASE_MAPPER:
+                        loss = model(batch)
 
                 true_step += 1
                 avg_loss_per_global_step += loss.detach().item()  # Only on the main process to avoid syncing
@@ -355,11 +301,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                             validator.infer(
                                 accelerator=accelerator,
                                 validation_dataloader=validation_dataloader,
-                                model=model,
-                                tokenizer=tokenizer,
-                                text_encoder=text_encoder,
-                                unet=unet,
-                                vae=vae,
+                                model=unwrap(model),
                                 global_step=global_step,
                             )
                     accelerator.free_memory()

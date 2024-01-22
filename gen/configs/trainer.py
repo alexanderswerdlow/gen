@@ -5,7 +5,7 @@ from accelerate.utils import PrecisionType
 from accelerate.utils.dataclasses import DynamoBackend, LoggerType
 
 from gen.configs.utils import auto_store
-
+import torch
 
 @dataclass
 class TrainerConfig:
@@ -59,6 +59,8 @@ class TrainerConfig:
 
     # Set in code
     num_gpus: Optional[int] = None
+    dtype: Optional[str] = None
+    device: Optional[str] = None
 
 
 auto_store(TrainerConfig, name="base")
