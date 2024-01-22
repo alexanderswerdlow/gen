@@ -65,3 +65,32 @@ def diffusers_eval(
     unwrap(model.text_encoder).text_model.embeddings.mapper.train()
     unwrap(model.text_encoder).train()
     return avg_loss
+
+def viz():
+    from image_utils import Im, calculate_principal_components, get_layered_image_from_binary_mask, pca
+
+    principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]).float())
+    bs_ = clip_feature_map.shape[1]
+    dim_ = clip_feature_map.shape[2]
+    outmap = (
+        pca(
+            clip_feature_map[1:, ...].float().permute(1, 2, 0).reshape(bs_, dim_, 16, 16).permute(0, 2, 3, 1).reshape(-1, dim_).float(),
+            principal_components=principal_components,
+        )
+        .reshape(bs_, 16, 16, 3)
+        .permute(0, 3, 1, 2)
+    )
+    outmap_min, _ = torch.min(outmap, dim=1, keepdim=True)
+    outmap_max, _ = torch.max(outmap, dim=1, keepdim=True)
+    outmap = (outmap - outmap_min) / (outmap_max - outmap_min)
+    Im(outmap).save("pca")
+    sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c")
+    Im(sam_input).save("rgb")
+    Im(get_layered_image_from_binary_mask(original.permute(1, 2, 0))).save("masks")
+
+# viz()
+
+        # wandb.define_metric("true_step")
+        # wandb.define_metric("loss_per_true_step", step_metric="true_step")
+# if is_main_process():
+#     wandb.log({"loss_per_true_step": loss.detach().item(), "true_step": true_step,}, step=global_step)

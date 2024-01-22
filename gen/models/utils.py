@@ -4,6 +4,14 @@ import torch.nn.functional as F
 import torch
 import math
 
+def _init_weights(m):
+    initializer_range=0.02
+    if isinstance(m, nn.Linear):
+        nn.init.normal_(m.weight, std=initializer_range)
+        if isinstance(m, nn.Linear) and m.bias is not None:
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.Embedding):
+        nn.init.normal_(m.weight, std=initializer_range)
 
 class SinusoidalPosEmb(nn.Module):
     def __init__(self, dim, scale: Optional[float] = None):  #  0.0001
@@ -70,8 +78,26 @@ class FourierPositionalEncodingNDims(nn.Module):
         return v
 
 
+def find_true_indices_batched(original, dh, dw):
+    # Get dimensions
+    masks, h, w = original.shape
+    # dh, dw, d = downscaled.shape
+    
+    # Reshape and unfold to align with the downscaled dimensions
+    reshaped = original.unfold(1, h // dh, h // dh).unfold(2, w // dw, w // dw)
+    reshaped = reshaped.reshape(masks, dh, dw, -1)
+
+    # Check for any True values in the corresponding blocks
+    result = reshaped.any(dim=3)
+
+    # Get indices where result is True
+    # indices = [torch.nonzero(r, as_tuple=False) for r in result]
+
+    return result
+
 if __name__ == "__main__":
     x = torch.rand(100)
     pos_emb = SinusoidalPosEmb(512)
     y = pos_emb(x)
     print(y.shape)
+

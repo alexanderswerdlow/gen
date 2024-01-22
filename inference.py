@@ -34,7 +34,7 @@ from gen.utils.attention_visualization_utils import (
 from gen.utils.decoupled_utils import get_rank, is_main_process
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import unwrap
-
+from diffusers.utils.logging import disable_progress_bar
 
 def gather(device: torch.device, img: Union[Im, Iterable[Im]], gather_different: bool = False):
     if gather_different:
@@ -120,7 +120,7 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
         pipeline.unet.enable_xformers_memory_efficient_attention()
     model.unet.set_attn_processor(XTIAttenProc())
 
-    model.prepare_for_training(torch_dtype, accelerator, bypass_dtype_check=True)
+    model.add_adapters(torch_dtype, accelerator, bypass_dtype_check=True)
 
     validation_dataloader = hydra.utils.instantiate(train_cfg.dataset.validation_dataset, _recursive_=False)(
         cfg=inference_cfg, split=Split.VALIDATION, tokenizer=pipeline.tokenizer, accelerator=accelerator
@@ -388,6 +388,8 @@ def load_stable_diffusion_model(
 ) -> Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline]:
     """Loads SD model given the current text encoder and our mapper."""
     assert not cfg.model.controlnet or hasattr(model, "controlnet"), "You must pass a controlnet model to use controlnet."
+
+    disable_progress_bar()
     cls = StableDiffusionControlNetPipeline if cfg.model.controlnet else StableDiffusionPipeline
     pretrained_model_name_or_path = cfg.model.pretrained_model_name_or_path
 
@@ -407,25 +409,20 @@ def load_stable_diffusion_model(
         )
         text_encoder.text_model.set_mapper(mapper=model, cfg=cfg)
 
+    if cfg.model.per_timestep_conditioning:
+        unwrap(text_encoder).eval()
+        if not cfg.model.freeze_unet:
+            unwrap(pipeline.unet).eval()
+    else:
+        model.set_inference_mode()
+
     pipeline = cls.from_pretrained(**kwargs)
     pipeline = pipeline.to(accelerator.device)
-
-    # placeholder_token, placeholder_token_id = CheckpointHandler.load_learned_embed_in_clip(
-    #     learned_embeds_path=learned_embeds_path, text_encoder=text_encoder, tokenizer=tokenizer
-    # )
-
+    
     pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
     pipeline.set_progress_bar_config(disable=True)
     pipeline.scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
     pipeline.unet.set_attn_processor(XTIAttenProc())
-
-    unwrap(text_encoder).eval()
-    if cfg.model.controlnet:
-        unwrap(pipeline.controlnet).set_attn_processor(XTIAttenProc())
-        unwrap(pipeline.controlnet).eval()
-
-    if not cfg.model.freeze_unet:
-        unwrap(pipeline.unet).eval()
 
     return pipeline
 

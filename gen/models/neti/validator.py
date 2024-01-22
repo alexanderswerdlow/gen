@@ -50,4 +50,4 @@ class ValidationHandler:
 
         del pipeline
         torch.cuda.empty_cache()
-        model.prepare_for_inference()
+        model.set_training_mode()

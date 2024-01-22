@@ -19,9 +19,11 @@ class ModelType(Enum):
 @dataclass
 class ModelConfig:
     name: ClassVar[str] = "model"
+
     # pretrained_model_name_or_path: Optional[str] = "stabilityai/stable-diffusion-2-1"
     # token_embedding_dim: int = 1024
     # resolution: int = 768
+
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     token_embedding_dim: int = 768
     resolution: int = 512
@@ -30,60 +32,52 @@ class ModelConfig:
     variant: Optional[str] = None
     model_type: Optional[ModelType] = None
 
-    # Whether to use our Nested Dropout technique
-    use_nested_dropout: bool = True
-    # Probability to apply nested dropout during training
-    nested_dropout_prob: float = 0.5
-    # Whether to normalize the norm of the mapper's output vector
-    normalize_mapper_output: bool = True
-    # Target norm for the mapper's output vector
-    target_norm: Optional[float] = None
-    # Whether to use positional encoding over the input to the mapper
-    use_positional_encoding: bool = True
-    # Sigmas used for computing positional encoding
-    pe_sigmas: Dict[str, float] = field(default_factory=lambda: {"sigma_t": 0.03, "sigma_l": 2.0})
-    # Number of time anchors for computing our positional encodings
-    num_pe_time_anchors: int = 10
-    # Whether to output the textual bypass vector
-    output_bypass: bool = True
-
     model_type: ModelType = ModelType.BASE_MAPPER
-    placeholder_token: str = "android"
-    placeholder_token_id: Optional[int] = None
-    super_category_token: str = "object"
 
+    controlnet: bool = False
     freeze_unet: bool = True
     lora_unet: bool = False
     freeze_text_encoder: bool = True
     freeze_clip: bool = True
-    freeze_neti_mapper: bool = False
     unfreeze_last_n_clip_layers: Optional[int] = None
+    unfreeze_unet_after_n_steps: Optional[int] = None
 
-    mask_cross_attn: bool = True
     dropout_masks: Optional[float] = None
-    controlnet: bool = False
     per_timestep_conditioning: bool = True
     
-    enable_norm_scale: bool = True
     enable_neti: bool = False
-    cross_attn_residual: bool = True
     use_dataset_segmentation: bool = True
+    cross_attn_dim: int = 1024
+    
+    decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
+    encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
 
-    use_custom_position_encoding: bool = False # Whether to use original the NeTI mapper or our custom T+L mapper
-    use_timestep_layer_encoding: bool = True # Whether to use T+L in our custom mapper, otherwise just a learned emb
 
+
+
+    # NeTI Specific Configs below
+    placeholder_token: str = "android"
+    placeholder_token_id: Optional[int] = None
+    super_category_token: str = "object"
+    mask_cross_attn: bool = True
     encode_token_without_tl: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
     use_cls_token_projected: bool = False # These define where to get the single token
     use_cls_token_final_layer: bool = False
     use_cls_token_mean: bool = False
     tmp_revert_to_neti_logic: bool = False
-
-    cross_attn_dim: int = 1024
-
-    unfreeze_unet_after_n_steps: Optional[int] = None
-
-    decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
-    encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
+    use_custom_position_encoding: bool = False # Whether to use original the NeTI mapper or our custom T+L mapper
+    use_timestep_layer_encoding: bool = True # Whether to use T+L in our custom mapper, otherwise just a learned emb
+    enable_norm_scale: bool = True
+    cross_attn_residual: bool = True
+    freeze_mapper: bool = False
+    use_nested_dropout: bool = True # Whether to use our Nested Dropout technique
+    nested_dropout_prob: float = 0.5 # Probability to apply nested dropout during training
+    normalize_mapper_output: bool = True # Whether to normalize the norm of the mapper's output vector
+    target_norm: Optional[float] = None # Target norm for the mapper's output vector
+    use_positional_encoding: bool = True # Whether to use positional encoding over the input to the mapper
+    pe_sigmas: Dict[str, float] = field(default_factory=lambda: {"sigma_t": 0.03, "sigma_l": 2.0}) # Sigmas used for computing positional encoding
+    num_pe_time_anchors: int = 10 # Number of time anchors for computing our positional encodings
+    output_bypass: bool = True # Whether to output the textual bypass vector
 
 
 @dataclass

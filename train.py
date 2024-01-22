@@ -24,6 +24,7 @@ from tqdm.auto import tqdm
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
+from gen.models.neti_base_model import BaseMapper as OriginalBaseMapper
 from gen.models.controlnet_model import (get_controlnet_model, log_validation,
                                          pre_train_setup_controlnet)
 from gen.models.neti.checkpoint_handler import CheckpointHandler
@@ -35,14 +36,26 @@ from gen.utils.trainer_utils import (TrainingState, check_every_n_epochs,
                                      check_every_n_steps, handle_checkpointing,
                                      unwrap)
 
+def trainable_parameters(module):
+    """
+    Generator that yields name and parameter of trainable parameters in a given nn.Module.
+    
+    Args:
+    - module (nn.Module): The module to inspect for trainable parameters.
+    
+    Yields:
+    - Tuple[str, torch.nn.Parameter]: Name and parameter of each trainable parameter.
+    """
+    for name, param in module.named_parameters():
+        if param.requires_grad:
+            yield name, param
 
 def get_named_params_to_optimize(models: tuple[Union[nn.Module, dict]]):
     return dict(
         itertools.chain(
-            *(model.named_parameters() for model in models if isinstance(model, nn.Module)), *(np.items() for np in models if isinstance(np, dict))
+            *(trainable_parameters(model) for model in models if isinstance(model, nn.Module)), *(np.items() for np in models if isinstance(np, dict))
         )
     )
-
 
 def checkpoint(cfg: BaseConfig, accelerator: Accelerator, global_step: int, model: nn.Module, checkpoint_handler: CheckpointHandler):
     if cfg.model.lora_unet:
@@ -124,32 +137,35 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             pass
         case ModelType.BASE_MAPPER:
             assert cfg.model.model_type == ModelType.BASE_MAPPER
-            model = BaseMapper(cfg)
+            if cfg.model.per_timestep_conditioning:
+                model = OriginalBaseMapper(cfg)
+                model.prepare_for_training(weight_dtype, accelerator)
+
+                if cfg.model.freeze_text_encoder:
+                    models.append(unwrap(model.text_encoder).text_model.embeddings.mapper)
+                else:
+                    models.append(unwrap(model.text_encoder))
+
+                if cfg.model.freeze_unet is False or cfg.model.lora_unet:
+                    models.append(model.unet)
+
+                if cfg.model.controlnet:
+                    models.append(model.controlnet)
+
+                summary(unwrap(model.text_encoder).text_model.embeddings, col_names=("trainable", "num_params"), verbose=2)
+            else:
+                model = BaseMapper(cfg)
+                model.add_adapters(dtype=weight_dtype, device=accelerator.device)
+                models.append(model)
+                model = accelerator.prepare(model)
+
             tokenizer = model.tokenizer
             checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.checkpoint_dir)
             validator: ValidationHandler = ValidationHandler(cfg=cfg, weights_dtype=weight_dtype)
-
-            model.prepare_for_training(weight_dtype, accelerator)
+            
             noise_scheduler, vae, unet, text_encoder = model.noise_scheduler, model.vae, model.unet, model.text_encoder
             if is_main_process():
-                summary(unwrap(model.text_encoder).text_model.embeddings, col_names=("trainable", "num_params"), verbose=2)
                 summary(model, col_names=("trainable", "num_params"), depth=3)
-
-            if cfg.model.freeze_text_encoder:
-                models.append(unwrap(model.text_encoder).text_model.embeddings.mapper)
-            else:
-                models.append(unwrap(model.text_encoder))
-
-            if not cfg.model.freeze_unet:
-                models.append(model.unet)
-
-            if cfg.model.lora_unet:
-                # We want to only have gradients for the LoRA weights but accumulate needs an nn.Module
-                models.append({k:v for k,v in model.unet.named_parameters() if v.requires_grad})
-                models_to_accumulate_only.append(model.unet)
-
-            if cfg.model.controlnet:
-                models.append(model.controlnet)
 
     optimizer_class = torch.optim.AdamW
     log_warn("TOOD: Scale LR based on accum")
@@ -266,8 +282,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     progress_bar = tqdm(range(0, cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False)
     if is_main_process() and cfg.trainer.log_gradients is not None:
         wandb.watch(model, log="all" if cfg.trainer.log_parameters else "gradients", log_freq=cfg.trainer.log_gradients)
-        # wandb.define_metric("true_step")
-        # wandb.define_metric("loss_per_true_step", step_metric="true_step")
 
     log_info(f'load_time: {time() - load_time} seconds')
 
@@ -301,9 +315,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                     noise_scheduler=noise_scheduler,
                     vae=vae,
                 )
-
-                # if is_main_process():
-                #     wandb.log({"loss_per_true_step": loss.detach().item(), "true_step": true_step,}, step=global_step)
 
                 true_step += 1
                 avg_loss_per_global_step += loss.detach().item()  # Only on the main process to avoid syncing
@@ -339,9 +350,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                     param_keys = get_named_params_to_optimize(models).keys()
                     write_to_file(path=Path(cfg.output_dir, cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
                     match cfg.model.model_type:
-                        case ModelType.CONTROLNET:
-                            if cfg.dataset.validation_prompt:
-                                log_validation(vae, text_encoder, tokenizer, unet, controlnet, cfg, accelerator, weight_dtype, global_step)
                         case ModelType.BASE_MAPPER:
                             validator.infer(
                                 accelerator=accelerator,

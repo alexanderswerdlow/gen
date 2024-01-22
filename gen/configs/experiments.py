@@ -152,6 +152,12 @@ def get_experiments():
 
     mode_store(
         name="lora_disable_timestep_layer_encoding",
-        model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_neti_mapper=False, freeze_unet=True, lora_unet=True, use_timestep_layer_encoding=True, use_custom_position_encoding=True, output_bypass=False),
+        model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_mapper=False, freeze_unet=True, lora_unet=True, use_timestep_layer_encoding=False, use_custom_position_encoding=True, output_bypass=False),
+        inference=(dict(use_custom_pipeline=False)),
+    )
+
+    mode_store(
+        name="lora_new_model",
+        model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_mapper=False, freeze_unet=True, lora_unet=True, use_timestep_layer_encoding=False),
         inference=(dict(use_custom_pipeline=False)),
     )
