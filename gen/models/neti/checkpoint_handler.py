@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 from omegaconf import OmegaConf
 
 import torch
@@ -16,10 +16,11 @@ from gen.utils.logging_utils import log_info
 from gen.utils.trainer_utils import unwrap
 
 class CheckpointHandler:
-    def __init__(self, cfg: BaseConfig, save_root: Path):
+    def __init__(self, cfg: BaseConfig, save_root: Optional[Path]):
         self.cfg = cfg
         self.save_root = save_root
-        self.save_root.mkdir(exist_ok=True, parents=True)
+        if self.save_root is not None:
+            self.save_root.mkdir(exist_ok=True, parents=True)
 
     def save_model(
         self,

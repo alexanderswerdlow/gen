@@ -19,7 +19,8 @@ from torch import Tensor
 
 from gen.utils.logging_utils import log_info
 
-log_func = log_info # Can revert to standard print() if needed
+log_func = log_info  # Can revert to standard print() if needed
+
 
 def get_info():
     return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE).stdout.decode("utf-8")
@@ -317,30 +318,32 @@ class Profiler:
             wandb.save(trace, base_path=self.profile_dir, policy="now")
 
 
-def get_rank():
-    if dist.is_available() and dist.is_initialized():
+def use_dist(): return dist.is_available() and dist.is_initialized()
+
+def get_rank() -> int:
+    if use_dist():
         return dist.get_rank()
     elif (rank := os.environ.get("RANK", None)) is not None:
-        return rank
+        return int(rank)
     else:
         return 0
 
 
-def is_main_process():
+def is_main_process() -> bool:
     return get_rank() == 0
 
 
-def get_num_gpus():
-    return dist.get_world_size() if dist.is_available() and dist.is_initialized() else torch.cuda.device_count()
+def get_num_gpus() -> int:
+    return dist.get_world_size() if use_dist() else torch.cuda.device_count()
 
 
 def _breakpoint():
     if is_main_process():
         frame = sys._getframe()
-        log_func("Breakpoint triggered. You may need to type \"up\" to get to the correct frame")
+        log_func('Breakpoint triggered. You may need to type "up" to get to the correct frame')
         ipdb.set_trace(frame)
 
-    if dist.is_available() and dist.is_initialized():
+    if use_dist():
         dist.barrier()
 
 
@@ -350,10 +353,11 @@ def set_global_breakpoint():
     builtins.breakpoint = _breakpoint
     builtins.st = ipdb.set_trace  # We import st everywhere
 
+
 def write_to_file(path: Path, text: str):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, 'a') as file:
-            file.write(text + '\n')
+        with open(path, "a") as file:
+            file.write(text + "\n")
     except:
         log_func(f"Could not write to {path}")

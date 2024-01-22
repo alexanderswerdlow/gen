@@ -145,7 +145,13 @@ def get_experiments():
 
     mode_store(
         name="finetune_cross_attn_unet",
-        model=dict(mask_cross_attn=True, freeze_unet=False),
-        trainer=dict(gradient_checkpointing=True, learning_rate=2e-7, compile=False, save_accelerator_format=True),
+        model=dict(mask_cross_attn=True, freeze_unet=False, freeze_text_encoder=True),
+        trainer=dict(gradient_checkpointing=True, learning_rate=4e-7, compile=False, save_accelerator_format=True, lr_scheduler="constant_with_warmup"),
         dataset=dict(train_dataset=dict(batch_size=6)),
+    )
+
+    mode_store(
+        name="lora_disable_timestep_layer_encoding",
+        model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_neti_mapper=False, freeze_unet=True, lora_unet=True, use_timestep_layer_encoding=True, use_custom_position_encoding=True, output_bypass=False),
+        inference=(dict(use_custom_pipeline=False)),
     )

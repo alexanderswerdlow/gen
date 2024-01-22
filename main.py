@@ -59,11 +59,13 @@ def main(cfg: BaseConfig):
 
     cfg.output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
 
-    if cfg.trainer.resume is not None and not cfg.trainer.load_only:
-        if Path(cfg.trainer.resume).is_file():
-            top_level_dir = Path(cfg.trainer.resume).parent.parent.parent
+    assert not cfg.trainer.resume or cfg.trainer.ckpt is not None, "You must specify a checkpoint to resume from."
+
+    if cfg.trainer.resume:
+        if Path(cfg.trainer.ckpt).is_file():
+            top_level_dir = Path(cfg.trainer.ckpt).parent.parent.parent
         else:
-            top_level_dir = Path(cfg.trainer.resume).parent.parent
+            top_level_dir = Path(cfg.trainer.ckpt).parent.parent
         with open(top_level_dir / '.hydra' / 'final_config.pkl', "rb") as f:
             loaded_cfg = pickle.load(f)
 
@@ -75,16 +77,19 @@ def main(cfg: BaseConfig):
         cfg.sweep_run_id = loaded_cfg.sweep_run_id
     
     cfg.logging_dir = Path(cfg.output_dir, cfg.logging_dir)
-    if cfg.checkpoint_dir.is_absolute():
-        cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.output_dir.name
-        if cfg.checkpoint_dir.exists() and not (cfg.trainer.resume and not cfg.trainer.load_only):
-            cfg.checkpoint_dir = cfg.checkpoint_dir / "".join(random.choices(string.ascii_letters, k=10))
-
-        cfg.checkpoint_dir.mkdir(exist_ok=True, parents=True)
-        symlink_dir = cfg.output_dir / "checkpoints"
-        symlink_dir.symlink_to(reference_dir)
+    if is_main_process():
+        if cfg.checkpoint_dir.is_absolute():
+            cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.output_dir.name
+            if cfg.checkpoint_dir.exists() and not cfg.trainer.resume:
+                cfg.checkpoint_dir = cfg.checkpoint_dir / "".join(random.choices(string.ascii_letters, k=10))
+            
+            cfg.checkpoint_dir.mkdir(exist_ok=True, parents=True)
+            symlink_dir = cfg.output_dir / "checkpoints"
+            symlink_dir.symlink_to(cfg.checkpoint_dir)
+        else:
+            cfg.checkpoint_dir = Path(cfg.output_dir, cfg.checkpoint_dir)
     else:
-        cfg.checkpoint_dir = Path(cfg.output_dir, cfg.checkpoint_dir)
+        cfg.checkpoint_dir = None
 
     # log_file_path = logging_dir / "output.log"
     # log_file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,6 +119,10 @@ def main(cfg: BaseConfig):
     cuda.matmul.allow_tf32 = True
     torch.set_float32_matmul_precision("high")
     log_warn("Setting matmul precision to high. Setting to medium may be faster.")
+
+    if cfg.trainer.detect_anomaly:
+        torch.autograd.set_detect_anomaly(True)
+        log_warn("Setting anomaly detection to True. This will slow down training.")
 
     num_gpus = get_num_gpus()
     if cfg.trainer.enable_dynamic_grad_accum:
@@ -154,13 +163,13 @@ def main(cfg: BaseConfig):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if is_main_process():
-        wandb_kwargs = dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.output_dir, sync_tensorboard=cfg.profile)
+        wandb_kwargs = dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.first_level_output_path, sync_tensorboard=cfg.profile)
         if cfg.wandb_run_id is None:
             cfg.wandb_run_id = wandb.util.generate_id()
         
         wandb_kwargs['id'] = cfg.wandb_run_id
 
-        if cfg.trainer.resume is not None and not cfg.trainer.load_only:
+        if cfg.trainer.resume:
             wandb_kwargs['resume'] = 'must'
             
         accelerator.init_trackers(

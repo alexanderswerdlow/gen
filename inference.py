@@ -323,37 +323,55 @@ def run_inference_batch(
     if visualize_attention_map:
         # cross_attn_init()
         pipeline.unet = register_cross_attention_hook(pipeline.unet)
+    
+    with torch.cuda.amp.autocast():
+        negative_prompt_embeds = None
+        with torch.no_grad():
+            if inference_cfg.use_custom_pipeline:
+                if not inference_cfg.empty_string_cfg:
+                    negative_prompt_embeds, _ = model.get_neti_conditioning_for_inference(
+                        batch=batch,
+                        num_images_per_prompt=num_images_per_prompt,
+                        truncation_idx=truncation_idx,
+                        disable_conditioning=True,
+                        timesteps=pipeline.scheduler.timesteps,
+                    )
+                prompt_embeds, input_prompt = model.get_neti_conditioning_for_inference(
+                    batch=batch,
+                    num_images_per_prompt=num_images_per_prompt,
+                    truncation_idx=truncation_idx,
+                    timesteps=pipeline.scheduler.timesteps,
+                )
+            else:
+                assert inference_cfg.empty_string_cfg
+                prompt_embeds, input_prompt = model.get_standard_conditioning_for_inference(
+                    batch=batch,
+                    timesteps=pipeline.scheduler.timesteps,
+                )
 
-    negative_prompt_embeds = None
-    with torch.no_grad():
-        if not inference_cfg.empty_string_cfg:
-            negative_prompt_embeds, _ = model.embed_prompt(
-                batch=batch,
+
+        generator = torch.Generator(device="cuda").manual_seed(seed)
+        if inference_cfg.use_custom_pipeline:
+            images = sd_pipeline_call(
+                pipeline,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                generator=generator,
                 num_images_per_prompt=num_images_per_prompt,
-                truncation_idx=truncation_idx,
-                disable_conditioning=True,
-                timesteps=pipeline.scheduler.timesteps,
-            )
-        prompt_embeds, input_prompt = model.embed_prompt(
-            batch=batch,
-            num_images_per_prompt=num_images_per_prompt,
-            truncation_idx=truncation_idx,
-            timesteps=pipeline.scheduler.timesteps,
-        )
+                guidance_scale=inference_cfg.guidance_scale,
+                batched_cfg=inference_cfg.batched_cfg,
+            ).images[0]
+        else:
+            images = pipeline(
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                generator=generator,
+                num_images_per_prompt=num_images_per_prompt,
+                guidance_scale=inference_cfg.guidance_scale,
+            ).images[0]
 
-    generator = torch.Generator(device="cuda").manual_seed(seed)
-    images = sd_pipeline_call(
-        pipeline,
-        prompt_embeds=prompt_embeds,
-        negative_prompt_embeds=negative_prompt_embeds,
-        generator=generator,
-        num_images_per_prompt=num_images_per_prompt,
-        guidance_scale=inference_cfg.guidance_scale,
-        batched_cfg=inference_cfg.batched_cfg,
-    ).images[0]
-
-    if visualize_attention_map:
-        pipeline.unet = unregister_cross_attention_hook(pipeline.unet)
+        if visualize_attention_map:
+            pipeline.unet = unregister_cross_attention_hook(pipeline.unet)
 
     return images, input_prompt, prompt_embeds
 

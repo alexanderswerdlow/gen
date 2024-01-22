@@ -52,15 +52,17 @@ class ModelConfig:
     placeholder_token_id: Optional[int] = None
     super_category_token: str = "object"
 
-    freeze_clip: bool = True
-    unfreeze_last_n_clip_layers: Optional[int] = None
     freeze_unet: bool = True
     lora_unet: bool = False
+    freeze_text_encoder: bool = True
+    freeze_clip: bool = True
+    freeze_neti_mapper: bool = False
+    unfreeze_last_n_clip_layers: Optional[int] = None
 
     mask_cross_attn: bool = True
     dropout_masks: Optional[float] = None
-    freeze_text_encoder: bool = True
     controlnet: bool = False
+    per_timestep_conditioning: bool = True
     
     enable_norm_scale: bool = True
     enable_neti: bool = False

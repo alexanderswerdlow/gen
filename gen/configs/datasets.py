@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 from typing import ClassVar, Optional
 
-from hydra_zen import builds, make_config
-from gen import MOVI_OVERFIT_DATASET_PATH
+from hydra_zen import builds
 
 from gen.configs.utils import auto_store, store_child_config
 from gen.datasets.augmentation.kornia_augmentation import Augmentation

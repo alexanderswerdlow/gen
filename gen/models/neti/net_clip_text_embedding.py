@@ -1,13 +1,9 @@
-import enum
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import torch
 from torch import nn
 from transformers import CLIPTextConfig
-from gen.configs.base import BaseConfig
-
-from gen.models.neti.neti_mapper import NeTIMapper
 
 
 @dataclass

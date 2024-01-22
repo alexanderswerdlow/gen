@@ -23,8 +23,8 @@ class TrainerConfig:
 
     checkpointing_steps: int = 10000
     checkpoints_total_limit: Optional[int] = None
-    resume: Optional[str] = None
-    load_only: bool = False
+    ckpt: Optional[str] = None
+    resume: bool = False
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
     learning_rate: float = 5e-6
@@ -53,8 +53,9 @@ class TrainerConfig:
     enable_dynamic_grad_accum: bool = False
 
     save_accelerator_format: bool = False
-    load_model_only: bool = False
+    load_weights_only_no_state: bool = False
     finetune_learning_rate: Optional[float] = None
+    detect_anomaly: bool = False
 
     # Set in code
     num_gpus: Optional[int] = None

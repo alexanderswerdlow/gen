@@ -75,6 +75,7 @@ class DecoderTransformer(nn.Module):
         norm_layer=None,
         act_layer=None,
         use_flash_attn: bool = True,
+        add_self_attn: bool = True,
     ):
         super().__init__()
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
@@ -91,23 +92,27 @@ class DecoderTransformer(nn.Module):
                     norm_layer=norm_layer,
                     act_layer=act_layer,
                     use_flash_attn=use_flash_attn,
+                    add_self_attn=add_self_attn,
                 )
-                for i in range(depth)
+                for _ in range(depth)
             ]
         )
 
         self.dropout = nn.Dropout(p=drop_rate)
         self.norm = norm_layer(embed_dim)
+        self.add_self_attn = add_self_attn
 
     def forward(self, x, **kwargs):
         hidden_states, residual = x, None
-        self_attn_dict = {
+        cross_attn_dict = {
             "max_seqlen": kwargs["mixer_kwargs"]["max_seqlen"],
             "cu_seqlens": kwargs["mixer_kwargs"]["cu_seqlens"],
         }
-        for cross_attn, self_attn in self.blocks:
-            hidden_states, residual = cross_attn(hidden_states=hidden_states, residual=residual, **kwargs)
-            hidden_states, residual = self_attn(hidden_states=hidden_states, residual=residual, mixer_kwargs=self_attn_dict)
+
+        for _blocks in self.blocks:
+            hidden_states, residual = _blocks[0](hidden_states=hidden_states, residual=residual, **kwargs)
+            if self.add_self_attn:
+                hidden_states, residual = _blocks[1](hidden_states=hidden_states, residual=residual, mixer_kwargs=cross_attn_dict, )
 
         residual = self.dropout(hidden_states) + residual
         hidden_states = self.norm(residual.to(dtype=self.norm.weight.dtype))
@@ -115,7 +120,7 @@ class DecoderTransformer(nn.Module):
         return hidden_states
 
 
-def create_decoder_block(embed_dim, num_heads, mlp_ratio, qkv_bias, attn_drop_rate, norm_layer, act_layer, use_flash_attn, **kwargs):
+def create_decoder_block(embed_dim, num_heads, mlp_ratio, qkv_bias, attn_drop_rate, norm_layer, act_layer, use_flash_attn, add_self_attn, **kwargs):
     return nn.ModuleList(
         [
             create_block(
@@ -129,18 +134,24 @@ def create_decoder_block(embed_dim, num_heads, mlp_ratio, qkv_bias, attn_drop_ra
                 use_flash_attn=use_flash_attn,
                 cross_attn=True,
                 **kwargs,
-            ),
-            create_block(
-                embed_dim,
-                num_heads,
-                mlp_ratio,
-                qkv_bias,
-                attn_drop_rate,
-                norm_layer,
-                act_layer,
-                use_flash_attn=use_flash_attn,
-                cross_attn=False,
-                **kwargs,
-            ),
+            )
         ]
+        + (
+            [
+                create_block(
+                    embed_dim,
+                    num_heads,
+                    mlp_ratio,
+                    qkv_bias,
+                    attn_drop_rate,
+                    norm_layer,
+                    act_layer,
+                    use_flash_attn=use_flash_attn,
+                    cross_attn=False,
+                    **kwargs,
+                )
+            ]
+            if add_self_attn
+            else []
+        )
     )

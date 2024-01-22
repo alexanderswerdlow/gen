@@ -50,7 +50,4 @@ class ValidationHandler:
 
         del pipeline
         torch.cuda.empty_cache()
-        unwrap(text_encoder).text_model.embeddings.mapper.train()
-        if self.cfg.model.controlnet: unwrap(model).controlnet.train()
-        if not self.cfg.model.freeze_text_encoder: unwrap(text_encoder).train()
-        if not self.cfg.model.freeze_unet: unwrap(model).unet.train()
+        model.prepare_for_inference()

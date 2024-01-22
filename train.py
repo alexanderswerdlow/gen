@@ -4,10 +4,10 @@ import itertools
 import math
 import os
 from pathlib import Path
+from time import time
 from typing import Any, Dict, Iterator, Union
 
 import hydra
-from numpy import isin
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,22 +20,26 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchinfo import summary
 from tqdm.auto import tqdm
-from gen.utils.trainer_utils import unwrap
+
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.base_mapper_model import BaseMapper
-from gen.models.controlnet_model import get_controlnet_model, log_validation, pre_train_setup_controlnet
+from gen.models.controlnet_model import (get_controlnet_model, log_validation,
+                                         pre_train_setup_controlnet)
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
-from gen.utils.decoupled_utils import Profiler, is_main_process, module_hash, write_to_file
+from gen.utils.decoupled_utils import (Profiler, is_main_process, module_hash,
+                                       write_to_file)
 from gen.utils.logging_utils import log_error, log_info, log_warn
-from gen.utils.trainer_utils import TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing
+from gen.utils.trainer_utils import (TrainingState, check_every_n_epochs,
+                                     check_every_n_steps, handle_checkpointing,
+                                     unwrap)
 
 
-def get_named_params_to_optimize(models: tuple[Union[nn.Module, Iterator]]):
+def get_named_params_to_optimize(models: tuple[Union[nn.Module, dict]]):
     return dict(
         itertools.chain(
-            *(model.named_parameters() for model in models if isinstance(model, nn.Module)), *(np for np in models if isinstance(np, Iterator))
+            *(model.named_parameters() for model in models if isinstance(model, nn.Module)), *(np.items() for np in models if isinstance(np, dict))
         )
     )
 
@@ -122,7 +126,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             assert cfg.model.model_type == ModelType.BASE_MAPPER
             model = BaseMapper(cfg)
             tokenizer = model.tokenizer
-            checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.output_dir / "checkpoints")
+            checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.checkpoint_dir)
             validator: ValidationHandler = ValidationHandler(cfg=cfg, weights_dtype=weight_dtype)
 
             model.prepare_for_training(weight_dtype, accelerator)
@@ -141,7 +145,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
 
             if cfg.model.lora_unet:
                 # We want to only have gradients for the LoRA weights but accumulate needs an nn.Module
-                models.append(filter(lambda p: p.requires_grad, model.unet.parameters()))
+                models.append({k:v for k,v in model.unet.named_parameters() if v.requires_grad})
                 models_to_accumulate_only.append(model.unet)
 
             if cfg.model.controlnet:
@@ -222,23 +226,23 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     first_epoch = 0
 
     # Potentially load in the weights and states from a previous save
-    if cfg.trainer.resume:
-        if cfg.trainer.resume == "latest":
+    if cfg.trainer.ckpt:
+        if cfg.trainer.ckpt == "latest":
             # Get the most recent checkpoint
             dirs = os.listdir(cfg.checkpoint_dir)
             dirs = [d for d in dirs if d.startswith("checkpoint")]
             dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
             path = dirs[-1] if len(dirs) > 0 else None
         else:
-            path = Path(cfg.trainer.resume)
+            path = Path(cfg.trainer.ckpt)
 
         if path is None:
-            log_info(f"Checkpoint '{cfg.trainer.resume}' does not exist. Starting a new training run.")
-            cfg.trainer.resume = None
+            log_info(f"Checkpoint '{cfg.trainer.ckpt}' does not exist. Starting a new training run.")
+            cfg.trainer.ckpt = None
             initial_global_step = 0
         else:
             log_info(f"Resuming from checkpoint {path}")
-            if path.is_file() or cfg.trainer.load_model_only:
+            if path.is_file() or cfg.trainer.load_weights_only_no_state:
                 from accelerate.utils.modeling import load_checkpoint_in_model
 
                 load_checkpoint_in_model(model, str(path))
@@ -249,7 +253,6 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 global_step = int(path.parent.name.split("-")[-1])
             else:
                 global_step = int(path.name.split("-")[1])
-                
 
             initial_global_step = global_step
             first_epoch = global_step // num_update_steps_per_epoch
@@ -266,16 +269,20 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
         # wandb.define_metric("true_step")
         # wandb.define_metric("loss_per_true_step", step_metric="true_step")
 
-    log_info(f'load_time: {__import__("time").time() - load_time} seconds')
+    log_info(f'load_time: {time() - load_time} seconds')
 
     log_info(f"Train Dataloader Size on single GPU: {len(train_dataloader)}")
 
     examples_seen_one_gpu = 0
     avg_loss_per_global_step = 0
+    avg_dataloading_time_per_global_step = 0
+    last_end_step_time = time()
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
+            step_start_time = time()
+            avg_dataloading_time_per_global_step += step_start_time - last_end_step_time
             if is_main_process() and global_step == 1:
-                log_info(f'time to complete 1st step: {__import__("time").time() - load_time} seconds')
+                log_info(f"time to complete 1st step: {step_start_time - load_time} seconds")
 
             with accelerator.accumulate(*filter(lambda x: isinstance(x, nn.Module), models), *models_to_accumulate_only):
                 examples_seen_one_gpu += batch["gen_pixel_values"].shape[0]
@@ -313,15 +320,14 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             # This is different from "step" which only counts the number of forward passes
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
-                if check_every_n_steps(state, cfg.trainer.checkpointing_steps, run_first=False):
+                if check_every_n_steps(state, cfg.trainer.checkpointing_steps, run_first=False, all_processes=False):
                     checkpoint(cfg, accelerator, global_step, model, checkpoint_handler)
-
                 if (
                     check_every_n_steps(state, cfg.trainer.eval_every_n_steps, run_first=cfg.trainer.eval_on_start, all_processes=True)
                     or (cfg.trainer.eval_on_start and global_step == initial_global_step)
                     or check_every_n_epochs(state, cfg.trainer.eval_every_n_epochs, all_processes=True)
                 ):
-                    validation_start_time = __import__("time").time()
+                    validation_start_time = time()
                     if cfg.dataset.reset_validation_dataset_every_epoch:
                         if state.epoch == 0:
                             validation_dataset_holder.subset_size = cfg.trainer.num_gpus
@@ -383,9 +389,10 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 logs = {
                     "loss": avg_loss_per_global_step,
                     "lr": lr_scheduler.get_last_lr()[0],
-                    f"gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
+                    "gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
                     "examples_seen": global_step * total_batch_size,
                     "examples_seen_one_gpu": examples_seen_one_gpu,
+                    "dataloading_time_per_global_step": avg_dataloading_time_per_global_step / cfg.trainer.gradient_accumulation_steps,
                 }
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
@@ -397,6 +404,8 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
             elif cfg.profile and profiler.step(global_step):
                 log_info(f"Profiling finished at step: {global_step}")
                 break
+
+            last_end_step_time = time()
 
         # TODO: Something weird happens with webdataset:
         # UserWarning: Length of IterableDataset <abc.WebDataset_Length object at 0x7f0748da4640> was reported to be 2 (when accessing len(dataloader)), but 3 samples have been fetched.
