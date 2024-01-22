@@ -161,3 +161,11 @@ def get_experiments():
         model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_mapper=False, freeze_unet=True, lora_unet=True, use_timestep_layer_encoding=False),
         inference=(dict(use_custom_pipeline=False)),
     )
+
+    mode_store(
+        name="small_gpu",
+        dataset=dict(train_dataset=dict(batch_size=1), validation_dataset=dict(batch_size=1)),
+        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False)),
+        trainer=dict(enable_xformers_memory_efficient_attention=True),
+        inference=dict(visualize_attention_map=False)
+    )

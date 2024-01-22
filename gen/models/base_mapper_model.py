@@ -51,8 +51,6 @@ class BaseMapper(nn.Module):
         if self.cfg.model.use_dataset_segmentation is False:
             from gen.models.sam import HQSam
             self.hqsam = HQSam(model_type="vit_b")
-            self.hqsam.eval()
-            self.hqsam.requires_grad_(False)
 
         self.mapper = Mapper(cfg=self.cfg)
 
@@ -83,7 +81,7 @@ class BaseMapper(nn.Module):
         self.unet.to(device=device, dtype=dtype)
         self.text_encoder.to(device=device, dtype=dtype)
 
-        self.set_training_mode()
+        self.set_training_mode(set_grad=True)
 
         assert not (self.cfg.model.freeze_unet is False and (self.cfg.model.unfreeze_unet_after_n_steps is not None or self.cfg.model.lora_unet))
         if self.cfg.model.lora_unet:
@@ -117,16 +115,25 @@ class BaseMapper(nn.Module):
                 self.controlnet = self.controlnet.to(memory_format=torch.channels_last)
                 self.controlnet: ControlNetModel = torch.compile(self.controlnet, mode="reduce-overhead", fullgraph=True)
 
-    def set_training_mode(self):
-        # Set train/eval and freeze/unfreeze
-        self.vae.requires_grad_(False)
+    def set_training_mode(self, set_grad: bool = False):
+        """
+        Set training mode for the proper models and freeze/unfreeze them.
+        We have the set_grad param as it appears that setting requires_grad after training has started can cause:
+
+        `element 0 of tensors does not require grad and does not have a grad_fn`
+        """
+        if set_grad: self.vae.requires_grad_(False)
+
+        if self.cfg.model.use_dataset_segmentation is False:
+            self.hqsam.eval()
+            if set_grad: self.hqsam.requires_grad_(False)
 
         if self.cfg.model.freeze_clip:
-            self.clip.requires_grad_(False)
+            if set_grad: self.clip.requires_grad_(False)
             self.clip.eval()
             log_warn("CLIP is frozen for debugging")
         else:
-            self.clip.requires_grad_(True)
+            if set_grad: self.clip.requires_grad_(True)
             self.clip.train()
             log_warn("CLIP is unfrozen")
 
@@ -136,28 +143,28 @@ class BaseMapper(nn.Module):
                 block.requires_grad_(True)
 
         if self.cfg.model.freeze_unet:
-            self.unet.requires_grad_(False)
+            if set_grad: self.unet.requires_grad_(False)
             self.unet.eval()
         else:
-            self.unet.requires_grad_(True)
+            if set_grad: self.unet.requires_grad_(True)
             self.unet.train()
 
         if self.cfg.model.freeze_text_encoder:
-            self.text_encoder.requires_grad_(False)
+            if set_grad: self.text_encoder.requires_grad_(False)
             self.text_encoder.eval()
         else:
-            self.text_encoder.requires_grad_(True)
+            if set_grad: self.text_encoder.requires_grad_(True)
             self.text_encoder.train()
 
         if self.cfg.model.freeze_mapper:
-            self.mapper.requires_grad_(False)
+            if set_grad: self.mapper.requires_grad_(False)
             self.mapper.eval()
         else:
-            self.mapper.requires_grad_(True)
+            if set_grad: self.mapper.requires_grad_(True)
             self.mapper.train()
 
         if self.cfg.model.controlnet:
-            self.controlnet.requires_grad_(True)
+            if set_grad: self.controlnet.requires_grad_(True)
             self.controlnet.train()
 
     def set_inference_mode(self):
@@ -327,11 +334,12 @@ class BaseMapper(nn.Module):
         text_encoder_dict = self.get_mask_attn_params(batch)
         queries = self.mapper.learnable_token[None, :].repeat(text_encoder_dict['feature_map_batch_idxs'].shape[0], 1)
         text_encoder_dict['attn_dict']['x'] = queries.to(self.weight_dtype)
-        output = self.mapper.cross_attn(**text_encoder_dict)
+        output = self.mapper.cross_attn(**text_encoder_dict).to(self.weight_dtype)
 
         # Overwrite mask locations
         learnable_idxs = (batch["input_ids"] == text_encoder_dict["placeholder_token"]).nonzero(as_tuple=True)
         encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = output
+        return encoder_hidden_states
     
     def get_hidden_state(self, batch: dict, add_mask_conditioning: bool = False) -> Float[Tensor, "b d"]:
         encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.weight_dtype)
@@ -364,7 +372,7 @@ class BaseMapper(nn.Module):
             ).sample
         else:
             # Predict the noise residual
-            with torch.cuda.amp.autocast():
-                model_pred = self.unet(noisy_latents.to(weight_dtype), timesteps.to(weight_dtype), encoder_hidden_states.to(weight_dtype)).sample
+            # TODO: We shouldn't need to cast to FP32 here
+            model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states.to(torch.float32)).sample
 
         return model_pred

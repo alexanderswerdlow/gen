@@ -11,7 +11,7 @@ from gen.configs.base import BaseConfig
 from gen.models.neti.positional_encoding import (BasicEncoder,
                                                  NeTIPositionalEncoding)
 
-
+from gen.models.neti.decoder import DecoderTransformer
 
 class CrossAttn(nn.Module):
     def __init__(self, cfg: BaseConfig, input_dim: int, output_dim: int):

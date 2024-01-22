@@ -25,6 +25,7 @@ from gen.datasets.base_dataset import Split
 from gen.models.base_mapper_model import BaseMapper
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
+from transformers.models.clip.modeling_clip import CLIPTextModel
 from gen.models.neti.sd_pipeline import sd_pipeline_call
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.attention_visualization_utils import (
@@ -344,24 +345,22 @@ def run_inference_batch(
                 )
             else:
                 assert inference_cfg.empty_string_cfg
-                prompt_embeds, input_prompt = model.get_standard_conditioning_for_inference(
-                    batch=batch,
-                    timesteps=pipeline.scheduler.timesteps,
-                )
+                prompt_embeds, input_prompt = model.get_standard_conditioning_for_inference(batch=batch)
 
 
-        generator = torch.Generator(device="cuda").manual_seed(seed)
-        if inference_cfg.use_custom_pipeline:
-            images = sd_pipeline_call(
-                pipeline,
-                prompt_embeds=prompt_embeds,
-                negative_prompt_embeds=negative_prompt_embeds,
-                generator=generator,
-                num_images_per_prompt=num_images_per_prompt,
-                guidance_scale=inference_cfg.guidance_scale,
-                batched_cfg=inference_cfg.batched_cfg,
-            ).images[0]
-        else:
+    generator = torch.Generator(device="cuda").manual_seed(seed)
+    if inference_cfg.use_custom_pipeline:
+        images = sd_pipeline_call(
+            pipeline,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            generator=generator,
+            num_images_per_prompt=num_images_per_prompt,
+            guidance_scale=inference_cfg.guidance_scale,
+            batched_cfg=inference_cfg.batched_cfg,
+        ).images[0]
+    else:
+        with torch.no_grad():
             images = pipeline(
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,
@@ -402,12 +401,14 @@ def load_stable_diffusion_model(
         kwargs["tokenizer"] = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
 
     if text_encoder is None:
-        kwargs["text_encoder"] = NeTICLIPTextModel.from_pretrained(
+        text_cls = NeTICLIPTextModel if cfg.model.per_timestep_conditioning else CLIPTextModel
+        kwargs["text_encoder"] = text_cls.from_pretrained(
             pretrained_model_name_or_path,
             subfolder="text_encoder",
             torch_dtype=torch_dtype,
         )
-        text_encoder.text_model.set_mapper(mapper=model, cfg=cfg)
+        if cfg.model.per_timestep_conditioning:
+            text_encoder.text_model.set_mapper(mapper=model, cfg=cfg)
 
     if cfg.model.per_timestep_conditioning:
         unwrap(text_encoder).eval()
@@ -422,7 +423,9 @@ def load_stable_diffusion_model(
     pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
     pipeline.set_progress_bar_config(disable=True)
     pipeline.scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
-    pipeline.unet.set_attn_processor(XTIAttenProc())
+    
+    if cfg.model.per_timestep_conditioning:
+        pipeline.unet.set_attn_processor(XTIAttenProc())
 
     return pipeline
 

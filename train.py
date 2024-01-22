@@ -338,6 +338,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                     or (cfg.trainer.eval_on_start and global_step == initial_global_step)
                     or check_every_n_epochs(state, cfg.trainer.eval_every_n_epochs, all_processes=True)
                 ):
+                    accelerator.free_memory()
                     validation_start_time = time()
                     if cfg.dataset.reset_validation_dataset_every_epoch:
                         if state.epoch == 0:
@@ -361,7 +362,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                                 vae=vae,
                                 global_step=global_step,
                             )
-
+                    accelerator.free_memory()
                     log_info(
                         f"Finished validation at global step {global_step}, epoch {epoch}. Wandb URL: {cfg.wandb_url}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
                     )
