@@ -29,7 +29,7 @@ from gen.utils.decoupled_utils import (check_gpu_memory_usage, get_num_gpus,
                                        set_global_breakpoint)
 from gen.utils.logging_utils import log_error, log_info, log_warn, set_logger
 from inference import inference
-from train import train
+from train import Trainer
 
 check_min_version("0.25.0")
 
@@ -218,7 +218,8 @@ def main(cfg: BaseConfig):
         if cfg.run_inference:
             inference(cfg, accelerator)
         else:
-            train(cfg, accelerator)
+            train = Trainer(cfg=cfg, accelerator=accelerator)
+            train.train()
 
     except Exception as e:
         log_error(e)
