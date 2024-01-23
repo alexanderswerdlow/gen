@@ -1,5 +1,5 @@
 from hydra_zen import builds
-from gen import IMAGENET_PATH, MOVI_OVERFIT_DATASET_PATH
+from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import inherit_mode_store, mode_store, store_child_config
 from gen.utils.encoder_utils import ResNet50
 from accelerate.utils import PrecisionType
@@ -18,6 +18,13 @@ shared_overfit_movi_args = dict(
     num_objects=1,
     legacy_transforms=False,
     augmentation=dict(minimal_source_augmentation=True, enable_crop=False),
+)
+
+shared_movi_args = dict(
+    path=MOVI_DATASET_PATH,
+    num_objects=23,
+    legacy_transforms=False,
+    augmentation=dict(minimal_source_augmentation=True, enable_crop=True),
 )
 
 
@@ -50,6 +57,14 @@ def get_experiments():
             "_self_",
             {"override /dataset": "movi_e"},
         ],
+    )
+
+    mode_store(
+        name="movi_full",
+        dataset=dict(
+            train_dataset=dict(custom_split="train", **shared_movi_args),
+            validation_dataset=dict(custom_split="validation", **shared_movi_args),
+        ),
     )
 
     mode_store(
@@ -174,7 +189,7 @@ def get_experiments():
         name="lora",
         model=dict(controlnet=False, lora_unet=True),
         trainer=dict(learning_rate=1e-6, scale_lr_batch_size=True, compile=True),
-        dataset=dict(train_dataset=dict(batch_size=24)),
+        dataset=dict(train_dataset=dict(batch_size=20)),
     )
 
     mode_store(

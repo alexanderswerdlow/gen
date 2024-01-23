@@ -89,8 +89,8 @@ class BaseMapper(Trainable):
             from peft import LoraConfig
 
             unet_lora_config = LoraConfig(
-                r=4,
-                lora_alpha=4,
+                r=self.cfg.model.lora_rank,
+                lora_alpha=self.cfg.model.lora_rank,
                 init_lora_weights="gaussian",
                 target_modules=["to_k", "to_q", "to_v", "to_out.0"],
             )

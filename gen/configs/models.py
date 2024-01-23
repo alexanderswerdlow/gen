@@ -20,10 +20,6 @@ class ModelType(Enum):
 class ModelConfig:
     name: ClassVar[str] = "model"
 
-    # pretrained_model_name_or_path: Optional[str] = "stabilityai/stable-diffusion-2-1"
-    # token_embedding_dim: int = 1024
-    # resolution: int = 768
-
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     token_embedding_dim: int = 768
     resolution: int = 512
@@ -52,8 +48,7 @@ class ModelConfig:
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
 
-
-
+    lora_rank: int = 4
 
     # NeTI Specific Configs below
     placeholder_token: str = "android"
@@ -78,6 +73,10 @@ class ModelConfig:
     pe_sigmas: Dict[str, float] = field(default_factory=lambda: {"sigma_t": 0.03, "sigma_l": 2.0}) # Sigmas used for computing positional encoding
     num_pe_time_anchors: int = 10 # Number of time anchors for computing our positional encodings
     output_bypass: bool = True # Whether to output the textual bypass vector
+
+    # pretrained_model_name_or_path: Optional[str] = "stabilityai/stable-diffusion-2-1"
+    # token_embedding_dim: int = 1024
+    # resolution: int = 768
 
 
 @dataclass
