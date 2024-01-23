@@ -56,6 +56,7 @@ class TrainerConfig:
     load_weights_only_no_state: bool = False
     finetune_learning_rate: Optional[float] = None
     detect_anomaly: bool = False
+    find_unused_parameters: bool = False
 
     # Set in code
     num_gpus: Optional[int] = None

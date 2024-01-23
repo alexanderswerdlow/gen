@@ -16,7 +16,7 @@ import torch.backends.cudnn as cudnn
 import torch.utils.checkpoint
 import transformers
 import wandb
-from accelerate import Accelerator
+from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.utils import GradientAccumulationPlugin, ProjectConfiguration
 from diffusers.utils import check_min_version
 from hydra.utils import get_original_cwd
@@ -151,11 +151,14 @@ def main(cfg: BaseConfig):
 
     accelerator_project_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=cfg.logging_dir)
     gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=cfg.trainer.gradient_accumulation_steps, adjust_scheduler=False)
+
+    kwargs = DistributedDataParallelKwargs(find_unused_parameters=cfg.trainer.find_unused_parameters)
     accelerator = Accelerator(
         mixed_precision=cfg.trainer.mixed_precision,
         log_with=cfg.trainer.log_with,
         project_config=accelerator_project_config,
         gradient_accumulation_plugin=gradient_accumulation_plugin,
+        kwargs_handlers=[kwargs]
     )
     assert accelerator.num_processes == num_gpus
     cfg.trainer.num_gpus = accelerator.num_processes

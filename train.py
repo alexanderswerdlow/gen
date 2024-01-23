@@ -111,7 +111,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                 models.append(model)
                 model = accelerator.prepare(model)
 
-            tokenizer = model.tokenizer
+            tokenizer = unwrap(model).tokenizer
             checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=cfg, save_root=cfg.checkpoint_dir)
             validator: ValidationHandler = ValidationHandler(cfg=cfg, weights_dtype=weight_dtype)
             
@@ -239,13 +239,13 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
     log_info(f"Train Dataloader Size on single GPU: {len(train_dataloader)}")
 
     examples_seen_one_gpu = 0
-    avg_loss_per_global_step = 0
-    avg_dataloading_time_per_global_step = 0
+    loss_per_global_step = 0
+    dataloading_time_per_global_step = 0
     last_end_step_time = time()
     for epoch in range(first_epoch, cfg.trainer.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
             step_start_time = time()
-            avg_dataloading_time_per_global_step += step_start_time - last_end_step_time
+            dataloading_time_per_global_step += step_start_time - last_end_step_time
             if is_main_process() and global_step == 1:
                 log_info(f"time to complete 1st step: {step_start_time - load_time} seconds")
 
@@ -263,7 +263,7 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                         loss = model(batch)
 
                 true_step += 1
-                avg_loss_per_global_step += loss.detach().item()  # Only on the main process to avoid syncing
+                loss_per_global_step += loss.detach().item()  # Only on the main process to avoid syncing
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
@@ -334,20 +334,21 @@ def train(cfg: BaseConfig, accelerator: Accelerator):
                     optimizer, lr_scheduler = accelerator.prepare(optimizer, lr_scheduler)
                     summary(model)
 
-                avg_loss_per_global_step /= cfg.trainer.gradient_accumulation_steps
+                loss_per_global_step /= cfg.trainer.gradient_accumulation_steps
                 progress_bar.update(1)
                 global_step += 1
                 logs = {
-                    "loss": avg_loss_per_global_step,
+                    "loss": loss_per_global_step,
                     "lr": lr_scheduler.get_last_lr()[0],
                     "gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
                     "examples_seen": global_step * total_batch_size,
                     "examples_seen_one_gpu": examples_seen_one_gpu,
-                    "dataloading_time_per_global_step": avg_dataloading_time_per_global_step / cfg.trainer.gradient_accumulation_steps,
+                    "dataloading_time_per_global_step": dataloading_time_per_global_step / cfg.trainer.gradient_accumulation_steps,
                 }
+                dataloading_time_per_global_step = 0
                 progress_bar.set_postfix(**logs)
                 accelerator.log(logs, step=global_step)
-                avg_loss_per_global_step = 0
+                loss_per_global_step = 0
 
             if global_step >= cfg.trainer.max_train_steps:
                 break

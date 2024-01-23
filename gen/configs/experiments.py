@@ -63,6 +63,14 @@ def get_experiments():
     )
 
     mode_store(
+        name="movi_augmentation",
+        dataset=dict(
+            train_dataset=dict(augmentation=dict(enable_horizontal_flip=True, enable_crop=True)),
+            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=True, enable_crop=True)),
+        ),
+    )
+
+    mode_store(
         name="imagenet",
         dataset=dict(
             train_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=False, enable_horizontal_flip=False)),
@@ -143,14 +151,30 @@ def get_experiments():
 
     mode_store(
         name="new_model",
-        model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_mapper=False, freeze_unet=True, lora_unet=True),
-        inference=(dict(use_custom_pipeline=False)),
+        model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_mapper=False, freeze_unet=True),
+        inference=dict(use_custom_pipeline=False, visualize_attention_map=False),
+        dataset=dict(train_dataset=dict(batch_size=10)),
+    )
+
+    mode_store(
+        name="controlnet_lora",
+        model=dict(controlnet=True, lora_unet=True),
+        trainer=dict(learning_rate=1e-6, scale_lr_batch_size=True, compile=True),
+        dataset=dict(train_dataset=dict(batch_size=16)),
     )
 
     mode_store(
         name="controlnet",
-        model=dict(controlnet=True),
-        trainer=dict(learning_rate=5e-6, scale_lr_batch_size=True),
+        model=dict(controlnet=True, lora_unet=False),
+        trainer=dict(learning_rate=1e-6, scale_lr_batch_size=True, compile=True),
+        dataset=dict(train_dataset=dict(batch_size=20)),
+    )
+
+    mode_store(
+        name="lora",
+        model=dict(controlnet=False, lora_unet=True),
+        trainer=dict(learning_rate=1e-6, scale_lr_batch_size=True, compile=True),
+        dataset=dict(train_dataset=dict(batch_size=24)),
     )
 
     mode_store(

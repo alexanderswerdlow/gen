@@ -23,7 +23,7 @@ from gen.models.utils import Trainable, _init_weights, find_true_indices_batched
 from gen.models.conditioning_models import CrossAttn
 from jaxtyping import Float
 from torch import Tensor
-
+import torch._dynamo
 
 class Mapper(nn.Module):
     def __init__(
@@ -48,7 +48,7 @@ class BaseMapper(Trainable):
         self.initialize_custom_models()
 
     def initialize_custom_models(self):
-        self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, _recursive_=True, num_from_back=3, tensor_input=True)
+        self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, _recursive_=True, num_from_back=3, tensor_input=True) # , compile=self.cfg.trainer.compile
 
         if self.cfg.model.use_dataset_segmentation is False:
             from gen.models.sam import HQSam
@@ -109,12 +109,14 @@ class BaseMapper(Trainable):
                 self.controlnet.enable_gradient_checkpointing()
 
         if self.cfg.trainer.compile:
-            self.unet.to(memory_format=torch.channels_last)
-            self.unet: UNet2DConditionModel = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
             self.clip: ClipFeatureExtractor = torch.compile(self.clip, mode="reduce-overhead", fullgraph=True)
-            if self.cfg.model.controlnet:
-                self.controlnet = self.controlnet.to(memory_format=torch.channels_last)
-                self.controlnet: ControlNetModel = torch.compile(self.controlnet, mode="reduce-overhead", fullgraph=True)
+            
+            # TODO: Compile currently doesn't work with flash-attn apparently
+            # self.unet.to(memory_format=torch.channels_last)
+            # self.unet: UNet2DConditionModel = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
+            # if self.cfg.model.controlnet:
+            #     self.controlnet = self.controlnet.to(memory_format=torch.channels_last)
+            #     self.controlnet: ControlNetModel = torch.compile(self.controlnet, mode="reduce-overhead", fullgraph=True)
 
     def set_training_mode(self, set_grad: bool = False):
         """
@@ -346,7 +348,7 @@ class BaseMapper(Trainable):
         encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = output
         return encoder_hidden_states
     
-    def get_hidden_state(self, batch: dict, add_mask_conditioning: bool = False) -> Float[Tensor, "b d"]:
+    def get_hidden_state(self, batch: dict, add_mask_conditioning: bool = True) -> Float[Tensor, "b d"]:
         encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.weight_dtype)
 
         if add_mask_conditioning:
@@ -375,7 +377,7 @@ class BaseMapper(Trainable):
         # (this is the forward diffusion process)
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
         
-        encoder_hidden_states = self.get_hidden_state(batch)
+        encoder_hidden_states = self.get_hidden_state(batch, add_mask_conditioning=self.cfg.model.mask_cross_attn)
 
         if self.cfg.model.controlnet:
             controlnet_image = self.get_controlnet_conditioning(batch)
