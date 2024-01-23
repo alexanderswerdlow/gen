@@ -19,11 +19,13 @@ from transformers.models.clip.modeling_clip import CLIPTextModel
 from gen.utils.encoder_utils import ClipFeatureExtractor, TimmModel, BaseModel
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import unwrap
-from gen.models.utils import Trainable, _init_weights, find_true_indices_batched
+from gen.models.utils import _init_weights, find_true_indices_batched
 from gen.models.conditioning_models import CrossAttn
 from jaxtyping import Float
 from torch import Tensor
-import torch._dynamo
+from gen.utils.trainer_utils import TrainingState, Trainable, handle_checkpointing
+from accelerate import Accelerator
+from diffusers import StableDiffusionPipeline, StableDiffusionControlNetPipeline
 
 class Mapper(nn.Module):
     def __init__(
@@ -107,6 +109,8 @@ class BaseMapper(Trainable):
             self.unet.enable_gradient_checkpointing()
             if self.cfg.model.controlnet:
                 self.controlnet.enable_gradient_checkpointing()
+            if self.cfg.model.freeze_text_encoder is False:
+                self.text_encoder.gradient_checkpointing_enable()
 
         if self.cfg.trainer.compile:
             self.clip: ClipFeatureExtractor = torch.compile(self.clip, mode="reduce-overhead", fullgraph=True)
@@ -157,6 +161,10 @@ class BaseMapper(Trainable):
             self.text_encoder.eval()
         else:
             if set_grad: self.text_encoder.requires_grad_(True)
+            if set_grad and self.cfg.model.freeze_text_encoder_except_token_embeddings:
+                self.text_encoder.text_model.encoder.requires_grad_(False)
+                self.text_encoder.text_model.final_layer_norm.requires_grad_(False)
+                self.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
             self.text_encoder.train()
 
         if self.cfg.model.freeze_mapper:
@@ -171,8 +179,20 @@ class BaseMapper(Trainable):
             self.controlnet.train()
 
     def set_inference_mode(self):
-        # TODO: Is there ever a case where we only want to set some submodules to eval?
-        self.eval()
+        self.eval() # TODO: Is there ever a case where we only want to set some submodules to eval?
+
+    def checkpoint(self, accelerator: Accelerator, state: TrainingState):
+        save_path = handle_checkpointing(cfg=self.cfg, accelerator=accelerator, global_step=state.global_step)
+        accelerator.save_model(self, save_directory=self.cfg.checkpoint_dir / f"checkpoint-model-{state.global_step}", safe_serialization=False)
+        if self.cfg.model.lora_unet:
+            from peft.utils import get_peft_model_state_dict
+            unet_lora_state_dict = get_peft_model_state_dict(self.unet)
+            cls = StableDiffusionControlNetPipeline if self.cfg.model.controlnet else StableDiffusionPipeline
+            cls.save_lora_weights(
+                save_directory=save_path,
+                unet_lora_layers=unet_lora_state_dict,
+                safe_serialization=True,
+            )
 
     def get_standard_conditioning_for_inference(
         self,
@@ -398,7 +418,6 @@ class BaseMapper(Trainable):
                 mid_block_additional_residual=mid_block_res_sample.to(dtype=self.weight_dtype),
             ).sample
         else:
-            # Predict the noise residual
             # TODO: We shouldn't need to cast to FP32 here
             model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states.to(torch.float32)).sample
 

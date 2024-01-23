@@ -33,7 +33,7 @@ def process_output_keypoints(keypoints: Keypoints, B: int, input_H: int, input_W
     arr = torch.round(keypoints.to_tensor()[keypoints.valid_mask]).int()  # Coordinates for the target image
     coords_arr = coords[keypoints.valid_mask]  # Coordinates for the source image
 
-    inverted_arr = torch.full((B, output_H, output_W, 2), fill_value, dtype=torch.long)
+    inverted_arr = torch.full((B, output_H, output_W, 2), fill_value, dtype=torch.long) # TODO: BUG HERE
     # warnings.warn("Kornia uses XY order for Keypoints. Be Careful.")
     inverted_arr[torch.nonzero(keypoints.valid_mask)[:, 0], arr[:, 1], arr[:, 0]] = coords_arr
     inverted_arr = torch.flip(inverted_arr, dims=(-1,))
@@ -42,9 +42,22 @@ def process_output_keypoints(keypoints: Keypoints, B: int, input_H: int, input_W
     return inverted_arr, output_mask
 
 
-def process_output_segmentation(output_segmentation: torch.Tensor, output_mask: torch.Tensor, h: int, w: int, fill_value: float = -1):
+def filter_bounds(coords, h, w):
+    # Filter coordinates within image bounds (0 <= y < h and 0 <= x < w)
+    in_bounds = (coords[:, 0] < h) & (coords[:, 0] >= 0) & \
+                (coords[:, 1] < w) & (coords[:, 1] >= 0)
+    return in_bounds
+
+def process_output_segmentation(keypoints: Keypoints, output_segmentation: torch.Tensor, h: int, w: int, fill_value: float = -1):
     output_segmentation = output_segmentation.clone()
-    output_segmentation[~output_mask] = fill_value
+    # old : output_segmentation[~output_mask] = fill_value
+
+    # TODO: Verify this is correct
+    arr = torch.round(keypoints.to_tensor()[~keypoints.valid_mask]).int()  # Coordinates for the target image
+    filter_mask = filter_bounds(arr, h, w)
+    arr = arr[filter_mask]
+
+    output_segmentation[torch.nonzero(~keypoints.valid_mask)[filter_mask][:, 0], arr[:, 1], arr[:, 0]] = fill_value
     return output_segmentation
 
 

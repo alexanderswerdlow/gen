@@ -10,15 +10,19 @@ from gen.configs.utils import auto_store
 class InferenceConfig:
     name: ClassVar[str] = "inference"
 
+    num_denoising_steps: int = 50
+    guidance_scale: float = 7.5
+    resolution: int = "${model.resolution}"
+    
     num_masks_to_remove: Optional[int] = 4
     visualize_attention_map: bool = False
     visualize_embeds: bool = False
-    num_denoising_steps: int = 50
-    guidance_scale: float = 7.5
-    empty_string_cfg: bool = True
-    resolution: int = "${model.resolution}"
+
     set_seed: bool = False
     batched_cfg: bool = False # WARNING: This may silently break things
+    empty_string_cfg: bool = True
+    use_ddim: bool = False
+
     use_custom_pipeline: bool = True
 
     # Legacy Args

@@ -10,7 +10,9 @@ from accelerate.utils import extract_model_from_parallel
 from gen.configs.base import BaseConfig
 from gen.utils.decoupled_utils import is_main_process
 from gen.utils.logging_utils import log_info
-
+from typing import Optional
+from abc import ABC, abstractmethod
+import torch.nn as nn
 
 def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step: int):
     # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
@@ -34,6 +36,7 @@ def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step:
     save_path = cfg.checkpoint_dir / f"checkpoint-{global_step}"
     accelerator.save_state(save_path, safe_serialization=False)
     log_info(f"Saved state to {save_path}")
+    return save_path
 
 
 @dataclass
@@ -43,11 +46,26 @@ class TrainingState:
     global_step: int  # Current number of steps which does not reset.
     epoch: int
 
+class Trainable(nn.Module, ABC):
+    @abstractmethod
+    def forward(self, batch: dict):
+        ...
+
+    @abstractmethod
+    def set_training_mode():
+        ...
+
+    @abstractmethod
+    def set_inference_mode():
+        ...
+
+    @abstractmethod
+    def checkpoint(accelerator: Accelerator, state: TrainingState):
+        ...
+    
 
 def check_every_n_steps(state: TrainingState, n: int, run_first: bool = False, all_processes: bool = False):
     return (state.global_step % n == 0 and (run_first or state.global_step > 0)) and (is_main_process() or all_processes)
-
-from typing import Optional
 
 
 def check_every_n_epochs(state: TrainingState, n: Optional[int], run_first: bool = False, all_processes: bool = False):

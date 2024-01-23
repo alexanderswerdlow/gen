@@ -4,17 +4,6 @@ import torch.nn.functional as F
 import torch
 import math
 
-from abc import ABC, abstractmethod
-class Trainable(nn.Module, ABC):
-    @abstractmethod
-    def forward(self, batch: dict):
-        ...
-
-    @abstractmethod
-    def set_training_mode():
-        ...
-    
-
 def _init_weights(m):
     initializer_range=0.02
     if isinstance(m, nn.Linear):

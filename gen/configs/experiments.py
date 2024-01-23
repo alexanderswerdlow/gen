@@ -199,3 +199,16 @@ def get_experiments():
         trainer=dict(enable_xformers_memory_efficient_attention=True),
         inference=dict(visualize_attention_map=False)
     )
+
+    mode_store(
+        name="break_a_scene",
+    )
+
+    mode_store(
+        name="sd21",
+        model=dict(pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base"),
+    )
+
+    # pretrained_model_name_or_path: Optional[str] = 
+    # token_embedding_dim: int = 1024
+    # resolution: int = 768

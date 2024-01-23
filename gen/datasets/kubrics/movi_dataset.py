@@ -1,3 +1,4 @@
+import autoroot
 import os
 import warnings
 from pathlib import Path
@@ -217,13 +218,14 @@ if __name__ == "__main__":
         augment=False,
         num_frames=24,
         tokenizer=tokenizer,
-        path=MOVI_OVERFIT_DATASET_PATH,
-        num_objects=1,
-        augmentation=Augmentation(minimal_source_augmentation=True, enable_crop=False),
+        path=MOVI_DATASET_PATH,
+        num_objects=23,
+        augmentation=Augmentation(minimal_source_augmentation=False, enable_crop=True),
         return_video=True
     )
     dataloader = dataset.get_dataloader()
     for batch in dataloader:
-        breakpoint()
-        from image_utils import Im
+        st()
+        from image_utils import Im, get_layered_image_from_binary_mask
+        Im(get_layered_image_from_binary_mask(batch['gen_segmentation'].squeeze(0))).save()
         Im((batch['gen_pixel_values'][0] + 1) / 2).save(batch['video'][0])

@@ -36,6 +36,13 @@ from gen.utils.decoupled_utils import get_rank, is_main_process
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import unwrap
 from diffusers.utils.logging import disable_progress_bar
+from diffusers import (
+    AutoencoderKL,
+    DDPMScheduler,
+    DiffusionPipeline,
+    UNet2DConditionModel,
+    DDIMScheduler,
+)
 
 def gather(device: torch.device, img: Union[Im, Iterable[Im]], gather_different: bool = False):
     if gather_different:
@@ -115,10 +122,11 @@ def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
     model.text_encoder = pipeline.text_encoder
     model.unet = pipeline.unet
     model.vae = pipeline.vae
+
     if train_cfg.trainer.enable_xformers_memory_efficient_attention:
         import xformers
-
         pipeline.unet.enable_xformers_memory_efficient_attention()
+        
     model.unet.set_attn_processor(XTIAttenProc())
 
     model.add_adapters(torch_dtype, accelerator, bypass_dtype_check=True)
@@ -419,9 +427,25 @@ def load_stable_diffusion_model(
     pipeline = cls.from_pretrained(**kwargs)
     pipeline = pipeline.to(accelerator.device)
     
-    pipeline.scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
+    if cfg.inference.use_ddim:
+        scheduler = DDIMScheduler(
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
+            clip_sample=False,
+            set_alpha_to_one=False,
+        )
+    else:
+        scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
+
+    scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
+    pipeline.scheduler = scheduler
+    
     pipeline.set_progress_bar_config(disable=True)
-    pipeline.scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
+    
+
+    # if cfg.model.lora_unet:
+    #     pipeline.load_lora_weights(args.output_dir)
     
     if cfg.model.per_timestep_conditioning:
         pipeline.unet.set_attn_processor(XTIAttenProc())

@@ -119,7 +119,7 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
 
     if not input_data.image_only:
         output_data.grid, output_data.mask = process_output_keypoints(output_keypoints, B, H, W, output_data.image.shape[-2], output_data.image.shape[-1])
-        output_data.segmentation = process_output_segmentation(output_data.segmentation.squeeze(1), output_data.mask, H, W)
+        output_data.segmentation = process_output_segmentation(output_keypoints, output_data.segmentation.squeeze(1), output_data.image.shape[-2], output_data.image.shape[-1], -1)
 
     if should_viz:
         Im(input_image.permute(0, 2, 3, 1)[:, output_data.grid[..., 0], output_data.grid[..., 1]][0]).save()

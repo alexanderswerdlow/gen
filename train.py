@@ -29,7 +29,7 @@ from gen.models.neti.validator import ValidationHandler
 from gen.models.neti_base_model import BaseMapper as OriginalBaseMapper
 from gen.utils.decoupled_utils import Profiler, is_main_process, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn
-from gen.utils.trainer_utils import TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing, unwrap
+from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing, unwrap
 from transformers import CLIPTokenizer
 
 def trainable_parameters(module):
@@ -51,7 +51,7 @@ class Trainer:
         self.cfg = cfg
         self.accelerator = accelerator
 
-        self.model: nn.Module = None  # Generally, we try to have a single top-level nn.Module that contains all the other models
+        self.model: Trainable = None  # Generally, we try to have a single top-level nn.Module that contains all the other models
         self.models: list[Union[nn.Module, dict]] = None  # We support multiple models or dicts of named parameters if necessary
         self.optimizer: torch.optim.Optimizer = None
         self.lr_scheduler: torch.optim.lr_scheduler.LRScheduler = None
@@ -113,6 +113,7 @@ class Trainer:
         self.train_dataloader: DataLoader = hydra.utils.instantiate(self.cfg.dataset.train_dataset, _recursive_=True)(
             cfg=self.cfg, split=Split.TRAIN, tokenizer=self.tokenizer, accelerator=self.accelerator
         ).get_dataloader()
+        assert len(self.train_dataloader) > 0
 
         log_info("Creating validation_dataset + self.validation_dataloader")
         self.validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(self.cfg.dataset.validation_dataset, _recursive_=True)(
@@ -123,10 +124,10 @@ class Trainer:
             self.validation_dataset_holder.get_dataset = lambda: self.train_dataloader.dataset
 
         self.validation_dataloader = self.validation_dataset_holder.get_dataloader()
+        assert len(self.validation_dataloader) > 0
 
     def init_optimizer(self):
         optimizer_class = torch.optim.AdamW
-        log_warn("TOOD: Scale LR based on accum")
         self.optimizer = optimizer_class(
             get_named_params_to_optimize(self.models).values(),
             lr=self.cfg.trainer.learning_rate,
@@ -198,18 +199,14 @@ class Trainer:
             log_info(f"Continuing training from epoch {first_epoch} and global step {global_step}")
             return global_step
 
-    def checkpoint(self, global_step: int, model: nn.Module, checkpoint_handler: CheckpointHandler):
-        if self.cfg.model.lora_unet:
-            log_error("LoRA UNet checkpointing not implemented")
-
+    def checkpoint(self, state: TrainingState):
         if self.cfg.model.model_type == ModelType.BASE_MAPPER:
-            checkpoint_handler.save_model(model=model, accelerator=self.accelerator, save_name=f"{global_step}")
-            if self.cfg.trainer.save_self.accelerator_format:
-                handle_checkpointing(self.cfg, self.accelerator, global_step)
-                save_path = self.cfg.checkpoint_dir / f"checkpoint-model-{global_step}"
-                self.accelerator.save_model(model, save_path, safe_serialization=False)
+            if self.cfg.model.per_timestep_conditioning:
+                self.checkpoint_handler.save_model(model=self.model, accelerator=self.accelerator, save_name=f"{state.global_step}")
+            else:
+                self.model.checkpoint(self.accelerator, state)
         else:
-            handle_checkpointing(self.cfg, self.accelerator, global_step)
+            handle_checkpointing(self.cfg, self.accelerator, state.global_step)
 
     def validate(self, state: TrainingState):
         self.accelerator.free_memory()
@@ -339,7 +336,7 @@ class Trainer:
                 # Checks if the self.accelerator has performed an optimization step behind the scenes
                 if self.accelerator.sync_gradients:
                     if check_every_n_steps(state, self.cfg.trainer.checkpointing_steps, run_first=False, all_processes=False):
-                        self.checkpoint(self.cfg, self.accelerator, global_step, self.model, self.checkpoint_handler)
+                        self.checkpoint(state)
 
                     if (
                         check_every_n_steps(state, self.cfg.trainer.eval_every_n_steps, run_first=self.cfg.trainer.eval_on_start, all_processes=True)
@@ -389,6 +386,6 @@ class Trainer:
                 profiler.finish()
                 exit()
 
-            self.checkpoint(global_step, self.model, self.checkpoint_handler)
+            self.checkpoint(state)
 
         self.accelerator.end_training()

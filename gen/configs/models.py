@@ -30,25 +30,28 @@ class ModelConfig:
 
     model_type: ModelType = ModelType.BASE_MAPPER
 
-    controlnet: bool = False
+    controlnet: bool = False # Add a controlnet on top of the main U-Net
     freeze_unet: bool = True
-    lora_unet: bool = False
-    freeze_text_encoder: bool = True
-    freeze_clip: bool = True
-    unfreeze_last_n_clip_layers: Optional[int] = None
+    lora_unet: bool = False # Perform low-rank adaptation on the main U-Net
+    freeze_mapper: bool = False # Freezes the cross-attention mapper itself. Useful for debugging.
+    freeze_text_encoder: bool = True # We freeze the CLIP Text encoder by default
+    freeze_text_encoder_except_token_embeddings: bool = False # We can choose to only train the token embeddings like in break-a-scene
+    freeze_clip: bool = True # We freeze the CLIP Vision encoder by default
+    unfreeze_last_n_clip_layers: Optional[int] = None # Unfreeze specific clip layers
     unfreeze_unet_after_n_steps: Optional[int] = None
 
-    dropout_masks: Optional[float] = None
-    per_timestep_conditioning: bool = True
-    
-    enable_neti: bool = False
-    use_dataset_segmentation: bool = True
+    dropout_masks: Optional[float] = None # We can randomly dropout object masks during training. The background is always preserved.
+    per_timestep_conditioning: bool = True # Switches to the NeTI-style conditioning scheme where we get an embedding per T+L
+    enable_neti: bool = False # Even in the NeTI-style conditioning scheme, we may want to disable the NeTI mapper itself and use a different T+L enc
+
+    use_dataset_segmentation: bool = True # Determines if we use the dataset GT or SAM
     cross_attn_dim: int = 1024
     
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
 
     lora_rank: int = 4
+    break_a_scene_loss_weight: float = 1e-2
 
     # NeTI Specific Configs below
     placeholder_token: str = "android"
@@ -64,7 +67,6 @@ class ModelConfig:
     use_timestep_layer_encoding: bool = True # Whether to use T+L in our custom mapper, otherwise just a learned emb
     enable_norm_scale: bool = True
     cross_attn_residual: bool = True
-    freeze_mapper: bool = False
     use_nested_dropout: bool = True # Whether to use our Nested Dropout technique
     nested_dropout_prob: float = 0.5 # Probability to apply nested dropout during training
     normalize_mapper_output: bool = True # Whether to normalize the norm of the mapper's output vector
