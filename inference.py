@@ -11,13 +11,25 @@ from accelerate import Accelerator
 from accelerate.utils import PrecisionType
 from accelerate.utils import gather as accelerate_gather
 from accelerate.utils import gather_object as accelerate_gather_object
-from diffusers import (AutoencoderKL, DPMSolverMultistepScheduler,
-                       StableDiffusionControlNetPipeline,
-                       StableDiffusionPipeline, UNet2DConditionModel)
+from diffusers import (
+    AutoencoderKL,
+    DDIMScheduler,
+    DDPMScheduler,
+    DiffusionPipeline,
+    DPMSolverMultistepScheduler,
+    StableDiffusionControlNetPipeline,
+    StableDiffusionPipeline,
+    UNet2DConditionModel,
+)
+from diffusers.utils.logging import disable_progress_bar
+from gen.utils.trainer_utils import TrainingState, Trainable
+
 from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
 from tqdm import tqdm
 from transformers import CLIPTokenizer
+from transformers.models.clip.modeling_clip import CLIPTextModel
+from gen.utils.trainer_utils import Trainable
 
 from gen.configs.base import BaseConfig
 from gen.configs.inference import InferenceConfig
@@ -25,24 +37,23 @@ from gen.datasets.base_dataset import Split
 from gen.models.base_mapper_model import BaseMapper
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
-from transformers.models.clip.modeling_clip import CLIPTextModel
 from gen.models.neti.sd_pipeline import sd_pipeline_call
 from gen.models.neti.xti_attention_processor import XTIAttenProc
+from gen.models.utils import get_model_from_cfg
 from gen.utils.attention_visualization_utils import (
-    cross_attn_init, get_all_net_attn_maps, register_cross_attention_hook,
-    resize_net_attn_map, retrieve_attn_maps_per_timestep,
-    unregister_cross_attention_hook)
+    cross_attn_init,
+    get_all_net_attn_maps,
+    register_cross_attention_hook,
+    resize_net_attn_map,
+    retrieve_attn_maps_per_timestep,
+    unregister_cross_attention_hook,
+)
 from gen.utils.decoupled_utils import get_rank, is_main_process
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import unwrap
-from diffusers.utils.logging import disable_progress_bar
-from diffusers import (
-    AutoencoderKL,
-    DDPMScheduler,
-    DiffusionPipeline,
-    UNet2DConditionModel,
-    DDIMScheduler,
-)
+
+from gen.models.break_a_scene import aggregate_attention, save_cross_attention_vis
+
 
 def gather(device: torch.device, img: Union[Im, Iterable[Im]], gather_different: bool = False):
     if gather_different:
@@ -81,70 +92,16 @@ def get_image_grid(images: List[Image.Image]) -> Image:
     return grid_image
 
 
-def inference(inference_cfg: BaseConfig, accelerator: Accelerator):
-    if inference_cfg.inference.inference_dir is None:
-        assert inference_cfg.inference.input_dir is not None, "You must pass an input_dir if you do not specify inference_dir"
-        inference_cfg.inference.inference_dir = inference_cfg.inference.input_dir / f"inference_{inference_cfg.inference.iteration}"
-    if inference_cfg.inference.mapper_checkpoint_path is None:
-        assert inference_cfg.inference.input_dir is not None, "You must pass an input_dir if you do not specify mapper_checkpoint_path"
-        inference_cfg.inference.mapper_checkpoint_path = (
-            inference_cfg.inference.input_dir / "checkpoints" / f"mapper-steps-{inference_cfg.inference.iteration}.pt"
-        )
-    if inference_cfg.inference.learned_embeds_path is None:
-        assert inference_cfg.inference.input_dir is not None, "You must pass an input_dir if you do not specify learned_embeds_path"
-        inference_cfg.inference.learned_embeds_path = (
-            inference_cfg.inference.input_dir / "checkpoints" / f"learned_embeds-steps-{inference_cfg.inference.iteration}.bin"
-        )
+def inference(cfg: BaseConfig, accelerator: Accelerator):
+    model = get_model_from_cfg(cfg)
 
-    inference_cfg.inference.inference_dir.mkdir(exist_ok=True, parents=True)
-    if type(inference_cfg.inference.truncation_idxs) == int:
-        inference_cfg.inference.truncation_idxs = [inference_cfg.inference.truncation_idxs]
-    torch_dtype = torch.bfloat16 if inference_cfg.trainer.mixed_precision == PrecisionType.BF16 else torch.float32
-
-    train_cfg, mapper, clip_state_dict = CheckpointHandler.load_mapper(inference_cfg.inference.mapper_checkpoint_path)
-    train_cfg.inference = inference_cfg.inference
-
-    pipeline = load_stable_diffusion_model(
-        accelerator=accelerator,
-        model=mapper,
-        torch_dtype=torch_dtype,
-        cfg=train_cfg,
-    )
-
-    model = BaseMapper(train_cfg, init_modules=False)
-
-    if clip_state_dict is not None:
-        model.clip.load_state_dict(clip_state_dict)
-    else:
-        warnings.warn("No clip state dict found in mapper checkpoint, using pretrained clip state dict")
-
-    model.tokenizer = pipeline.tokenizer
-    model.text_encoder = pipeline.text_encoder
-    model.unet = pipeline.unet
-    model.vae = pipeline.vae
-
-    if train_cfg.trainer.enable_xformers_memory_efficient_attention:
-        import xformers
-        pipeline.unet.enable_xformers_memory_efficient_attention()
-        
-    model.unet.set_attn_processor(XTIAttenProc())
-
-    model.add_adapters(torch_dtype, accelerator, bypass_dtype_check=True)
-
-    validation_dataloader = hydra.utils.instantiate(train_cfg.dataset.validation_dataset, _recursive_=False)(
-        cfg=inference_cfg, split=Split.VALIDATION, tokenizer=pipeline.tokenizer, accelerator=accelerator
+    validation_dataloader = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=False)(
+        cfg=cfg, split=Split.VALIDATION, tokenizer=model.tokenizer, accelerator=accelerator
     ).get_dataloader()
 
     validation_dataloader, model = accelerator.prepare(validation_dataloader, model)
 
-    run_inference_dataloader(
-        accelerator=accelerator,
-        model=model,
-        pipeline=pipeline,
-        output_path=inference_cfg.output_dir,
-        dataloader=validation_dataloader,
-        inference_cfg=inference_cfg.inference,
-    )
+    model.run_inference(accelerator=accelerator, state=TrainingState(0, 0, 0, 0), dataloader=validation_dataloader)
 
 
 def run_inference_dataloader(
@@ -153,7 +110,7 @@ def run_inference_dataloader(
     pipeline: Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline],
     output_path: Path,
     dataloader: torch.utils.data.DataLoader,
-    inference_cfg: InferenceConfig,
+    cfg: BaseConfig,
     global_step: Optional[int] = None,
 ):
     output_path.mkdir(exist_ok=True, parents=True)
@@ -163,29 +120,55 @@ def run_inference_dataloader(
     log_info(f"Running inference. Dataloder size: {len(dataloader)}")
     for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
         from image_utils import Im
+
         log_info(f"Generating with batch {i}")
         orig_input_ids = batch["input_ids"].clone()
 
         images = []
         orig_image = Im((batch["gen_pixel_values"].squeeze(0) + 1) / 2)
-        gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(text="GT")
+        gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(
+            text="GT", relative_font_scale=0.004
+        )
 
         batch["input_ids"] = orig_input_ids.clone()
         prompt_image, input_prompt, prompt_embeds = run_inference_batch(
             batch=batch,
             model=model,
             pipeline=pipeline,
-            visualize_attention_map=inference_cfg.visualize_attention_map,
-            inference_cfg=inference_cfg,
-            seed=int(str(i) + str(get_rank())),
+            visualize_attention_map=cfg.inference.visualize_attention_map,
+            inference_cfg=cfg.inference,
+            num_images_per_prompt=cfg.inference.num_images_per_prompt,
         )
 
         full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
-        images.append(Im.concat_vertical(prompt_image, full_seg).write_text(text="Gen"))
+        images.append(
+            Im.concat_horizontal(
+                Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}", relative_font_scale=0.004)
+                for i, prompt_image_ in enumerate(prompt_image)
+            )
+        )
 
-        if inference_cfg.visualize_attention_map:
+        if cfg.model.break_a_scene_cross_attn_loss:
+            batch_size = (2 if cfg.inference.guidance_scale > 1.0 else 1) * cfg.inference.num_images_per_prompt
+
+            agg_attn_cond = aggregate_attention(controller=model.controller, res=16, from_where=("up", "down"), is_cross=True, select=-1, batch_size=batch_size)
+            attn_img_cond = Im(save_cross_attention_vis(tokenizer=model.tokenizer, tokens=batch["input_ids"][0], attention_maps=agg_attn_cond)).write_text("Cond")
+
+            agg_attn_uncond = aggregate_attention(controller=model.controller, res=16, from_where=("up", "down"), is_cross=True, select=0, batch_size=batch_size)
+            uncond_tokens = pipeline.tokenizer(
+                [""],
+                padding="max_length",
+                max_length=pipeline.tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            attn_img_uncond = Im(save_cross_attention_vis(tokenizer=model.tokenizer, tokens=uncond_tokens['input_ids'][0], attention_maps=agg_attn_uncond)).write_text("Uncond")
+
+            all_output_attn_viz.append(Im.concat_vertical(attn_img_cond, attn_img_uncond))
+
+        elif cfg.inference.visualize_attention_map:
             desired_res = (64, 64)
-            # inference_cfg.guidance_scale > 1.0
+            # inference_cfg.inference.guidance_scale > 1.0
             attn_maps_per_timestep = retrieve_attn_maps_per_timestep(
                 image_size=prompt_image.size, timesteps=pipeline.scheduler.timesteps.shape[0], chunk=False
             )
@@ -204,7 +187,7 @@ def run_inference_dataloader(
             # fmt: on
 
             for _, (attn_map, token) in enumerate(zip(attn_maps_img_by_timestep[0], tokens)):
-                if token == model.cfg.model.placeholder_token:
+                if token == model.cfg.inference.model.placeholder_token:
                     mask_bool = batch["gen_segmentation"][..., mask_idx].squeeze(0).cpu().bool().numpy()
                     orig_image_ = orig_image.np.copy()
                     orig_image_[~mask_bool] = 0
@@ -217,9 +200,11 @@ def run_inference_dataloader(
 
                 output_cols.append(orig_image_.resize(*desired_res).write_text(text_to_write, relative_font_scale=0.004))
 
-            all_output_attn_viz.append(Im.concat_vertical(attn_viz_, Im.concat_horizontal(output_cols, spacing=5), Im(prompt_image).resize(*desired_res)))
+            all_output_attn_viz.append(
+                Im.concat_vertical(attn_viz_, Im.concat_horizontal(output_cols, spacing=5), Im(prompt_image).resize(*desired_res))
+            )
 
-            if is_main_process() and inference_cfg.visualize_embeds:
+            if is_main_process() and cfg.inference.visualize_embeds:
                 embeds_ = torch.stack([v[-1] for k, v in prompt_embeds[0].items() if "CONTEXT_TENSOR" in k and "BYPASS" not in k], dim=0)
                 bypass_embeds_ = None
                 if any("BYPASS" in k for k in prompt_embeds[0].keys()):
@@ -269,10 +254,10 @@ def run_inference_dataloader(
                 except:
                     log_warn("Nan likely found in embeds")
 
-        if inference_cfg.num_masks_to_remove is not None:
+        if cfg.inference.num_masks_to_remove is not None:
             gen_segmentation = batch["gen_segmentation"]
 
-            for j in range(gen_segmentation.shape[-1])[: inference_cfg.num_masks_to_remove]:
+            for j in range(gen_segmentation.shape[-1])[: cfg.inference.num_masks_to_remove]:
                 log_info(f"Generating with removed mask {j}")
                 batch["gen_segmentation"] = gen_segmentation[..., torch.arange(gen_segmentation.size(-1)) != j]
                 batch["input_ids"] = orig_input_ids.clone()
@@ -280,7 +265,7 @@ def run_inference_dataloader(
                     batch=batch,
                     model=model,
                     pipeline=pipeline,
-                    inference_cfg=inference_cfg,
+                    inference_cfg=cfg.inference,
                 )
                 mask_image = Im(get_layered_image_from_binary_mask(gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
                 mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
@@ -305,7 +290,7 @@ def run_inference_dataloader(
         spacing=25,
     )
 
-    if inference_cfg.visualize_attention_map:
+    if cfg.model.break_a_scene_cross_attn_loss or cfg.inference.visualize_attention_map:
         output_attn_viz = gather(device, all_output_attn_viz, gather_different=True)
         log_with_accelerator(
             accelerator=accelerator,
@@ -324,16 +309,14 @@ def run_inference_batch(
     model: BaseMapper,
     pipeline: Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline],
     inference_cfg: InferenceConfig,
-    seed: int = 42,
     num_images_per_prompt: int = 1,
     truncation_idx: Optional[int] = None,
     visualize_attention_map: bool = False,
 ) -> Image.Image:
-    assert num_images_per_prompt == 1, "Only num_images_per_prompt=1 is supported for now"
     if visualize_attention_map:
         # cross_attn_init()
         pipeline.unet = register_cross_attention_hook(pipeline.unet)
-    
+
     with torch.cuda.amp.autocast():
         negative_prompt_embeds = None
         if inference_cfg.use_custom_pipeline:
@@ -355,31 +338,27 @@ def run_inference_batch(
             assert inference_cfg.empty_string_cfg
             pipeline_kwargs, input_prompt = model.get_standard_conditioning_for_inference(batch=batch)
 
-
-    generator = torch.Generator(device="cuda").manual_seed(seed)
     if inference_cfg.use_custom_pipeline:
         images = sd_pipeline_call(
             pipeline=pipeline,
             negative_prompt_embeds=negative_prompt_embeds,
-            generator=generator,
             num_images_per_prompt=num_images_per_prompt,
             guidance_scale=inference_cfg.guidance_scale,
             batched_cfg=inference_cfg.batched_cfg,
-            **pipeline_kwargs
-        ).images[0]
+            **pipeline_kwargs,
+        ).images
     else:
         images = pipeline(
             negative_prompt_embeds=negative_prompt_embeds,
-            generator=generator,
             num_images_per_prompt=num_images_per_prompt,
             guidance_scale=inference_cfg.guidance_scale,
-            **pipeline_kwargs
-        ).images[0]
+            **pipeline_kwargs,
+        ).images
 
     if visualize_attention_map:
         pipeline.unet = unregister_cross_attention_hook(pipeline.unet)
 
-    return images, input_prompt, pipeline_kwargs['prompt_embeds']
+    return images, input_prompt, pipeline_kwargs["prompt_embeds"]
 
 
 def load_stable_diffusion_model(
@@ -426,7 +405,7 @@ def load_stable_diffusion_model(
 
     pipeline = cls.from_pretrained(**kwargs)
     pipeline = pipeline.to(accelerator.device)
-    
+
     if cfg.inference.use_ddim:
         scheduler = DDIMScheduler(
             beta_start=0.00085,
@@ -440,20 +419,19 @@ def load_stable_diffusion_model(
 
     scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
     pipeline.scheduler = scheduler
-    
-    pipeline.set_progress_bar_config(disable=True)
-    
 
     # if cfg.model.lora_unet:
     #     pipeline.load_lora_weights(args.output_dir)
-    
+
     if cfg.model.per_timestep_conditioning:
         pipeline.unet.set_attn_processor(XTIAttenProc())
 
     return pipeline
 
 
-def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], global_step: int, name: str, save_folder: Optional[Path] = None, spacing: int = 15):
+def log_with_accelerator(
+    accelerator: Accelerator, images: List[Image.Image], global_step: int, name: str, save_folder: Optional[Path] = None, spacing: int = 15
+):
     save_folder.parent.mkdir(exist_ok=True)
 
     if len(images) == 1:
@@ -469,4 +447,4 @@ def log_with_accelerator(accelerator: Accelerator, images: List[Image.Image], gl
             np_images = np.stack([np.asarray(img) for img in images])
             tracker.writer.add_images(name, np_images, global_step, dataformats="NHWC")
         if tracker.name == "wandb":
-            tracker.log({name: wandb.Image(Im.concat_horizontal(images, spacing=spacing).pil)}, step=global_step)
+            tracker.log({name: wandb.Image(Im.concat_horizontal(images, spacing=spacing, fill=(255, 255, 255)).pil)}, step=global_step)

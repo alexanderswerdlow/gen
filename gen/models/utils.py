@@ -4,6 +4,23 @@ import torch.nn.functional as F
 import torch
 import math
 
+from gen.configs.base import BaseConfig
+from gen.configs.models import ModelType
+
+
+def get_model_from_cfg(cfg: BaseConfig):
+    from gen.models.base_mapper_model import BaseMapper
+    from gen.models.neti_base_model import BaseMapper as OriginalBaseMapper
+    match cfg.model.model_type:
+        case ModelType.BASE_MAPPER:
+            if cfg.model.per_timestep_conditioning:
+                return OriginalBaseMapper(cfg)
+            else:
+                return BaseMapper(cfg)
+        case _:
+            raise ValueError(f"Unknown model type: {cfg.model.model_type}")
+
+
 def _init_weights(m):
     initializer_range=0.02
     if isinstance(m, nn.Linear):

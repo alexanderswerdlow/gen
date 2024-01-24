@@ -187,9 +187,10 @@ def get_experiments():
 
     mode_store(
         name="lora",
-        model=dict(controlnet=False, lora_unet=True),
+        model=dict(controlnet=False, lora_unet=True, lora_rank=4),
         trainer=dict(learning_rate=1e-6, scale_lr_batch_size=True, compile=True),
         dataset=dict(train_dataset=dict(batch_size=20)),
+        inference=dict(num_images_per_prompt=2)
     )
 
     mode_store(
@@ -202,6 +203,22 @@ def get_experiments():
 
     mode_store(
         name="break_a_scene",
+        model=dict(pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base", token_embedding_dim=1024, lora_rank=128),
+        trainer=dict(enable_xformers_memory_efficient_attention=False, eval_every_n_steps=250, max_train_steps=10000, checkpointing_steps=1000),
+        dataset=dict(
+            train_dataset=dict(batch_size=6, augmentation=dict(enable_crop=False, enable_horizontal_flip=True)),
+            validation_dataset=dict(augmentation=dict(enable_crop=False, enable_horizontal_flip=True)),
+        ),
+    )
+
+    mode_store(
+        name="break_a_scene_attn_loss",
+        model=dict(break_a_scene_cross_attn_loss=True),
+    )
+
+    mode_store(
+        name="break_a_scene_mask_loss",
+        model=dict(break_a_scene_masked_loss=True),
     )
 
     mode_store(

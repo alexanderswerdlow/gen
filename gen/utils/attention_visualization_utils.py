@@ -1,23 +1,21 @@
-from collections import defaultdict
-import os
 import math
+import os
+from collections import defaultdict
 from typing import Optional
-import numpy as np
-from PIL import Image
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-
-from diffusers.utils import deprecate
 from diffusers.models.attention_processor import Attention, AttnProcessor, AttnProcessor2_0, LoRAAttnProcessor, LoRAAttnProcessor2_0
+from diffusers.utils import deprecate
+from PIL import Image
 
 from gen.models.neti.xti_attention_processor import XTIAttenProc
-import math
-
 from gen.utils.logging_utils import log_info
 
 attn_maps = defaultdict(list)
 hooks = []
+
 
 def attn_call(
     self,
@@ -241,6 +239,7 @@ def remove_last_map():
     for _, attn_maps_layer_ in attn_maps.items():
         attn_maps_layer_.pop()
 
+
 def cross_attn_init():
     AttnProcessor.__call__ = attn_call
     AttnProcessor2_0.__call__ = attn_call  # attn_call is faster
@@ -293,13 +292,20 @@ def register_cross_attention_hook(unet):
 
     return unet
 
+
 def unregister_cross_attention_hook(unet):
     global hooks
     for name, module in unet.named_modules():
         if not name.split(".")[-1].startswith("attn2"):
             continue
 
-        if isinstance(module.processor, AttnProcessor) or isinstance(module.processor, AttnProcessor2_0) or isinstance(module.processor, LoRAAttnProcessor) or isinstance(module.processor, LoRAAttnProcessor2_0) or isinstance(module.processor, XTIAttenProc):
+        if (
+            isinstance(module.processor, AttnProcessor)
+            or isinstance(module.processor, AttnProcessor2_0)
+            or isinstance(module.processor, LoRAAttnProcessor)
+            or isinstance(module.processor, LoRAAttnProcessor2_0)
+            or isinstance(module.processor, XTIAttenProc)
+        ):
             module.processor.store_attn_map = False
 
     for hook in hooks:
@@ -352,9 +358,9 @@ def retrieve_attn_maps_per_timestep(image_size, timesteps, detach=True, chunk=Tr
             attn_maps_layer_ = mean_and_scale(attn_maps_layer_, target_size)  # (10,32*32,77) -> (77,64*64)
             attn_maps_layers.append(attn_maps_layer_)
 
-        attn_maps_layers = torch.mean(torch.stack(attn_maps_layers, dim=0), dim=0) # (77,64*64)
+        attn_maps_layers = torch.mean(torch.stack(attn_maps_layers, dim=0), dim=0)  # (77,64*64)
         latent_size = int(math.sqrt(attn_maps_layers.shape[1]))
-        attn_maps_per_timestep.append(attn_maps_layers.reshape(attn_maps_layers.shape[0], latent_size, latent_size)) # (77,64*64) -> (77,64,64)
+        attn_maps_per_timestep.append(attn_maps_layers.reshape(attn_maps_layers.shape[0], latent_size, latent_size))  # (77,64*64) -> (77,64,64)
 
     attn_maps = defaultdict(list)
     return attn_maps_per_timestep
@@ -387,13 +393,13 @@ def get_all_net_attn_maps(attn_maps_per_timestep, tokens):
     We then normalize the entire image by the max/min values.
     """
     attn_maps_img_by_timestep = []
-    for attn_maps_single_timestep in attn_maps_per_timestep: # [(77,64,64), (77,64,64), ...)]
+    for attn_maps_single_timestep in attn_maps_per_timestep:  # [(77,64,64), (77,64,64), ...)]
         total_attn_scores = 0
         attn_maps_img = []
         # attn_maps_single_timestep = attn_maps_single_timestep[:len(tokens)].softmax(dim=0)
         min_, max_ = torch.min(attn_maps_single_timestep).item(), torch.max(attn_maps_single_timestep).item()
         for i, (token, attn_map_single_token) in enumerate(zip(tokens, attn_maps_single_timestep)):
-            attn_maps_img.append(get_attn_map_img(attn_map_single_token.cpu().numpy(), norm=None)) # (min_, max_)
+            attn_maps_img.append(get_attn_map_img(attn_map_single_token.cpu().numpy(), norm=None))  # (min_, max_)
             attn_map_score = torch.sum(attn_map_single_token)
             h, w = attn_map_single_token.shape
             attn_map_total = h * w

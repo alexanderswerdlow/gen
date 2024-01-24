@@ -51,7 +51,10 @@ class ModelConfig:
     encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
 
     lora_rank: int = 4
-    break_a_scene_loss_weight: float = 1e-2
+    break_a_scene_cross_attn_loss: bool = False
+    break_a_scene_cross_attn_loss_weight: float = 1e-2
+    break_a_scene_masked_loss: bool = False
+    background_mask_idx: int = 0 # Used for the break-a-scene mask loss to not count loss for the background mask
 
     # NeTI Specific Configs below
     placeholder_token: str = "android"

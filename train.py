@@ -1,5 +1,6 @@
 load_time = __import__("time").time()
 
+from collections import defaultdict
 import itertools
 import math
 import os
@@ -27,9 +28,10 @@ from gen.models.base_mapper_model import BaseMapper
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
 from gen.models.neti_base_model import BaseMapper as OriginalBaseMapper
+from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import Profiler, is_main_process, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn
-from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing, unwrap
+from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing_dirs, unwrap
 from transformers import CLIPTokenizer
 
 def trainable_parameters(module):
@@ -75,12 +77,10 @@ class Trainer:
         self.models = []
         weight_dtype = getattr(torch, self.cfg.trainer.dtype.split(".")[-1])
         match self.cfg.model.model_type:
-            case ModelType.SODA:
-                pass
             case ModelType.BASE_MAPPER:
                 assert self.cfg.model.model_type == ModelType.BASE_MAPPER
+                model = get_model_from_cfg(self.cfg)
                 if self.cfg.model.per_timestep_conditioning:
-                    model = OriginalBaseMapper(self.cfg)
                     model.prepare_for_training(self.cfg.trainer.dtype, self.accelerator)
 
                     if self.cfg.model.freeze_text_encoder:
@@ -96,8 +96,6 @@ class Trainer:
 
                     summary(unwrap(model.text_encoder).text_model.embeddings, col_names=("trainable", "num_params"), verbose=2)
                 else:
-                    model = BaseMapper(self.cfg)
-                    model.add_adapters()
                     self.models.append(model)
                     self.model = self.accelerator.prepare(model)
 
@@ -172,7 +170,7 @@ class Trainer:
             # Get the most recent checkpoint
             dirs = os.listdir(self.cfg.checkpoint_dir)
             dirs = [d for d in dirs if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
+            dirs = sorted(dirs, key=lambda x: int(x.split("_")[-1]))
             path = dirs[-1] if len(dirs) > 0 else None
         else:
             path = Path(self.cfg.trainer.ckpt)
@@ -184,15 +182,14 @@ class Trainer:
             log_info(f"Resuming from checkpoint {path}")
             if path.is_file() or self.cfg.trainer.load_weights_only_no_state:
                 from accelerate.utils.modeling import load_checkpoint_in_model
-
                 load_checkpoint_in_model(self.model, str(path))
             else:
                 self.accelerator.load_state(path)
 
             if path.is_file():
-                global_step = int(path.parent.name.split("-")[-1])
+                global_step = int(path.parent.name.split("_")[-1])
             else:
-                global_step = int(path.name.split("-")[1])
+                global_step = int(path.name.split("_")[-1] if "_" in path.name else path.parent.name.split("_")[-1])
 
             # first_epoch = global_step // num_update_steps_per_epoch
             first_epoch = 0
@@ -200,36 +197,28 @@ class Trainer:
             return global_step
 
     def checkpoint(self, state: TrainingState):
-        if self.cfg.model.model_type == ModelType.BASE_MAPPER:
-            if self.cfg.model.per_timestep_conditioning:
-                self.checkpoint_handler.save_model(model=self.model, accelerator=self.accelerator, save_name=f"{state.global_step}")
-            else:
-                self.model.checkpoint(self.accelerator, state)
+        prefix = "checkpoint"
+        handle_checkpointing_dirs(self.cfg, prefix="checkpoint")
+        save_path = self.cfg.checkpoint_dir / f"{prefix}_{state.global_step}"
+        save_path.mkdir(exist_ok=True, parents=True)
+        if self.cfg.model.per_timestep_conditioning:
+            self.checkpoint_handler.save_model(model=self.model, accelerator=self.accelerator, save_name=f"{state.global_step}")
         else:
-            handle_checkpointing(self.cfg, self.accelerator, state.global_step)
+            unwrap(self.model).checkpoint(self.accelerator, state, save_path)
 
     def validate(self, state: TrainingState):
-        self.accelerator.free_memory()
         validation_start_time = time()
         if self.cfg.dataset.reset_validation_dataset_every_epoch:
             if state.epoch == 0:
                 self.validation_dataset_holder.subset_size = self.cfg.trainer.num_gpus
             else:
-                self.validation_dataset_holder.subset_size = self.cfg.dataset.validation_dataset.subset_size
+                self.validation_dataset_holder.subset_size = min(self.cfg.dataset.validation_dataset.subset_size, self.cfg.trainer.num_gpus)
             self.validation_dataloader = self.validation_dataset_holder.get_dataloader()
             self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
 
         param_keys = get_named_params_to_optimize(self.models).keys()
         write_to_file(path=Path(self.cfg.output_dir, self.cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
-        match self.cfg.model.model_type:
-            case ModelType.BASE_MAPPER:
-                self.validator.infer(
-                    accelerator=self.accelerator,
-                    validation_dataloader=self.validation_dataloader,
-                    model=unwrap(self.model),
-                    global_step=state.global_step,
-                )
-        self.accelerator.free_memory()
+        unwrap(self.model).run_inference(accelerator=self.accelerator, state=state, dataloader=self.validation_dataloader)
         log_info(
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.wandb_url}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
         )
@@ -296,19 +285,19 @@ class Trainer:
         log_info(f"load_time: {time() - load_time} seconds")
         log_info(f"Train Dataloader Size on single GPU: {len(self.train_dataloader)}")
 
-        examples_seen_one_gpu = 0
-        loss_per_global_step = 0
-        dataloading_time_per_global_step = 0
+        global_step_metrics = defaultdict(float)
+        accumulate_steps = 0 # TODO: Figure out what happens if we end the dataloader between gradient update steps
         last_end_step_time = time()
         for epoch in range(first_epoch, self.cfg.trainer.num_train_epochs):
             for step, batch in enumerate(self.train_dataloader):
                 step_start_time = time()
-                dataloading_time_per_global_step += step_start_time - last_end_step_time
+                accumulate_steps += 1
+                global_step_metrics['dataloading_time'] += step_start_time - last_end_step_time
                 if is_main_process() and global_step == 1:
                     log_info(f"time to complete 1st step: {step_start_time - load_time} seconds")
 
                 with self.accelerator.accumulate(*filter(lambda x: isinstance(x, nn.Module), self.models)):
-                    examples_seen_one_gpu += batch["gen_pixel_values"].shape[0]
+                    global_step_metrics['examples_seen_per_gpu'] += batch["gen_pixel_values"].shape[0]
                     state: TrainingState = TrainingState(
                         epoch_step=step,
                         total_epoch_steps=len(self.train_dataloader),
@@ -318,10 +307,13 @@ class Trainer:
 
                     match self.cfg.model.model_type:
                         case ModelType.BASE_MAPPER:
-                            loss = self.model(batch)
+                            losses = self.model(batch)
 
                     true_step += 1
-                    loss_per_global_step += loss.detach().item()  # Only on the main process to avoid syncing
+                    loss = sum(losses.values())
+                    global_step_metrics['loss'] += loss.detach().item()  # Only on the main process to avoid syncing
+                    for k, v in losses.items():
+                        global_step_metrics[k] += v.detach().item()
 
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
@@ -348,21 +340,18 @@ class Trainer:
                     if self.cfg.model.unfreeze_unet_after_n_steps and global_step == self.cfg.model.unfreeze_unet_after_n_steps:
                         self.unfreeze_unet(state)
 
-                    loss_per_global_step /= self.cfg.trainer.gradient_accumulation_steps
                     progress_bar.update(1)
                     global_step += 1
                     logs = {
-                        "loss": loss_per_global_step,
                         "lr": self.lr_scheduler.get_last_lr()[0],
                         "gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
                         "examples_seen": global_step * total_batch_size,
-                        "examples_seen_one_gpu": examples_seen_one_gpu,
-                        "dataloading_time_per_global_step": dataloading_time_per_global_step / self.cfg.trainer.gradient_accumulation_steps,
+                        **{k: v / accumulate_steps for k, v in global_step_metrics.items()},
                     }
-                    dataloading_time_per_global_step = 0
                     progress_bar.set_postfix(**logs)
                     self.accelerator.log(logs, step=global_step)
-                    loss_per_global_step = 0
+                    global_step_metrics = defaultdict(float)
+                    accumulate_steps = 0
 
                 if global_step >= self.cfg.trainer.max_train_steps:
                     break

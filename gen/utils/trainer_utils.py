@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import shutil
 from dataclasses import dataclass
 from functools import wraps
@@ -13,13 +14,14 @@ from gen.utils.logging_utils import log_info
 from typing import Optional
 from abc import ABC, abstractmethod
 import torch.nn as nn
+import torch
 
-def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step: int):
+def handle_checkpointing_dirs(cfg: BaseConfig, prefix: str):
     # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
     if cfg.trainer.checkpoints_total_limit is not None:
         checkpoints = os.listdir(cfg.checkpoint_dir)
-        checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-        checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+        checkpoints = [d for d in checkpoints if d.startswith(f"{prefix}_")]
+        checkpoints = sorted(checkpoints, key=lambda x: int(x.split("_")[-1]))
 
         # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
         if len(checkpoints) >= cfg.trainer.checkpoints_total_limit:
@@ -32,11 +34,6 @@ def handle_checkpointing(cfg: BaseConfig, accelerator: Accelerator, global_step:
             for removing_checkpoint in removing_checkpoints:
                 removing_checkpoint = os.path.join(cfg.checkpoint_dir, removing_checkpoint)
                 shutil.rmtree(removing_checkpoint)
-
-    save_path = cfg.checkpoint_dir / f"checkpoint-{global_step}"
-    accelerator.save_state(save_path, safe_serialization=False)
-    log_info(f"Saved state to {save_path}")
-    return save_path
 
 
 @dataclass
@@ -52,15 +49,19 @@ class Trainable(nn.Module, ABC):
         ...
 
     @abstractmethod
-    def set_training_mode():
+    def set_training_mode(self):
         ...
 
     @abstractmethod
-    def set_inference_mode():
+    def set_inference_mode(self):
         ...
 
     @abstractmethod
-    def checkpoint(accelerator: Accelerator, state: TrainingState):
+    def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):
+        ...
+
+    @abstractmethod
+    def run_inference(self, accelerator: Accelerator, state: TrainingState, dataloader: torch.utils.data.DataLoader):
         ...
     
 

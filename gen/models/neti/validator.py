@@ -41,7 +41,7 @@ class ValidationHandler:
             dataloader=validation_dataloader,
             output_path=self.cfg.output_dir / "images",
             global_step=global_step,
-            inference_cfg=self.cfg.inference,
+            cfg=self.cfg.inference,
         )
 
         del pipeline

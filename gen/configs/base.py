@@ -99,7 +99,7 @@ exp_store(
         eval_every_n_steps=1000,
         tracker_project_name="gen",
         enable_dynamic_grad_accum=True,
-        checkpoints_total_limit=10
+        checkpoints_total_limit=2
     ),
     dataset=dict(
         num_validation_images=1,

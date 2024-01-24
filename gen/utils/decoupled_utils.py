@@ -352,7 +352,7 @@ def set_global_breakpoint():
 
     builtins.breakpoint = _breakpoint
     builtins.st = ipdb.set_trace  # We import st everywhere
-
+    builtins.ug = lambda: globals().update(locals())
 
 def write_to_file(path: Path, text: str):
     try:

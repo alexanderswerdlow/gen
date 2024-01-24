@@ -15,6 +15,7 @@ class InferenceConfig:
     resolution: int = "${model.resolution}"
     
     num_masks_to_remove: Optional[int] = 4
+    num_images_per_prompt: int = 1
     visualize_attention_map: bool = False
     visualize_embeds: bool = False
 
