@@ -196,7 +196,7 @@ class Trainer:
             if state.epoch == 0:
                 self.validation_dataset_holder.subset_size = self.cfg.trainer.num_gpus
             else:
-                self.validation_dataset_holder.subset_size = min(self.cfg.dataset.validation_dataset.subset_size, self.cfg.trainer.num_gpus)
+                self.validation_dataset_holder.subset_size = max(self.cfg.dataset.validation_dataset.subset_size, self.cfg.trainer.num_gpus)
             self.validation_dataloader = self.validation_dataset_holder.get_dataloader()
             self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
 

@@ -22,7 +22,7 @@ from gen.datasets.utils import get_open_clip_transforms_v2, get_stable_diffusion
 torchvision.disable_beta_transforms_warning()
 import torchvision.transforms.v2 as transforms
 from torchvision.tv_tensors import BoundingBoxes, BoundingBoxFormat, Image, Mask
-
+from gen.utils.tokenization_utils import get_tokens
 
 @inherit_parent_args
 class MoviDataset(AbstractDataset, Dataset):
@@ -159,9 +159,7 @@ class MoviDataset(AbstractDataset, Dataset):
                 "disc_pixel_values": disc_rgb,
                 "disc_bbox": disc_bbx,
                 "disc_segmentation": disc_instance,
-                "input_ids": self.tokenizer(
-                    DEFAULT_PROMPT, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
-                ).input_ids.squeeze(0),
+                "input_ids": get_tokens(self.tokenizer),
             }
 
         else:
@@ -187,9 +185,7 @@ class MoviDataset(AbstractDataset, Dataset):
                 "disc_pixel_values": source_data.image,
                 "disc_grid": source_data.grid,
                 "disc_segmentation": source_data.segmentation,
-                "input_ids": self.tokenizer(
-                    DEFAULT_PROMPT, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
-                ).input_ids.squeeze(0),
+                "input_ids": get_tokens(self.tokenizer),
             }
 
         if self.return_video:

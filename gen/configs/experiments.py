@@ -1,6 +1,6 @@
 from hydra_zen import builds
 from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_OVERFIT_DATASET_PATH
-from gen.configs.utils import inherit_mode_store, mode_store, store_child_config
+from gen.configs.utils import mode_store, store_child_config
 from gen.utils.encoder_utils import ResNet50
 from accelerate.utils import PrecisionType
 
@@ -209,6 +209,7 @@ def get_experiments():
             train_dataset=dict(batch_size=6, augmentation=dict(enable_crop=False, enable_horizontal_flip=True)),
             validation_dataset=dict(augmentation=dict(enable_crop=False, enable_horizontal_flip=True)),
         ),
+        inference=dict(infer_new_prompts=True, num_masks_to_remove=6, save_prompt_embeds=True)
     )
 
     mode_store(

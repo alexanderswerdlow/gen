@@ -1,20 +1,24 @@
+from __future__ import annotations
+
 import os
-from pathlib import Path
 import shutil
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import wraps
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional
 
+import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.state import PartialState
 from accelerate.utils import extract_model_from_parallel
+from image_utils import Im
 
-from gen.configs.base import BaseConfig
 from gen.utils.decoupled_utils import is_main_process
 from gen.utils.logging_utils import log_info
-from typing import Optional
-from abc import ABC, abstractmethod
-import torch.nn as nn
-from image_utils import Im
+
+if TYPE_CHECKING:
+    from gen.configs.base import BaseConfig
 
 def handle_checkpointing_dirs(cfg: BaseConfig, prefix: str):
     # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`

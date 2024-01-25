@@ -55,9 +55,9 @@ class ModelConfig:
     break_a_scene_cross_attn_loss_weight: float = 1e-2
     break_a_scene_masked_loss: bool = False
     background_mask_idx: int = 0 # Used for the break-a-scene mask loss to not count loss for the background mask
+    placeholder_token: str = "masks"
 
     # NeTI Specific Configs below
-    placeholder_token: str = "android"
     placeholder_token_id: Optional[int] = None
     super_category_token: str = "object"
     mask_cross_attn: bool = True

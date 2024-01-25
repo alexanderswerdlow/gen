@@ -10,10 +10,10 @@ import torch.utils.checkpoint
 from accelerate import Accelerator
 from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
 from einops import rearrange
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
 from torch import Tensor
-from transformers import CLIPTokenizer
+from transformers import CLIPTokenizer, AutoTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
 
 from gen.configs import BaseConfig
@@ -24,6 +24,8 @@ from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.encoder_utils import BaseModel, ClipFeatureExtractor
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import Trainable, TrainingState
+from functools import cached_property
+from typing import Optional
 
 class BaseMapper(Trainable):
     def __init__(self, cfg: BaseConfig):
@@ -35,9 +37,8 @@ class BaseMapper(Trainable):
         self.initialize_custom_models()
         self.add_adapters()
 
-        from gen.models.cross_attn.visualization import infer_batch, run_inference
+        from gen.models.cross_attn.inference import infer_batch
         BaseMapper.infer_batch = infer_batch
-        BaseMapper.run_inference = run_inference
 
     @property
     def device(self):
@@ -57,7 +58,7 @@ class BaseMapper(Trainable):
 
     def initialize_diffusers_models(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
         # Load the tokenizer
-        self.tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="tokenizer")
+        self.tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="tokenizer", revision=self.cfg.model.revision, use_fast=False)
 
         # Load scheduler and models
         self.noise_scheduler: DDPMScheduler = DDPMScheduler.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="scheduler")
@@ -241,17 +242,23 @@ class BaseMapper(Trainable):
         batch: dict,
         disable_conditioning: bool = False,
     ):
-        hidden_state, _ = self.get_hidden_state(batch, add_mask_conditioning=disable_conditioning is False)
+        # Validate input
+        bs: int = batch["disc_pixel_values"].shape[0]
+        for k, v in batch.items():
+            if isinstance(v, torch.Tensor):
+                assert v.shape[0] == bs
+
+        hidden_state, text_encoder_dict = self.get_hidden_state(batch, add_mask_conditioning=disable_conditioning is False)
 
         bs = batch["disc_pixel_values"].shape[0]
-        input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
-
+        text_encoder_dict["input_prompt"] = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
+        
         # passed to StableDiffusionPipeline/StableDiffusionControlNetPipeline
         pipeline_kwargs = dict(prompt_embeds=hidden_state)
         if self.cfg.model.controlnet:
             pipeline_kwargs["image"] = self.get_controlnet_conditioning(batch)
 
-        return pipeline_kwargs, input_prompt
+        return pipeline_kwargs, text_encoder_dict
 
     def check_add_segmentation(self, batch: dict):
         """
@@ -290,6 +297,21 @@ class BaseMapper(Trainable):
 
         return batch
 
+    @cached_property
+    def placeholder_token_id(self): 
+        placeholder_token_id = self.tokenizer(self.cfg.model.placeholder_token, add_special_tokens=False).input_ids
+        assert len(placeholder_token_id) == 1 and placeholder_token_id[0] != self.tokenizer.eos_token_id
+        return placeholder_token_id[0]
+    
+    @cached_property
+    def mask_tokens_ids(self): return self.tokenizer(f"{self.cfg.model.placeholder_token} and", add_special_tokens=False).input_ids
+
+    @cached_property
+    def eos_token_id(self): return self.tokenizer.convert_tokens_to_ids(self.tokenizer.eos_token)
+
+    @cached_property
+    def pad_token_id(self): return self.tokenizer.convert_tokens_to_ids(self.tokenizer.pad_token)
+
     def get_mask_attn_params(self, batch):
         """
         This function sets up the attention parameters for the mask conditioning:
@@ -300,7 +322,6 @@ class BaseMapper(Trainable):
         device = batch["gen_pixel_values"].device
         dtype = self.weight_dtype
 
-        text_encoder_dict = dict()
         clip_feature_cls_token = None
 
         # isinstance fails with torch dynamo
@@ -322,8 +343,8 @@ class BaseMapper(Trainable):
 
         latent_dim = int(math.sqrt(clip_feature_map.shape[1]))
         feature_map_masks = []
-        feature_map_batch_idxs = []
-        mask_source_idx = []
+        mask_batch_idx = []
+        mask_instance_idx = []
 
         assert "gen_segmentation" in batch
         for i in range(bs):
@@ -351,21 +372,21 @@ class BaseMapper(Trainable):
             assert batch["disc_pixel_values"].shape[-1] == batch["disc_pixel_values"].shape[-2]
             feature_map_mask_ = find_true_indices_batched(original=one_hot_mask, dh=latent_dim, dw=latent_dim)
             feature_map_masks.append(feature_map_mask_)
-            feature_map_batch_idxs.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
-            mask_source_idx.append(one_hot_idx)
+            mask_batch_idx.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
+            mask_instance_idx.append(one_hot_idx)
 
         # If the 1st image has 5 masks and the 2nd has 3 masks, we will have an integer tensor of shape (total == 8,) for 8 different cross-attns. The sequence length for each is thus the number of valid "pixels" (KVs)
         feature_map_masks = torch.cat(feature_map_masks, dim=0)  # feature_map_mask is a boolean mask of (total, h, w)
         feature_map_masks = rearrange(feature_map_masks, "total h w -> total (h w)").to(device)
-        feature_map_batch_idxs = torch.cat(feature_map_batch_idxs, dim=0).to(device)
-        mask_source_idx = torch.cat(mask_source_idx, dim=0).to(device)
+        mask_batch_idx = torch.cat(mask_batch_idx, dim=0).to(device)
+        mask_instance_idx = torch.cat(mask_instance_idx, dim=0).to(device)
 
         # We sum the number of valid "pixels" in each mask
         seqlens_k = feature_map_masks.sum(dim=-1)  # (total,)
         max_seqlen_k = seqlens_k.max().item()
         cu_seqlens_k = F.pad(torch.cumsum(seqlens_k, dim=0, dtype=torch.torch.int32), (1, 0))
 
-        flat_features = rearrange(clip_feature_map[feature_map_batch_idxs], "total (h w) d -> (total h w) d", h=latent_dim, w=latent_dim)
+        flat_features = rearrange(clip_feature_map[mask_batch_idx], "total (h w) d -> (total h w) d", h=latent_dim, w=latent_dim)
         flat_mask = rearrange(feature_map_masks, "total (h w) -> (total h w)", h=latent_dim, w=latent_dim)
         k_features = flat_features[flat_mask]
 
@@ -375,66 +396,81 @@ class BaseMapper(Trainable):
 
         attn_dict = dict(x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
 
-        placeholder_token_id = self.tokenizer(self.cfg.model.placeholder_token, add_special_tokens=False).input_ids[0]
-        mask_tokens_ids = self.tokenizer(f"{self.cfg.model.placeholder_token} and", add_special_tokens=False).input_ids
-        eos_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer.eos_token)
-        pad_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer.pad_token)
-
-        bs = batch["input_ids"].shape[0]
-        for b in range(bs):
-            # Everything after EOS token should also be a pad token
-            token_is_padding = (batch["input_ids"][b] == pad_token_id).nonzero()
-            assert (token_is_padding.shape[0] == (batch["input_ids"].shape[1] - token_is_padding[0])).item()
-            mask_part_of_batch = (feature_map_batch_idxs == b).nonzero().squeeze(1)
-            assert token_is_padding.shape[0] >= mask_part_of_batch.shape[0]  # We need at least as many pad tokens as we have masks
-
-            start_loc = (batch["input_ids"][b] == eos_token_id).nonzero()[0]
-            number_of_added_tokens = (mask_part_of_batch.shape[0] * len(mask_tokens_ids)) - 1
-            replace_sl = slice(start_loc, start_loc + number_of_added_tokens)
-            extent = len(batch["input_ids"][b, replace_sl])
-            repeated_tensor = torch.tensor(mask_tokens_ids * mask_part_of_batch.shape[0])[:extent]
-            batch["input_ids"][b, replace_sl] = repeated_tensor
-
-            final_token = replace_sl.stop
-            if 'end_tokens' in batch: # E.g., so we can say "A photo of mask_0 and mask_1 on a beach"
-                batch["input_ids"][b, replace_sl.stop:replace_sl.stop + batch['end_tokens'].shape[1]] = batch['end_tokens'][b]
-                final_token = replace_sl.stop + batch['end_tokens'].shape[1]
-
-            batch["input_ids"][b, final_token] = eos_token_id
-
         return dict(
             attn_dict=attn_dict,
-            placeholder_token=placeholder_token_id,
-            eos_token_id=eos_token_id,
-            feature_map_batch_idxs=feature_map_batch_idxs,
             clip_feature_cls_token=clip_feature_cls_token,
-            mask_source_idx=mask_source_idx,
+            mask_batch_idx=mask_batch_idx,
+            mask_instance_idx=mask_instance_idx,
         )
 
-    def add_mask_conditioning(self, batch: dict, encoder_hidden_states: Float[Tensor, "b d"]):
+    def get_mask_conditioning(self, batch: dict):
         batch = self.check_add_segmentation(batch)
         text_encoder_dict = self.get_mask_attn_params(batch)
-        queries = self.mapper.learnable_token[None, :].repeat(text_encoder_dict["feature_map_batch_idxs"].shape[0], 1)
+        mask_batch_idx = text_encoder_dict["mask_batch_idx"]
+
+        queries = self.mapper.learnable_token[None, :].repeat(mask_batch_idx.shape[0], 1)
         text_encoder_dict["attn_dict"]["x"] = queries.to(self.weight_dtype)
-        output = self.mapper.cross_attn(**text_encoder_dict).to(self.weight_dtype)
+
+        mask_tokens = self.mapper.cross_attn(**text_encoder_dict).to(self.weight_dtype)
+
+        return mask_tokens, mask_batch_idx, text_encoder_dict
+
+    def add_masks_to_input_ids_and_tokens(
+        self,
+        batch: dict,
+        encoder_hidden_states: Float[Tensor, "b d"], 
+        mask_tokens: Float[Tensor, "n d"],
+        mask_batch_idx: Integer[Tensor, "n"]
+    ):
+        bs = batch["input_ids"].shape[0]
+        for b in range(bs):
+            token_is_padding = (batch["input_ids"][b] == self.pad_token_id).nonzero() # Everything after EOS token should also be a pad token
+            assert (token_is_padding.shape[0] == (batch["input_ids"].shape[1] - token_is_padding[0])).item()
+
+            mask_part_of_batch = (mask_batch_idx == b).nonzero().squeeze(1) # Figure out which masks we need to add
+            masks_prompt = torch.tensor(self.mask_tokens_ids * mask_part_of_batch.shape[0])[:-1].to(self.device)
+            assert token_is_padding.shape[0] >= masks_prompt.shape[0]  # We need at least as many pad tokens as we have masks
+
+            # We take everything before the placeholder token and combine it with "placeholder_token and placeholder_token and ..."
+            # We then add the rest of the sentence on (including the EOS token and padding tokens)
+            placeholder_locs = (batch["input_ids"][b] == self.placeholder_token_id).nonzero()
+            assert placeholder_locs.shape[0] == 1  # We should only have one placeholder token
+            start_of_prompt = batch["input_ids"][b, :placeholder_locs[0]]
+            end_of_prompt = batch["input_ids"][b, placeholder_locs[0] + 1:]
+            additional_eos_token = torch.tensor([self.eos_token_id]).to(self.device)
+
+            batch["input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, additional_eos_token), dim=0)[:batch["input_ids"].shape[1]]
 
         # Overwrite mask locations
-        learnable_idxs = (batch["input_ids"] == text_encoder_dict["placeholder_token"]).nonzero(as_tuple=True)
-        encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = output
-        return encoder_hidden_states, text_encoder_dict
+        learnable_idxs = (batch["input_ids"] == self.placeholder_token_id).nonzero(as_tuple=True)
+        encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = mask_tokens
+        return encoder_hidden_states
 
-    def get_hidden_state(self, batch: dict, add_mask_conditioning: bool = True) -> Float[Tensor, "b d"]:
+    def get_hidden_state(
+            self, 
+            batch: dict, 
+            add_mask_conditioning: bool = True, 
+            mask_tokens: Optional[Float[Tensor, "n d"]] = None, # We can optionally specify mask tokens to use [e.g., for composing during inference]
+            mask_batch_idx: Optional[Integer[Tensor, "n"]] = None,
+    ) -> Float[Tensor, "b d"]:
         encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.weight_dtype)
 
         text_encoder_dict = dict()
         if add_mask_conditioning:
-            encoder_hidden_states, text_encoder_dict = self.add_mask_conditioning(batch, encoder_hidden_states)
+            if mask_tokens is None or mask_batch_idx is None:
+                mask_tokens, mask_batch_idx, text_encoder_dict = self.get_mask_conditioning(batch)
+
+            encoder_hidden_states = self.add_masks_to_input_ids_and_tokens(batch, encoder_hidden_states, mask_tokens, mask_batch_idx)
+
+            if not self.training: # Return mask tokens during inference so we can save them if desired
+                text_encoder_dict["mask_tokens"] = mask_tokens
 
         return encoder_hidden_states, text_encoder_dict
 
     def get_controlnet_conditioning(self, batch):
         return batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=self.weight_dtype)
 
+    # TODO: Fully dropout conditioning for CFG!!
     def forward(self, batch: dict):
         batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
 
@@ -486,7 +522,7 @@ class BaseMapper(Trainable):
             raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
 
         if self.cfg.model.break_a_scene_masked_loss:
-            loss_mask = break_a_scene_masked_loss(cfg=self.cfg, batch=batch)
+            loss_mask = break_a_scene_masked_loss(cfg=self.cfg, batch=batch, text_encoder_dict=text_encoder_dict)
             model_pred, target = model_pred * loss_mask, target * loss_mask
 
         losses = dict()

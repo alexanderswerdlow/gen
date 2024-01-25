@@ -27,7 +27,7 @@ from ipdb import set_trace as st
 
 DIR = os.path.dirname(os.path.realpath(__file__))
 IMAGENET_CLASS_INDEX_PATH = os.path.join(DIR, "imagenet_class_index.json")
-
+from gen.utils.tokenization_utils import get_tokens
 
 class ImageNetBase(VisionDataset):
     def __init__(
@@ -127,9 +127,7 @@ class ImageNetDataset(ImageNetBase):
             ret = {
                 "gen_pixel_values": gen_rgb,
                 "disc_pixel_values": disc_rgb,
-                "input_ids": self.tokenizer(
-                    DEFAULT_PROMPT, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
-                ).input_ids.squeeze(0),
+                "input_ids": get_tokens(self.tokenizer),
             }
 
         else:
@@ -141,9 +139,7 @@ class ImageNetDataset(ImageNetBase):
             ret = {
                 "gen_pixel_values": target_data.image.squeeze(0),
                 "disc_pixel_values": source_data.image.squeeze(0),
-                "input_ids": self.tokenizer(
-                    DEFAULT_PROMPT, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt"
-                ).input_ids.squeeze(0),
+                "input_ids": get_tokens(self.tokenizer),
             }
 
         # We make dummy segmentation maps to make things easier for now

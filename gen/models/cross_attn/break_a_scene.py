@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import abc
-from typing import List, Tuple, Union
+from typing import TYPE_CHECKING, List, Tuple, Union
 
 import cv2
 import numpy as np
@@ -9,8 +11,8 @@ from einops import rearrange
 from image_utils import Im
 from PIL import Image
 
-from gen.configs.base import BaseConfig
-
+if TYPE_CHECKING:
+    from gen.configs.base import BaseConfig
 
 def view_images(
     images: Union[np.ndarray, List],
@@ -256,7 +258,7 @@ def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: dict, controller: Atte
         cur_batch_mask = learnable_idxs[0] == batch_idx  # Find the masks for this batch
         token_indices = learnable_idxs[1][cur_batch_mask]
 
-        segmentation_indices = text_encoder_dict["mask_source_idx"][
+        segmentation_indices = text_encoder_dict["mask_instance_idx"][
             cur_batch_mask
         ]  # We may dropout masks so we need to map between dataset segmentation idx and the mask idx in the sentence
         attn_masks = agg_attn[..., token_indices]
@@ -281,8 +283,15 @@ def remove_element(tensor, row_index):
 def break_a_scene_masked_loss(
     cfg: BaseConfig,
     batch: dict,
+    text_encoder_dict: dict
 ):
-    object_masks = remove_element(batch["gen_segmentation"], cfg.model.background_mask_idx)
-    max_masks = torch.max(object_masks, axis=-1).values[:, None]
+    max_masks = []
+    for b in range(batch['gen_pixel_values'].shape[0]):
+        mask_idxs_for_batch = text_encoder_dict['mask_instance_idx'][text_encoder_dict['mask_batch_idx'] == b]
+        mask_idxs_for_batch = mask_idxs_for_batch[mask_idxs_for_batch != cfg.model.background_mask_idx]
+        object_masks = batch["gen_segmentation"][b, ..., mask_idxs_for_batch]
+        max_masks.append(torch.max(object_masks, axis=-1).values)
+
+    max_masks = torch.stack(max_masks, dim=0)[:, None]
     downsampled_mask = F.interpolate(input=max_masks.float(), size=(64, 64))
     return downsampled_mask

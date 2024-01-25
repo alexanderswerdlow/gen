@@ -40,22 +40,6 @@ def global_store(name: str, group: str, hydra_defaults: Optional[list[Any]] = No
     )
     return cfg
 
-
-def global_store_parent(name: str, group: str, parent: str, hydra_defaults: Optional[list[Any]] = None, **kwargs):
-    import string
-    import random
-    rand_name = "".join(random.choices(string.ascii_letters, k=6))
-    global_store(name=rand_name, group=group, hydra_defaults=hydra_defaults, **kwargs)
-
-    cfg = destructure_store(
-        OmegaConf.merge(store[group][(group, parent)], store[group][(group, rand_name)]),
-        group=group,
-        package="_global_",
-        name=name,
-    )
-    return cfg
-
-
 def store_child_config(cls: Any, group: str, parent: str, child: str, **kwargs):
     store(builds(cls, builds_bases=(store[group][(group, parent)],)), group=group, name=child, **kwargs)
 
@@ -63,8 +47,6 @@ def store_child_config(cls: Any, group: str, parent: str, child: str, **kwargs):
 auto_store = store(group=lambda cfg: cfg.name)
 exp_store = partial(global_store, group="experiment")
 mode_store = partial(global_store, group="modes")
-
-inherit_mode_store = partial(global_store_parent, group="modes")
 
 
 def inherit_parent_args(cls):
@@ -88,3 +70,19 @@ def inherit_parent_args(cls):
 
     cls.__init__ = new_init
     return cls
+
+
+# inherit_mode_store = partial(global_store_parent, group="modes")
+# def global_store_parent(name: str, group: str, parent: str, hydra_defaults: Optional[list[Any]] = None, **kwargs):
+#     import string
+#     import random
+#     rand_name = "".join(random.choices(string.ascii_letters, k=6))
+#     global_store(name=rand_name, group=group, hydra_defaults=hydra_defaults, **kwargs)
+
+#     cfg = destructure_store(
+#         OmegaConf.merge(store[group][(group, parent)], store[group][(group, rand_name)]),
+#         group=group,
+#         package="_global_",
+#         name=name,
+#     )
+#     return cfg

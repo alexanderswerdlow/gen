@@ -12,7 +12,6 @@ from gen.configs.experiments import get_experiments
 from gen.configs.hydra import get_hydra_config
 from gen.configs.inference import InferenceConfig
 from gen.configs.models import ModelConfig
-from gen.configs.slurm import SlurmConfig
 from gen.configs.trainer import TrainerConfig
 from gen.configs.utils import destructure_store, exp_store, mode_store
 
@@ -22,7 +21,6 @@ defaults = [
     {"dataset": "coco_captions"},
     {"model": "basemapper"},
     {"inference": "basemapper"},
-    {"slurm": "default"},
 ]
 
 
@@ -32,7 +30,6 @@ class BaseConfig:
     dataset: DatasetConfig = MISSING
     model: ModelConfig = MISSING
     inference: InferenceConfig = MISSING
-    slurm: SlurmConfig = MISSING
 
     exp: Optional[str] = None
     debug: bool = False

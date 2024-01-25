@@ -1,32 +1,36 @@
 from typing import List, Optional
-import torch.nn as nn
+
+import hydra
 import torch
+import torch.nn as nn
 
 from gen.configs.base import BaseConfig
 from gen.configs.models import ModelType
-
+import types
 
 def get_model_from_cfg(cfg: BaseConfig):
     from gen.models.cross_attn.base_mapper import BaseMapper
-    from gen.models.neti.neti_base_model import BaseMapper as OriginalBaseMapper
+
     match cfg.model.model_type:
         case ModelType.BASE_MAPPER:
-            if cfg.model.per_timestep_conditioning:
-                return OriginalBaseMapper(cfg)
-            else:
-                return BaseMapper(cfg)
+            model = BaseMapper(cfg)
+
+            inference_func = hydra.utils.instantiate(cfg.inference.inference_func)  # Instantiate the function (e.g., partials)
+            model.run_inference = types.MethodType(inference_func, model)
+            return model
         case _:
             raise ValueError(f"Unknown model type: {cfg.model.model_type}")
 
 
 def _init_weights(m):
-    initializer_range=0.02
+    initializer_range = 0.02
     if isinstance(m, nn.Linear):
         nn.init.normal_(m.weight, std=initializer_range)
         if isinstance(m, nn.Linear) and m.bias is not None:
             nn.init.zeros_(m.bias)
     elif isinstance(m, nn.Embedding):
         nn.init.normal_(m.weight, std=initializer_range)
+
 
 class SinusoidalPosEmb(nn.Module):
     def __init__(self, dim, scale: Optional[float] = None):  #  0.0001
@@ -97,7 +101,7 @@ def find_true_indices_batched(original, dh, dw):
     # Get dimensions
     masks, h, w = original.shape
     # dh, dw, d = downscaled.shape
-    
+
     # Reshape and unfold to align with the downscaled dimensions
     reshaped = original.unfold(1, h // dh, h // dh).unfold(2, w // dw, w // dw)
     reshaped = reshaped.reshape(masks, dh, dw, -1)
@@ -110,9 +114,9 @@ def find_true_indices_batched(original, dh, dw):
 
     return result
 
+
 if __name__ == "__main__":
     x = torch.rand(100)
     pos_emb = SinusoidalPosEmb(512)
     y = pos_emb(x)
     print(y.shape)
-

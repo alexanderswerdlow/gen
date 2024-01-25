@@ -16,7 +16,7 @@ from tqdm import tqdm
 from gen.configs.base import BaseConfig
 from gen.datasets.base_dataset import Split
 from gen.models.utils import get_model_from_cfg
-from gen.utils.decoupled_utils import is_main_process
+from gen.utils.decoupled_utils import is_main_process, save_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
 
@@ -52,15 +52,18 @@ def run_inference_dataloader(
     device = batch["gen_pixel_values"].device
     accelerator.wait_for_everyone()
     for k, v in sorted(output.items()):
-        output_images = gather(device, v)
-        log_with_accelerator(
-            accelerator=accelerator,
-            images=output_images,
-            save_folder=output_path,
-            name=k,
-            global_step=(state.global_step if state.global_step is not None else i),
-            spacing=25,
-        )
+        if isinstance(v, dict):
+            save_tensor_dict(accelerate_gather(v), output_path=output_path / f"{k}_{state.global_step}.npz")
+        else:
+            output_images = gather(device, v)
+            log_with_accelerator(
+                accelerator=accelerator,
+                images=output_images,
+                save_folder=output_path,
+                name=k,
+                global_step=(state.global_step if state.global_step is not None else i),
+                spacing=25,
+            )
         log_info(f"Saved to {output_path}")
 
 
