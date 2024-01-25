@@ -1,9 +1,6 @@
 from functools import partial
-from typing import Sequence
 
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from flash_attn.modules.block import Block
 from flash_attn.modules.mha import MHA
 from flash_attn.modules.mlp import FusedMLP, Mlp

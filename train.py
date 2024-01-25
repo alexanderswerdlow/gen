@@ -1,38 +1,37 @@
 load_time = __import__("time").time()
 
-from collections import defaultdict
 import itertools
 import math
 import os
+from collections import defaultdict
 from pathlib import Path
 from time import time
-from typing import Any, Dict, Optional, Union
+from typing import Union
 
 import hydra
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.utils.checkpoint
 import wandb
 from accelerate import Accelerator
 from diffusers.optimization import get_scheduler
 from diffusers.utils.import_utils import is_xformers_available
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from torchinfo import summary
 from tqdm.auto import tqdm
+from transformers import CLIPTokenizer
 
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
-from gen.models.base_mapper_model import BaseMapper
 from gen.models.neti.checkpoint_handler import CheckpointHandler
 from gen.models.neti.validator import ValidationHandler
-from gen.models.neti_base_model import BaseMapper as OriginalBaseMapper
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import Profiler, is_main_process, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing_dirs, unwrap
-from transformers import CLIPTokenizer
+from inference import run_inference_dataloader
+
 
 def trainable_parameters(module):
     for name, param in module.named_parameters():
@@ -182,6 +181,7 @@ class Trainer:
             log_info(f"Resuming from checkpoint {path}")
             if path.is_file() or self.cfg.trainer.load_weights_only_no_state:
                 from accelerate.utils.modeling import load_checkpoint_in_model
+
                 load_checkpoint_in_model(self.model, str(path))
             else:
                 self.accelerator.load_state(path)
@@ -218,7 +218,17 @@ class Trainer:
 
         param_keys = get_named_params_to_optimize(self.models).keys()
         write_to_file(path=Path(self.cfg.output_dir, self.cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
-        unwrap(self.model).run_inference(accelerator=self.accelerator, state=state, dataloader=self.validation_dataloader)
+
+        run_inference_dataloader(
+            accelerator=self.accelerator,
+            dataloader=self.validation_dataloader,
+            model=self.model,
+            state=state,
+            output_path=self.cfg.output_dir / "images",
+        )
+
+        self.model.set_training_mode()
+        
         log_info(
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.wandb_url}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
         )
@@ -286,18 +296,18 @@ class Trainer:
         log_info(f"Train Dataloader Size on single GPU: {len(self.train_dataloader)}")
 
         global_step_metrics = defaultdict(float)
-        accumulate_steps = 0 # TODO: Figure out what happens if we end the dataloader between gradient update steps
+        accumulate_steps = 0  # TODO: Figure out what happens if we end the dataloader between gradient update steps
         last_end_step_time = time()
         for epoch in range(first_epoch, self.cfg.trainer.num_train_epochs):
             for step, batch in enumerate(self.train_dataloader):
                 step_start_time = time()
                 accumulate_steps += 1
-                global_step_metrics['dataloading_time'] += step_start_time - last_end_step_time
+                global_step_metrics["dataloading_time"] += step_start_time - last_end_step_time
                 if is_main_process() and global_step == 1:
                     log_info(f"time to complete 1st step: {step_start_time - load_time} seconds")
 
                 with self.accelerator.accumulate(*filter(lambda x: isinstance(x, nn.Module), self.models)):
-                    global_step_metrics['examples_seen_per_gpu'] += batch["gen_pixel_values"].shape[0]
+                    global_step_metrics["examples_seen_per_gpu"] += batch["gen_pixel_values"].shape[0]
                     state: TrainingState = TrainingState(
                         epoch_step=step,
                         total_epoch_steps=len(self.train_dataloader),
@@ -311,7 +321,7 @@ class Trainer:
 
                     true_step += 1
                     loss = sum(losses.values())
-                    global_step_metrics['loss'] += loss.detach().item()  # Only on the main process to avoid syncing
+                    global_step_metrics["loss"] += loss.detach().item()  # Only on the main process to avoid syncing
                     for k, v in losses.items():
                         global_step_metrics[k] += v.detach().item()
 

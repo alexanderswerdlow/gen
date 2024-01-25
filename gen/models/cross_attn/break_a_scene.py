@@ -1,10 +1,9 @@
 import abc
-from typing import Dict, List, Optional, Tuple, Union
+from typing import List, Tuple, Union
 
 import cv2
 import numpy as np
 import torch
-import torch.nn.functional as nnf
 import torch.nn.functional as F
 from einops import rearrange
 from image_utils import Im
@@ -275,13 +274,15 @@ def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: dict, controller: Atte
     return attn_loss
 
 
+def remove_element(tensor, row_index):
+    return torch.cat((tensor[..., :row_index], tensor[..., row_index + 1 :]), dim=-1)
+
+
 def break_a_scene_masked_loss(
     cfg: BaseConfig,
     batch: dict,
 ):
-    object_masks = torch.cat(
-        (batch["gen_segmentation"][..., : cfg.model.background_mask_idx], batch["gen_segmentation"][..., cfg.model.background_mask_idx + 1 :]), dim=-1
-    )
+    object_masks = remove_element(batch["gen_segmentation"], cfg.model.background_mask_idx)
     max_masks = torch.max(object_masks, axis=-1).values[:, None]
     downsampled_mask = F.interpolate(input=max_masks.float(), size=(64, 64))
     return downsampled_mask

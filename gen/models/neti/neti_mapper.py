@@ -2,17 +2,16 @@ import random
 from dataclasses import dataclass
 from typing import List, Optional
 
-import hydra
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from gen.configs.base import BaseConfig
 from gen.models.neti.positional_encoding import BasicEncoder, NeTIPositionalEncoding
-from gen.models.utils import FourierPositionalEncodingNDims, SinusoidalPosEmb
+from gen.models.utils import FourierPositionalEncodingNDims
 
 from gen.models.utils import _init_weights
-from gen.models.conditioning_models import CrossAttn
+from gen.models.cross_attn.modules import CrossAttn
 
 
 @dataclass

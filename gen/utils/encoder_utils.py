@@ -2,17 +2,15 @@ import functools
 import math
 from abc import ABC, abstractmethod, abstractproperty
 from functools import partial
-from typing import Any, Callable, Optional, TypeAlias, Union
+from typing import Callable, Optional, TypeAlias, Union
 
 import numpy as np
 import timm
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torchvision
 from einops import rearrange
 from image_utils import Im
-from ipdb import set_trace as st
 from jaxtyping import Float
 from PIL import Image
 from timm.data import resolve_data_config

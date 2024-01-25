@@ -1,13 +1,9 @@
 import torch
 from accelerate import Accelerator
-from diffusers import AutoencoderKL, UNet2DConditionModel
-from transformers import CLIPTokenizer
-
 from gen.configs.base import BaseConfig
-from gen.models.base_mapper_model import BaseMapper
-from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
-from gen.utils.trainer_utils import unwrap
-from inference import load_stable_diffusion_model, run_inference_dataloader
+from gen.models.cross_attn.base_mapper import BaseMapper
+from gen.utils.diffusers_utils import load_stable_diffusion_model
+from inference import run_inference_dataloader
 
 
 class ValidationHandler:

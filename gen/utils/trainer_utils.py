@@ -14,7 +14,7 @@ from gen.utils.logging_utils import log_info
 from typing import Optional
 from abc import ABC, abstractmethod
 import torch.nn as nn
-import torch
+from image_utils import Im
 
 def handle_checkpointing_dirs(cfg: BaseConfig, prefix: str):
     # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
@@ -60,8 +60,7 @@ class Trainable(nn.Module, ABC):
     def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):
         ...
 
-    @abstractmethod
-    def run_inference(self, accelerator: Accelerator, state: TrainingState, dataloader: torch.utils.data.DataLoader):
+    def run_inference(self, batch: dict, state: TrainingState) -> dict[str, Im]:
         ...
     
 

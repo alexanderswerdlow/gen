@@ -4,7 +4,8 @@ import os
 import subprocess
 import sys
 from collections import defaultdict
-from functools import partial
+from importlib import import_module
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -318,7 +319,9 @@ class Profiler:
             wandb.save(trace, base_path=self.profile_dir, policy="now")
 
 
-def use_dist(): return dist.is_available() and dist.is_initialized()
+def use_dist():
+    return dist.is_available() and dist.is_initialized()
+
 
 def get_rank() -> int:
     if use_dist():
@@ -337,11 +340,15 @@ def get_num_gpus() -> int:
     return dist.get_world_size() if use_dist() else torch.cuda.device_count()
 
 
+def get_pdb():
+    return import_module("pdb") if (any(["_pdbpp_path_hack" in p for p in sys.path]) is False or find_spec("ipdb") is None) else import_module("ipdb")
+
+
 def _breakpoint():
     if is_main_process():
         frame = sys._getframe()
         log_func('Breakpoint triggered. You may need to type "up" to get to the correct frame')
-        ipdb.set_trace(frame)
+        get_pdb().set_trace(frame)
 
     if use_dist():
         dist.barrier()
@@ -353,6 +360,7 @@ def set_global_breakpoint():
     builtins.breakpoint = _breakpoint
     builtins.st = ipdb.set_trace  # We import st everywhere
     builtins.ug = lambda: globals().update(locals())
+
 
 def write_to_file(path: Path, text: str):
     try:

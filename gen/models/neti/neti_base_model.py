@@ -1,32 +1,28 @@
 import math
-import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import hydra
 import numpy as np
-import open_clip
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate import Accelerator
 from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, UNet2DConditionModel
-from diffusers.utils.import_utils import is_xformers_available
 from einops import rearrange
 from tqdm import tqdm
 from transformers import CLIPTokenizer
 
 from gen.configs import BaseConfig
-from gen.configs.models import ModelConfig
 from gen.models.neti.net_clip_text_embedding import NeTIBatch
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.decoupled_utils import is_main_process
-from gen.utils.encoder_utils import ClipFeatureExtractor, TimmModel
+from gen.utils.encoder_utils import ClipFeatureExtractor
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import unwrap
-from gen.models.utils import _init_weights, find_true_indices_batched
+from gen.models.utils import find_true_indices_batched
 
 class BaseMapper(nn.Module):
     def __init__(self, cfg: BaseConfig, init_modules: bool = True):
@@ -133,7 +129,7 @@ class BaseMapper(nn.Module):
             self.text_encoder.text_model.embeddings.mapper.train()
 
         if self.cfg.trainer.enable_xformers_memory_efficient_attention:
-            import xformers
+            pass
 
             self.unet.enable_xformers_memory_efficient_attention()
             if self.cfg.model.controlnet:
