@@ -88,10 +88,10 @@ class BaseMapper(Trainable):
                 target_modules=["to_k", "to_q", "to_v", "to_out.0"],
             )
             self.unet.add_adapter(unet_lora_config)
+            from diffusers.training_utils import cast_training_params
+            cast_training_params(self.unet, dtype=torch.float32)
 
         if self.cfg.trainer.enable_xformers_memory_efficient_attention:
-            pass
-
             self.unet.enable_xformers_memory_efficient_attention()
             if self.cfg.model.controlnet:
                 self.controlnet.enable_xformers_memory_efficient_attention()

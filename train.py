@@ -9,6 +9,7 @@ from time import time
 from typing import Union
 
 import hydra
+from numpy import float32
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
@@ -33,16 +34,16 @@ from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epoc
 from inference import run_inference_dataloader
 
 
-def trainable_parameters(module):
+def trainable_parameters(module, requires_grad: bool):
     for name, param in module.named_parameters():
-        if param.requires_grad:
+        if param.requires_grad or requires_grad is False:
             yield name, param
 
 
-def get_named_params_to_optimize(models: tuple[Union[nn.Module, dict]]):
+def get_named_params(models: tuple[Union[nn.Module, dict]], requires_grad=True):
     return dict(
         itertools.chain(
-            *(trainable_parameters(model) for model in models if isinstance(model, nn.Module)), *(np.items() for np in models if isinstance(np, dict))
+            *(trainable_parameters(model, requires_grad=requires_grad) for model in models if isinstance(model, nn.Module)), *(np.items() for np in models if isinstance(np, dict))
         )
     )
 
@@ -83,8 +84,10 @@ class Trainer:
                 if is_main_process():
                     summary(model, col_names=("trainable", "num_params"), depth=3)
 
-        # for k,v in get_named_params_to_optimize(self.models).items():
-        #     breakpoint()
+        # In general, we want all trainable params in FP32 and all non-trainable params possibly in BF16
+        for p in get_named_params(self.models).values():
+            if p.requires_grad: assert p.dtype == torch.float32
+            elif not p.requires_grad: assert p.dtype == weight_dtype
 
     def init_dataloader(self):
         log_info("Creating train_dataset + self.train_dataloader")
@@ -107,7 +110,7 @@ class Trainer:
     def init_optimizer(self):
         optimizer_class = torch.optim.AdamW
         self.optimizer = optimizer_class(
-            get_named_params_to_optimize(self.models).values(),
+            get_named_params(self.models).values(),
             lr=self.cfg.trainer.learning_rate,
             betas=(self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2),
             weight_decay=self.cfg.trainer.adam_weight_decay,
@@ -197,7 +200,7 @@ class Trainer:
             self.validation_dataloader = self.validation_dataset_holder.get_dataloader()
             self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
 
-        param_keys = get_named_params_to_optimize(self.models).keys()
+        param_keys = get_named_params(self.models).keys()
         write_to_file(path=Path(self.cfg.output_dir, self.cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
 
         run_inference_dataloader(
@@ -222,7 +225,7 @@ class Trainer:
         del optimizer
         optimizer_class = torch.optim.AdamW
         optimizer = optimizer_class(
-            get_named_params_to_optimize(self.models).values(),
+            get_named_params(self.models).values(),
             lr=self.cfg.trainer.finetune_learning_rate,
             betas=(self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2),
             weight_decay=self.cfg.trainer.adam_weight_decay,
@@ -308,7 +311,7 @@ class Trainer:
 
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(get_named_params_to_optimize(self.models).values(), self.cfg.trainer.max_grad_norm)
+                        self.accelerator.clip_grad_norm_(get_named_params(self.models).values(), self.cfg.trainer.max_grad_norm)
 
                     self.optimizer.step()
                     self.lr_scheduler.step()
