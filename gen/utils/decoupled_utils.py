@@ -341,7 +341,7 @@ def get_num_gpus() -> int:
 
 
 def get_pdb():
-    return import_module("pdb") if (any(["_pdbpp_path_hack" in p for p in sys.path]) is False or find_spec("ipdb") is None) else import_module("ipdb")
+    return import_module("pdb") if (any(["_pdbpp_path_hack" in p for p in sys.path]) or find_spec("ipdb") is None) else import_module("ipdb")
 
 
 def _breakpoint():

@@ -167,7 +167,7 @@ def get_experiments():
     mode_store(
         name="new_model",
         model=dict(decoder_transformer=dict(add_self_attn=False), per_timestep_conditioning=False, freeze_mapper=False, freeze_unet=True),
-        inference=dict(use_custom_pipeline=False, visualize_attention_map=False),
+        inference=dict(use_custom_pipeline=False, visualize_attention_map=False, num_masks_to_remove=4),
         dataset=dict(train_dataset=dict(batch_size=10)),
     )
 
@@ -223,8 +223,10 @@ def get_experiments():
 
     mode_store(
         name="sd21",
-        model=dict(pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base"),
+        model=dict(pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base", token_embedding_dim=1024),
     )
+
+    # inherit_mode_store(name="sd212", parents=("sd21",), model=dict(token_embedding_dim=768))
 
     # pretrained_model_name_or_path: Optional[str] = 
     # token_embedding_dim: int = 1024

@@ -26,12 +26,10 @@ from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import Trainable, TrainingState
 
 class BaseMapper(Trainable):
-
     def __init__(self, cfg: BaseConfig):
         super().__init__()
         self.cfg: BaseConfig = cfg
         self.weight_dtype = getattr(torch, cfg.trainer.dtype.split(".")[-1])
-        self.module_device = cfg.trainer.device
 
         self.initialize_diffusers_models()
         self.initialize_custom_models()
@@ -41,8 +39,12 @@ class BaseMapper(Trainable):
         BaseMapper.infer_batch = infer_batch
         BaseMapper.run_inference = run_inference
 
+    @property
+    def device(self):
+        return next(self.parameters()).device
+    
     def initialize_custom_models(self):
-        self.mapper = Mapper(cfg=self.cfg)
+        self.mapper = Mapper(cfg=self.cfg).to(self.cfg.trainer.device)
 
         self.clip: BaseModel = hydra.utils.instantiate(
             self.cfg.model.encoder, _recursive_=True, num_from_back=3, tensor_input=True
@@ -73,12 +75,6 @@ class BaseMapper(Trainable):
             self.controlnet: ControlNetModel = ControlNetModel.from_unet(self.unet, conditioning_channels=2)
 
     def add_adapters(self):
-        self.vae.to(device=self.module_device, dtype=self.weight_dtype)
-        self.unet.to(device=self.module_device, dtype=self.weight_dtype)
-        self.text_encoder.to(device=self.module_device, dtype=self.weight_dtype)
-        if self.cfg.model.controlnet:
-            self.controlnet.to(device=self.module_device, dtype=self.weight_dtype)
-
         self.set_training_mode(set_grad=True)
 
         assert not (self.cfg.model.freeze_unet is False and (self.cfg.model.unfreeze_unet_after_n_steps is not None or self.cfg.model.lora_unet))
@@ -126,18 +122,22 @@ class BaseMapper(Trainable):
     def set_training_mode(self, set_grad: bool = False):
         """
         Set training mode for the proper models and freeze/unfreeze them.
-        We have the set_grad param as it appears that setting requires_grad after training has started can cause:
 
+        We set the weights to weight_dtype only if they are frozen. Otherwise, they are left in FP32.
+
+        We have the set_grad param as it appears that setting requires_grad after training has started can cause:
         `element 0 of tensors does not require grad and does not have a grad_fn`
         """
         if set_grad:
+            self.vae.to(device=self.device, dtype=self.weight_dtype)
             self.vae.requires_grad_(False)
-
+        
         if self.cfg.model.use_dataset_segmentation is False:
             self.hqsam.eval()
             if set_grad:
                 self.hqsam.requires_grad_(False)
 
+        # TODO: Check 
         if self.cfg.model.freeze_clip:
             if set_grad:
                 self.clip.requires_grad_(False)
@@ -156,6 +156,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.freeze_unet:
             if set_grad:
+                self.unet.to(device=self.device, dtype=self.weight_dtype)
                 self.unet.requires_grad_(False)
             self.unet.eval()
         else:
@@ -165,6 +166,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.freeze_text_encoder:
             if set_grad:
+                self.text_encoder.to(device=self.device, dtype=self.weight_dtype)
                 self.text_encoder.requires_grad_(False)
             self.text_encoder.eval()
         else:
@@ -200,7 +202,7 @@ class BaseMapper(Trainable):
     def set_inference_mode(self):
         self.pipeline: Union[StableDiffusionControlNetPipeline, StableDiffusionPipeline] = load_stable_diffusion_model(
             cfg=self.cfg,
-            device=self.module_device,
+            device=self.device,
             tokenizer=self.tokenizer,
             text_encoder=self.text_encoder,
             unet=self.unet,
@@ -240,8 +242,11 @@ class BaseMapper(Trainable):
         disable_conditioning: bool = False,
     ):
         hidden_state, _ = self.get_hidden_state(batch, add_mask_conditioning=disable_conditioning is False)
+
         bs = batch["disc_pixel_values"].shape[0]
         input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)]
+
+        # passed to StableDiffusionPipeline/StableDiffusionControlNetPipeline
         pipeline_kwargs = dict(prompt_embeds=hidden_state)
         if self.cfg.model.controlnet:
             pipeline_kwargs["image"] = self.get_controlnet_conditioning(batch)
@@ -259,31 +264,26 @@ class BaseMapper(Trainable):
             original = batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1]))
             assert False
 
+        # SAM requires NumPy [0, 255]
+        sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c")  
+        gen_segmentations = []
         bs: int = batch["disc_pixel_values"].shape[0]
 
-        sam_input = rearrange(
-            (((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c"
-        )  # SAM requires NumPy [0, 255]
-
-        gen_segmentations = []
         for i in range(bs):
             masks = self.hqsam.forward(sam_input[i])
             masks = sorted(masks, key=lambda d: d["area"], reverse=True)
             max_masks = 4
             masks = masks[:max_masks]  # We only have 77 tokens
             original = torch.from_numpy(np.array([masks[i]["segmentation"] for i in range(len(masks))]))
-            if original.shape[0] == 0:
-                original = (
-                    batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1])).cpu()
-                )
-            else:
-                # Add additional mask to capture any pixels that are not part of any mask
+
+            if original.shape[0] == 0: # Make dummy mask with all ones
+                original = (batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1])).cpu())
+            else: # Add additional mask to capture any pixels that are not part of any mask
                 original = torch.cat((original, (~original.any(dim=0))[None]), dim=0)
-            if original.shape[0] != 0 and not self.training:
+
+            if original.shape[0] != 0 and not self.training: # During inference, we update batch with the SAM masks for later visualization
                 gen_segmentation_ = original.permute(1, 2, 0).long().clone()
-                gen_segmentations.append(
-                    torch.nn.functional.pad(gen_segmentation_, (0, (max_masks + 1) - gen_segmentation_.shape[-1]), "constant", 0)
-                )
+                gen_segmentations.append(torch.nn.functional.pad(gen_segmentation_, (0, (max_masks + 1) - gen_segmentation_.shape[-1]), "constant", 0))
 
         if len(gen_segmentations) > 0:
             batch["gen_segmentation"] = torch.stack(gen_segmentations, dim=0)
@@ -394,7 +394,13 @@ class BaseMapper(Trainable):
             extent = len(batch["input_ids"][b, replace_sl])
             repeated_tensor = torch.tensor(mask_tokens_ids * mask_part_of_batch.shape[0])[:extent]
             batch["input_ids"][b, replace_sl] = repeated_tensor
-            batch["input_ids"][b, replace_sl.stop] = eos_token_id
+
+            final_token = replace_sl.stop
+            if 'end_tokens' in batch: # E.g., so we can say "A photo of mask_0 and mask_1 on a beach"
+                batch["input_ids"][b, replace_sl.stop:replace_sl.stop + batch['end_tokens'].shape[1]] = batch['end_tokens'][b]
+                final_token = replace_sl.stop + batch['end_tokens'].shape[1]
+
+            batch["input_ids"][b, final_token] = eos_token_id
 
         return dict(
             attn_dict=attn_dict,

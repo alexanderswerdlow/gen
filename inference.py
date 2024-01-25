@@ -18,7 +18,7 @@ from gen.datasets.base_dataset import Split
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import is_main_process
 from gen.utils.logging_utils import log_info
-from gen.utils.trainer_utils import Trainable, TrainingState
+from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
 
 
 def inference(cfg: BaseConfig, accelerator: Accelerator):
@@ -44,7 +44,7 @@ def run_inference_dataloader(
 ):
     
     output_path.mkdir(exist_ok=True, parents=True)
-    model.set_inference_mode()
+    unwrap(model).set_inference_mode()
     log_info(f"Running inference. Dataloder size: {len(dataloader)}")
     for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
         output = model.run_inference(batch=batch, state=state)

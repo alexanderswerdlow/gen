@@ -44,7 +44,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     )
 
     full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
-    ret["image"] = Im.concat_horizontal(
+    ret["validation"] = Im.concat_horizontal(
         Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}", relative_font_scale=0.004)
         for i, prompt_image_ in enumerate(prompt_image)
     )
@@ -71,7 +71,8 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             save_cross_attention_vis(tokenizer=self.tokenizer, tokens=uncond_tokens["input_ids"][0], attention_maps=agg_attn_uncond)
         ).write_text("Uncond")
 
-        ret['attn'] = Im.concat_vertical(attn_img_cond, attn_img_uncond)
+        ret['attn_vis'] = Im.concat_vertical(attn_img_cond, attn_img_uncond)
+        if self.cfg.model.break_a_scene_cross_attn_loss: self.controller.reset()
 
     if self.cfg.inference.num_masks_to_remove is not None:
         gen_segmentation = batch["gen_segmentation"]
@@ -81,14 +82,15 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             batch["gen_segmentation"] = gen_segmentation[..., torch.arange(gen_segmentation.size(-1)) != j]
             batch["input_ids"] = orig_input_ids.clone()
             prompt_image, input_prompt, prompt_embeds = self.infer_batch(batch=batch)
+            if self.cfg.model.break_a_scene_cross_attn_loss: self.controller.reset()
             mask_image = Im(get_layered_image_from_binary_mask(gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
             mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
             mask_alpha = (gen_segmentation[..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
             composited_image = orig_image.pil.copy().convert("RGBA")
             composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
             composited_image = composited_image.convert("RGB")
-            removed_mask_imgs.append(Im.concat_vertical(prompt_image, mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
+            removed_mask_imgs.append(Im.concat_vertical(prompt_image[0], mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
 
-        ret["removed_masks"] = Im.concat_horizontal(removed_mask_imgs)
+        ret["validation"] = Im.concat_horizontal(ret["validation"] *removed_mask_imgs)
 
     return ret

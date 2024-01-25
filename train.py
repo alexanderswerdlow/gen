@@ -57,8 +57,6 @@ class Trainer:
         self.optimizer: torch.optim.Optimizer = None
         self.lr_scheduler: torch.optim.lr_scheduler.LRScheduler = None
         self.tokenizer: CLIPTokenizer = None
-        self.checkpoint_handler: CheckpointHandler = None
-        self.validator: ValidationHandler = None
 
         self.train_dataloader: DataLoader = None
         self.validation_dataloader: DataLoader = None
@@ -77,33 +75,16 @@ class Trainer:
         weight_dtype = getattr(torch, self.cfg.trainer.dtype.split(".")[-1])
         match self.cfg.model.model_type:
             case ModelType.BASE_MAPPER:
-                assert self.cfg.model.model_type == ModelType.BASE_MAPPER
                 model = get_model_from_cfg(self.cfg)
-                if self.cfg.model.per_timestep_conditioning:
-                    model.prepare_for_training(self.cfg.trainer.dtype, self.accelerator)
-
-                    if self.cfg.model.freeze_text_encoder:
-                        self.models.append(unwrap(model.text_encoder).text_model.embeddings.mapper)
-                    else:
-                        self.models.append(unwrap(model.text_encoder))
-
-                    if self.cfg.model.freeze_unet is False or self.cfg.model.lora_unet:
-                        self.models.append(model.unet)
-
-                    if self.cfg.model.controlnet:
-                        self.models.append(model.controlnet)
-
-                    summary(unwrap(model.text_encoder).text_model.embeddings, col_names=("trainable", "num_params"), verbose=2)
-                else:
-                    self.models.append(model)
-                    self.model = self.accelerator.prepare(model)
-
+                self.models.append(model)
+                self.model = self.accelerator.prepare(model)
                 self.tokenizer = unwrap(model).tokenizer
-                self.checkpoint_handler: CheckpointHandler = CheckpointHandler(cfg=self.cfg, save_root=self.cfg.checkpoint_dir)
-                self.validator: ValidationHandler = ValidationHandler(cfg=self.cfg, weights_dtype=weight_dtype)
 
                 if is_main_process():
                     summary(model, col_names=("trainable", "num_params"), depth=3)
+
+        # for k,v in get_named_params_to_optimize(self.models).items():
+        #     breakpoint()
 
     def init_dataloader(self):
         log_info("Creating train_dataset + self.train_dataloader")

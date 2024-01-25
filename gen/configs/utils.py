@@ -41,20 +41,14 @@ def global_store(name: str, group: str, hydra_defaults: Optional[list[Any]] = No
     return cfg
 
 
-def global_store_parent(name: str, group: str, parents: str, hydra_defaults: Optional[list[Any]] = None, **kwargs):
-    from gen.configs.base import BaseConfig
+def global_store_parent(name: str, group: str, parent: str, hydra_defaults: Optional[list[Any]] = None, **kwargs):
+    import string
+    import random
+    rand_name = "".join(random.choices(string.ascii_letters, k=6))
+    global_store(name=rand_name, group=group, hydra_defaults=hydra_defaults, **kwargs)
 
-    cfg = make_config(
-        hydra_defaults=hydra_defaults if hydra_defaults is not None else ["_self_"],
-        bases=(*parents, BaseConfig),
-        zen_dataclass={"kw_only": True},
-        **kwargs,
-    )
-
-    print(name)
-
-    destructure_store(
-        OmegaConf.merge(*parents, cfg),
+    cfg = destructure_store(
+        OmegaConf.merge(store[group][(group, parent)], store[group][(group, rand_name)]),
         group=group,
         package="_global_",
         name=name,
