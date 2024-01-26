@@ -245,6 +245,12 @@ def get_experiments():
     )
 
     mode_store(
+        name="break_a_scene_quick",
+        trainer=dict(learning_rate=5e-4, lr_warmup_steps=50, enable_xformers_memory_efficient_attention=True, eval_every_n_steps=50, max_train_steps=1000, checkpointing_steps=1000, log_gradients=50),
+        dataset=dict(train_dataset=dict(batch_size=20)),
+    )
+
+    mode_store(
         name="sd21",
         model=dict(pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base", token_embedding_dim=1024),
     )

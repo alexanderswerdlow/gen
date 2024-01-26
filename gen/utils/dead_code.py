@@ -267,3 +267,11 @@ def viz():
 #         y = i // cols
 #         grid_image.paste(img, (x * width, y * height))
 #     return grid_image
+
+
+# global img_idx
+# im_path = f"/home/aswerdlo/repos/gen/output/masks/{img_idx}_mask.png"
+# from image_utils import Im
+# Im(loss_mask).save(im_path)
+# Im((batch["gen_pixel_values"] + 1) / 2).save(im_path.replace("_mask.png", ".png"))
+# img_idx += 1

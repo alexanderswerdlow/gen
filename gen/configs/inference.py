@@ -16,12 +16,13 @@ class InferenceConfig:
     guidance_scale: float = 7.5
     resolution: int = "${model.resolution}"
     
+    num_images_per_prompt: int = 1 # Only applies to the primary generation
     num_masks_to_remove: Optional[int] = 4
-    num_images_per_prompt: int = 1
     visualize_attention_map: bool = False
     visualize_embeds: bool = False
     infer_new_prompts: bool = False
     save_prompt_embeds: bool = False
+    max_batch_size: int = 16
 
     set_seed: bool = False
     batched_cfg: bool = False # WARNING: This may silently break things

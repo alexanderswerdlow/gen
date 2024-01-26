@@ -1,6 +1,7 @@
 from __future__ import annotations
+from contextlib import nullcontext
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Any
 
 import numpy as np
 import torch
@@ -14,19 +15,24 @@ from gen.utils.trainer_utils import TrainingState
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import BaseMapper
+    from gen.models.cross_attn.base_model import ConditioningData
 
 
-def infer_batch(self: BaseMapper, batch: dict, num_images_per_prompt: int = 1, pipeline_kwargs: Optional[dict] = None) -> Image.Image:
+def infer_batch(
+    self: BaseMapper, batch: dict, num_images_per_prompt: int = 1, pipeline_kwargs: Optional[dict] = None
+) -> tuple[list[Any], dict, ConditioningData]:
     if pipeline_kwargs is None:
         with torch.cuda.amp.autocast():
             assert self.cfg.inference.empty_string_cfg
             pipeline_kwargs, conditioning_data = self.get_standard_conditioning_for_inference(batch=batch)
 
-    images = self.pipeline(
-        num_images_per_prompt=num_images_per_prompt,
-        guidance_scale=self.cfg.inference.guidance_scale,
-        **pipeline_kwargs,
-    ).images
+    desired_context = nullcontext() if self.cfg.model.freeze_unet else torch.cuda.amp.autocast()
+    with desired_context:
+        images = self.pipeline(
+            num_images_per_prompt=num_images_per_prompt,
+            guidance_scale=self.cfg.inference.guidance_scale,
+            **pipeline_kwargs,
+        ).images
 
     return images, pipeline_kwargs, conditioning_data
 
@@ -62,9 +68,9 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
 
     if self.cfg.inference.save_prompt_embeds:
-        assert conditioning_data["mask_instance_idx"].shape[0] == conditioning_data["mask_tokens"].shape[0]
+        assert conditioning_data.mask_instance_idx.shape[0] == conditioning_data.mask_tokens.shape[0]
         all_masks = [full_seg]
-        for j in conditioning_data["mask_instance_idx"]:
+        for j in conditioning_data.mask_instance_idx:
             all_masks.append(
                 Im(get_layered_image_from_binary_mask(batch["gen_segmentation"][..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8).write_text(
                     f"Mask: {j}"
@@ -72,7 +78,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             )
 
         ret["individual_masks"] = Im.concat_horizontal(*all_masks, spacing=10)
-        ret["mask_tokens"] = {"mask_tokens": conditioning_data["mask_tokens"][None]}
+        ret["mask_tokens"] = {"mask_tokens": conditioning_data.mask_tokens[None]}
 
     if self.cfg.model.break_a_scene_cross_attn_loss:
         batch_size = (2 if self.cfg.inference.guidance_scale > 1.0 else 1) * self.cfg.inference.num_images_per_prompt
@@ -158,11 +164,10 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
         batch_ = {}
 
         batch_["input_ids"] = []
-        for prompt in prompts:
+        for prompt in prompts[: self.cfg.inference.max_batch_size]:
             batch_["input_ids"].append(get_tokens(tokenizer=self.tokenizer, prompt=prompt)[None])
         batch_["input_ids"] = torch.cat(batch_["input_ids"], dim=0).to(self.device)
 
-        
         for k, v in batch.items():
             if isinstance(v, torch.Tensor) and k not in batch_:
                 assert v.shape[0] == 1

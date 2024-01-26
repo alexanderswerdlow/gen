@@ -12,6 +12,7 @@ from image_utils import Im
 from PIL import Image
 
 if TYPE_CHECKING:
+    from gen.models.cross_attn.base_model import ConditioningData
     from gen.configs.base import BaseConfig
 
 def view_images(
@@ -245,11 +246,11 @@ def aggregate_attention(controller: AttentionStore, res: int, from_where: List[s
     return out
 
 
-def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: dict, controller: AttentionStore, text_encoder_dict: dict):
+def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: dict, controller: AttentionStore, conditioning_data: ConditioningData):
     attn_loss = 0
     batch_size: int = batch["disc_pixel_values"].shape[0]
     gen_seg_ = rearrange(batch["gen_segmentation"], "b h w c -> b c () h w").float()
-    learnable_idxs = (batch["input_ids"] == text_encoder_dict["placeholder_token"]).nonzero(as_tuple=True)
+    learnable_idxs = (batch["input_ids"] == conditioning_data.placeholder_token).nonzero(as_tuple=True)
 
     for batch_idx in range(batch_size):
         GT_masks = F.interpolate(input=gen_seg_[batch_idx], size=(16, 16))  # We interpolate per mask separately
@@ -258,7 +259,7 @@ def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: dict, controller: Atte
         cur_batch_mask = learnable_idxs[0] == batch_idx  # Find the masks for this batch
         token_indices = learnable_idxs[1][cur_batch_mask]
 
-        segmentation_indices = text_encoder_dict["mask_instance_idx"][
+        segmentation_indices = conditioning_data.mask_instance_idx[
             cur_batch_mask
         ]  # We may dropout masks so we need to map between dataset segmentation idx and the mask idx in the sentence
         attn_masks = agg_attn[..., token_indices]
@@ -283,14 +284,16 @@ def remove_element(tensor, row_index):
 def break_a_scene_masked_loss(
     cfg: BaseConfig,
     batch: dict,
-    text_encoder_dict: dict
+    conditioning_data: ConditioningData
 ):
     max_masks = []
     for b in range(batch['gen_pixel_values'].shape[0]):
-        mask_idxs_for_batch = text_encoder_dict['mask_instance_idx'][text_encoder_dict['mask_batch_idx'] == b]
-        mask_idxs_for_batch = mask_idxs_for_batch[mask_idxs_for_batch != cfg.model.background_mask_idx]
+        mask_idxs_for_batch = conditioning_data.mask_instance_idx[conditioning_data.mask_batch_idx == b]
         object_masks = batch["gen_segmentation"][b, ..., mask_idxs_for_batch]
-        max_masks.append(torch.max(object_masks, axis=-1).values)
+        if object_masks.shape[-1] == 0:
+            max_masks.append(object_masks.new_zeros((512, 512))) # Zero out loss if there are no masks
+        else:
+            max_masks.append(torch.max(object_masks, axis=-1).values)
 
     max_masks = torch.stack(max_masks, dim=0)[:, None]
     downsampled_mask = F.interpolate(input=max_masks.float(), size=(64, 64))

@@ -8,7 +8,7 @@ conda create -n gen python=3.10
 conda activate gen
 
 pip install 'torch==2.1.*' 'torchvision==0.16.*' 'xformers==0.0.23' --index-url https://download.pytorch.org/whl/cu121
-
+pip install pip install ninja wheel packaging; pip install flash-attn --no-build-isolation
 pip install -r requirements.txt
 ```
 

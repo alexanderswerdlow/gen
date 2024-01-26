@@ -186,9 +186,9 @@ class Trainer:
 
     def unfreeze_unet(self, state: TrainingState):
         log_warn(f"Unfreezing UNet at {state.global_step} steps")
-        self.cfg.model.freeze_unet = False
-        self.cfg.model.break_a_scene_masked_loss = True
-        unwrap(self.model).unfreeze_unet()
+        model_: Trainable = unwrap(self.model)
+        model_.unfreeze_unet()
+        self.models.append(model_)
         del self.optimizer
         optimizer_class = torch.optim.AdamW
         self.optimizer = optimizer_class(
@@ -207,7 +207,7 @@ class Trainer:
             num_cycles=self.cfg.trainer.lr_num_cycles,
             power=self.cfg.trainer.lr_power,
         )
-        self.optimizer, self.lr_scheduler, self.model = self.accelerator.prepare(self.optimizer, self.lr_scheduler, self.model)
+        self.optimizer, self.lr_scheduler, self.model = self.accelerator.prepare(self.optimizer, self.lr_scheduler, model_)
         validate_params(self.models, self.dtype)
         if is_main_process():
             summary(unwrap(self.model), col_names=("trainable", "num_params"), depth=4)

@@ -57,6 +57,11 @@ class ModelConfig:
     background_mask_idx: int = 0 # Used for the break-a-scene mask loss to not count loss for the background mask
     placeholder_token: str = "masks"
 
+    # Quick experiment configs
+    break_a_scene_cross_attn_loss_second_stage: bool = False
+    dropout_foreground_only: bool = False
+    dropout_background_only: bool = False
+
     # NeTI Specific Configs below
     placeholder_token_id: Optional[int] = None
     super_category_token: str = "object"
@@ -78,10 +83,6 @@ class ModelConfig:
     pe_sigmas: Dict[str, float] = field(default_factory=lambda: {"sigma_t": 0.03, "sigma_l": 2.0}) # Sigmas used for computing positional encoding
     num_pe_time_anchors: int = 10 # Number of time anchors for computing our positional encodings
     output_bypass: bool = True # Whether to output the textual bypass vector
-
-    # pretrained_model_name_or_path: Optional[str] = "stabilityai/stable-diffusion-2-1"
-    # token_embedding_dim: int = 1024
-    # resolution: int = 768
 
 
 @dataclass
