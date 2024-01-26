@@ -280,7 +280,7 @@ class BaseMapper(Trainable):
         ]
 
         # passed to StableDiffusionPipeline/StableDiffusionControlNetPipeline
-        pipeline_kwargs = dict(prompt_embeds=conditioning_data.hidden_state)
+        pipeline_kwargs = dict(prompt_embeds=conditioning_data.encoder_hidden_states)
         if self.cfg.model.controlnet:
             pipeline_kwargs["image"] = self.get_controlnet_conditioning(batch)
 
@@ -450,7 +450,7 @@ class BaseMapper(Trainable):
 
         queries = self.mapper.learnable_token[None, :].repeat(conditioning_data.mask_batch_idx.shape[0], 1)
         conditioning_data.attn_dict["x"] = queries.to(self.weight_dtype)
-        conditioning_data.mask_tokens = self.mapper.cross_attn(**conditioning_data.attn_dict).to(self.weight_dtype)
+        conditioning_data.mask_tokens = self.mapper.cross_attn(conditioning_data).to(self.weight_dtype)
 
         return conditioning_data
 
@@ -530,7 +530,7 @@ class BaseMapper(Trainable):
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
         conditioning_data = self.get_hidden_state(batch, add_mask_conditioning=self.cfg.model.mask_cross_attn)
-        encoder_hidden_states = conditioning_data.hidden_state
+        encoder_hidden_states = conditioning_data.encoder_hidden_states
 
         if self.cfg.model.controlnet:
             controlnet_image = self.get_controlnet_conditioning(batch)

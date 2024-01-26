@@ -1,10 +1,16 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Optional
+
 import hydra
 import torch
 from torch import nn
 
-from gen.configs.base import BaseConfig
 from gen.models.utils import _init_weights
 
+if TYPE_CHECKING:
+    from gen.configs.base import BaseConfig
+    from gen.models.cross_attn.base_model import ConditioningData
 
 class Mapper(nn.Module):
     def __init__(
@@ -31,8 +37,8 @@ class CrossAttn(nn.Module):
         )
         self.cross_attn_proj = nn.Sequential(nn.Linear(self.cfg.model.cross_attn_dim, output_dim), nn.LayerNorm(output_dim))
 
-    def forward(self, **kwargs):
-        attn_dict = kwargs.get("attn_dict")
+    def forward(self, conditioning_data: ConditioningData):
+        attn_dict = conditioning_data.attn_dict
         x = self.neti_up_proj(attn_dict["x"])
 
         del attn_dict["x"]
