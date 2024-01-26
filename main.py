@@ -133,6 +133,7 @@ def main(cfg: BaseConfig):
                 f"Using dynamic gradient accumulation with {num_gpus} GPUs so scaling by {grad_accum_factor} to {cfg.trainer.gradient_accumulation_steps} gradient accumulation steps."
             )
 
+    cfg.trainer.initial_learning_rate = cfg.trainer.learning_rate
     if cfg.trainer.scale_lr_gpus_grad_accum:
         # For n GPUs, we have an effective xN batch size so we need to scale the learning rate.
         # Similarly, if we accumulate gradients (e.g., training on 1 GPU), we need to scale the learning rate.
@@ -145,6 +146,11 @@ def main(cfg: BaseConfig):
     if cfg.trainer.scale_lr_batch_size:
         cfg.trainer.learning_rate = cfg.trainer.learning_rate * cfg.dataset.train_dataset.batch_size
         log_info(f"Scaling learning rate by {cfg.dataset.train_dataset.batch_size} to {cfg.trainer.learning_rate}.")
+
+    if cfg.trainer.finetune_learning_rate is not None:
+        scale_factor = cfg.trainer.learning_rate / cfg.trainer.initial_learning_rate
+        cfg.trainer.finetune_learning_rate = scale_factor * cfg.trainer.finetune_learning_rate
+        log_info(f"Scaling finetuning learning rate by {scale_factor} to {cfg.trainer.finetune_learning_rate}.")
 
     accelerator_project_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=cfg.logging_dir)
     gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=cfg.trainer.gradient_accumulation_steps, adjust_scheduler=False)
@@ -180,9 +186,12 @@ def main(cfg: BaseConfig):
 
         if cfg.trainer.resume:
             wandb_kwargs['resume'] = 'must'
-            
+        
+        project_name_suffix = "_inference" if cfg.run_inference else ""
+        project_name_suffix = "_debug" if cfg.debug else project_name_suffix
+        cfg.trainer.tracker_project_name = f"{cfg.trainer.tracker_project_name}{project_name_suffix}"
         accelerator.init_trackers(
-            cfg.trainer.tracker_project_name + ("_inference" if cfg.run_inference else ""),
+            cfg.trainer.tracker_project_name,
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
             init_kwargs=dict(wandb=wandb_kwargs),
         )

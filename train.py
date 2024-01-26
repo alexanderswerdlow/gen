@@ -6,7 +6,7 @@ import os
 from collections import defaultdict
 from pathlib import Path
 from time import time
-from typing import Union
+from typing import Iterable, Union
 
 import hydra
 from numpy import float32
@@ -33,7 +33,6 @@ from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing_dirs, load_from_ckpt, unwrap
 from inference import run_inference_dataloader
 
-
 def trainable_parameters(module, requires_grad: bool):
     for name, param in module.named_parameters():
         if param.requires_grad or requires_grad is False:
@@ -47,11 +46,18 @@ def get_named_params(models: tuple[Union[nn.Module, dict]], requires_grad=True):
         )
     )
 
+def validate_params(models: Iterable[nn.Module], dtype: torch.dtype):
+    # In general, we want all trainable params in FP32 and all non-trainable params possibly in BF16
+    for p in get_named_params(models).values():
+        if p.requires_grad: assert p.dtype == torch.float32
+        elif not p.requires_grad: assert p.dtype == dtype
 
 class Trainer:
     def __init__(self, cfg: BaseConfig, accelerator: Accelerator):
         self.cfg = cfg
         self.accelerator = accelerator
+
+        self.dtype = getattr(torch, self.cfg.trainer.dtype.split(".")[-1])
 
         self.model: Trainable = None  # Generally, we try to have a single top-level nn.Module that contains all the other models
         self.models: list[Union[nn.Module, dict]] = None  # We support multiple models or dicts of named parameters if necessary
@@ -73,7 +79,6 @@ class Trainer:
         assert is_xformers_available()
 
         self.models = []
-        weight_dtype = getattr(torch, self.cfg.trainer.dtype.split(".")[-1])
         match self.cfg.model.model_type:
             case ModelType.BASE_MAPPER:
                 model = get_model_from_cfg(self.cfg)
@@ -84,10 +89,7 @@ class Trainer:
                 if is_main_process():
                     summary(model, col_names=("trainable", "num_params"), depth=3)
 
-        # In general, we want all trainable params in FP32 and all non-trainable params possibly in BF16
-        for p in get_named_params(self.models).values():
-            if p.requires_grad: assert p.dtype == torch.float32
-            elif not p.requires_grad: assert p.dtype == weight_dtype
+        validate_params(self.models, self.dtype)
 
     def init_dataloader(self):
         log_info("Creating train_dataset + self.train_dataloader")
@@ -185,28 +187,30 @@ class Trainer:
     def unfreeze_unet(self, state: TrainingState):
         log_warn(f"Unfreezing UNet at {state.global_step} steps")
         self.cfg.model.freeze_unet = False
-        self.model.unet.requires_grad_(True)
-        self.models.append(self.model.unet)
-        del optimizer
+        self.cfg.model.break_a_scene_masked_loss = True
+        unwrap(self.model).unfreeze_unet()
+        del self.optimizer
         optimizer_class = torch.optim.AdamW
-        optimizer = optimizer_class(
+        self.optimizer = optimizer_class(
             get_named_params(self.models).values(),
             lr=self.cfg.trainer.finetune_learning_rate,
             betas=(self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2),
             weight_decay=self.cfg.trainer.adam_weight_decay,
             eps=self.cfg.trainer.adam_epsilon,
         )
-        del lr_scheduler
-        lr_scheduler = get_scheduler(
+        del self.lr_scheduler
+        self.lr_scheduler = get_scheduler(
             self.cfg.trainer.lr_scheduler,
-            optimizer=optimizer,
+            optimizer=self.optimizer,
             num_warmup_steps=self.cfg.trainer.lr_warmup_steps * self.cfg.trainer.num_gpus,
             num_training_steps=self.cfg.trainer.max_train_steps * self.cfg.trainer.num_gpus,
             num_cycles=self.cfg.trainer.lr_num_cycles,
             power=self.cfg.trainer.lr_power,
         )
-        optimizer, lr_scheduler = self.accelerator.prepare(optimizer, lr_scheduler)
-        summary(self.model)
+        self.optimizer, self.lr_scheduler, self.model = self.accelerator.prepare(self.optimizer, self.lr_scheduler, self.model)
+        validate_params(self.models, self.dtype)
+        if is_main_process():
+            summary(unwrap(self.model), col_names=("trainable", "num_params"), depth=4)
 
     def train(self):
         total_batch_size = self.cfg.dataset.train_dataset.batch_size * self.cfg.trainer.num_gpus * self.cfg.trainer.gradient_accumulation_steps

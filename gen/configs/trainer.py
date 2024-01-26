@@ -62,6 +62,7 @@ class TrainerConfig:
     num_gpus: Optional[int] = None
     dtype: Optional[str] = None
     device: Optional[str] = None
+    initial_learning_rate: Optional[float] = None
 
 
 auto_store(TrainerConfig, name="base")

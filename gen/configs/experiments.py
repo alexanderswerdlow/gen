@@ -1,9 +1,24 @@
 from hydra_zen import builds
 from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_OVERFIT_DATASET_PATH
+from gen.configs import trainer
+from gen.configs.models import ModelConfig
 from gen.configs.utils import mode_store, store_child_config
 from gen.utils.encoder_utils import ResNet50
 from accelerate.utils import PrecisionType
 
+import string
+import random
+from functools import partial
+from typing import Any, Optional
+from hydra_zen import builds, store
+from hydra_zen import make_config, store
+from hydra_zen.wrapper import default_to_config
+from dataclasses import is_dataclass
+from omegaconf import OmegaConf
+import inspect
+from typing import Optional, get_type_hints
+from omegaconf import DictConfig, OmegaConf
+from gen.configs.utils import destructure_store
 
 def get_override_dict(**kwargs):
     return dict(
@@ -223,12 +238,70 @@ def get_experiments():
     )
 
     mode_store(
-        name="sd21",
-        model=dict(pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base", token_embedding_dim=1024),
+        name="break_a_scene_two_stage",
+        model=dict(lora_unet=False, unfreeze_unet_after_n_steps=100),
+        trainer=dict(finetune_learning_rate=2e-6, learning_rate=5e-4, lr_warmup_steps=50, enable_xformers_memory_efficient_attention=True, eval_every_n_steps=50, max_train_steps=10000, checkpointing_steps=1000, log_gradients=25),
+        dataset=dict(train_dataset=dict(batch_size=20)),
     )
 
-    # inherit_mode_store(name="sd212", parents=("sd21",), model=dict(token_embedding_dim=768))
+    cfg_ = mode_store(
+        name="sd21",
+        model=dict(pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base", token_embedding_dim=1024),
+        # trainer=trainer.TrainerConfig(lr_num_cycles=10),
+    )
 
-    # pretrained_model_name_or_path: Optional[str] = 
-    # token_embedding_dim: int = 1024
-    # resolution: int = 768
+    # from gen.configs.base import BaseConfig
+
+    # group = "modes"
+    # rand_name = "".join(random.choices(string.ascii_letters, k=6))
+    # name="sd212"
+    # parent="sd21"
+    # kwargs=dict(model=dict(token_embedding_dim=768))
+
+    # cfg = make_config(
+    #     hydra_defaults=["_self_"],
+    #     bases=(cfg_,),
+    #     zen_dataclass={"kw_only": True},
+    #     **kwargs,
+    # )
+
+    # destructure_store(
+    #     cfg,
+    #     group=group,
+    #     package="_global_",
+    #     name=rand_name,
+    # )
+
+    # cfg = destructure_store(
+    #     OmegaConf.merge(store[group][(group, parent)], store[group][(group, rand_name)]),
+    #     group=group,
+    #     package="_global_",
+    #     name=name,
+    # )
+
+    # from gen.configs.base import BaseConfig
+    # group = "modes"
+    # rand_name = "".join(random.choices(string.ascii_letters, k=6))
+    # name="sd212"
+    # parent="sd21"
+    # kwargs=dict(model=dict(token_embedding_dim=768))
+
+    # cfg = make_config(
+    #     hydra_defaults=["sd21"],
+    #     zen_dataclass={"kw_only": True},
+    #     **kwargs,
+    # )
+
+    # destructure_store(
+    #     cfg,
+    #     group=group,
+    #     package="_global_",
+    #     name=rand_name,
+    # )
+
+    # cfg = destructure_store(
+    #     OmegaConf.merge(store[group][(group, parent)], store[group][(group, rand_name)]),
+    #     group=group,
+    #     package="_global_",
+    #     name=name,
+    # )

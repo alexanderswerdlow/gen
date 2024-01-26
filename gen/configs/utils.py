@@ -71,18 +71,3 @@ def inherit_parent_args(cls):
     cls.__init__ = new_init
     return cls
 
-
-# inherit_mode_store = partial(global_store_parent, group="modes")
-# def global_store_parent(name: str, group: str, parent: str, hydra_defaults: Optional[list[Any]] = None, **kwargs):
-#     import string
-#     import random
-#     rand_name = "".join(random.choices(string.ascii_letters, k=6))
-#     global_store(name=rand_name, group=group, hydra_defaults=hydra_defaults, **kwargs)
-
-#     cfg = destructure_store(
-#         OmegaConf.merge(store[group][(group, parent)], store[group][(group, rand_name)]),
-#         group=group,
-#         package="_global_",
-#         name=name,
-#     )
-#     return cfg

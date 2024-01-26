@@ -37,7 +37,7 @@ class BaseMapper(Trainable):
         self.initialize_custom_models()
         self.add_adapters()
 
-        from gen.models.cross_attn.inference import infer_batch
+        from gen.models.cross_attn.base_inference import infer_batch
         BaseMapper.infer_batch = infer_batch
 
     @property
@@ -199,6 +199,10 @@ class BaseMapper(Trainable):
         if hasattr(self, "pipeline"):  # After validation, we need to clear this
             del self.pipeline
             torch.cuda.empty_cache()
+
+    def unfreeze_unet(self):
+        self.unet.to(device=self.device, dtype=torch.float32)
+        self.unet.requires_grad_(True)
 
     def set_inference_mode(self):
         self.pipeline: Union[StableDiffusionControlNetPipeline, StableDiffusionPipeline] = load_stable_diffusion_model(
@@ -401,6 +405,7 @@ class BaseMapper(Trainable):
             clip_feature_cls_token=clip_feature_cls_token,
             mask_batch_idx=mask_batch_idx,
             mask_instance_idx=mask_instance_idx,
+            placeholder_token=self.placeholder_token_id,
         )
 
     def get_mask_conditioning(self, batch: dict):

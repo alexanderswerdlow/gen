@@ -38,9 +38,9 @@ python -m accelerate.commands.launch --num_processes 1 train.py +experiment=demo
 Global Step: A single gradient update step over all GPUs.
 True Step: A single forward pass over all GPUs
 
-We set the effective batch size to be the same regardless of the number of GPUs by setting `enable_dynamic_grad_accum`. This accumulates gradients over multiple forward passes which is equivalent to a single DDP step.
+We set the effective batch size to be the same regardless of the number of GPUs by setting `enable_dynamic_grad_accum`. This accumulates gradients over multiple forward passes which is equivalent to a single DDP step. We then scale learning rate accordingly as this is required with HF accelerate: `scale_lr_gpus_grad_accum`.
 
-We also scale learning rate as this is required with HF accelerate: `scale_lr_gpus_grad_accum`
+To perform accumulation without gradient synchronization (until the actual backward), we use the Accelerate [accumulate plugin](https://huggingface.co/docs/accelerate/concept_guides/gradient_synchronization). Using no_sync directly might be better in the future.
 
 ## SLURM
 

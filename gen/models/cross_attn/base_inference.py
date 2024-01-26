@@ -13,7 +13,7 @@ from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
 
 if TYPE_CHECKING:
-    from gen.models.cross_attn.base import BaseMapper
+    from gen.models.cross_attn.base_model import BaseMapper
 
 
 def infer_batch(self: BaseMapper, batch: dict, num_images_per_prompt: int = 1, pipeline_kwargs: Optional[dict] = None) -> Image.Image:

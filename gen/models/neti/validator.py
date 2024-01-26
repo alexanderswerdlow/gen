@@ -1,7 +1,7 @@
 import torch
 from accelerate import Accelerator
 from gen.configs.base import BaseConfig
-from gen.models.cross_attn.base import BaseMapper
+from gen.models.cross_attn.base_model import BaseMapper
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from inference import run_inference_dataloader
 
