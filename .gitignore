@@ -248,3 +248,4 @@ output/
 stats/
 wandb/
 data/
+.python-version

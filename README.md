@@ -16,11 +16,13 @@ pip install -r requirements.txt
 
 ```
 pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu118
-pip install ninja; pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
+pip install ninja wheel packaging; pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
 pip install flash-attn --no-build-isolation
 pip install -r requirements.txt
 pip install git+https://github.com/pytorch-labs/segment-anything-fast.git
 ```
+
+Note: You may need to set `export CUDA_HOME="/usr/local/cuda-11"`
 
 
 ## Test Command

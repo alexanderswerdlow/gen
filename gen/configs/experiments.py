@@ -244,64 +244,13 @@ def get_experiments():
         dataset=dict(train_dataset=dict(batch_size=20)),
     )
 
-    cfg_ = mode_store(
+    mode_store(
         name="sd21",
         model=dict(pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base", token_embedding_dim=1024),
-        # trainer=trainer.TrainerConfig(lr_num_cycles=10),
     )
 
-    # from gen.configs.base import BaseConfig
-
-    # group = "modes"
-    # rand_name = "".join(random.choices(string.ascii_letters, k=6))
-    # name="sd212"
-    # parent="sd21"
-    # kwargs=dict(model=dict(token_embedding_dim=768))
-
-    # cfg = make_config(
-    #     hydra_defaults=["_self_"],
-    #     bases=(cfg_,),
-    #     zen_dataclass={"kw_only": True},
-    #     **kwargs,
-    # )
-
-    # destructure_store(
-    #     cfg,
-    #     group=group,
-    #     package="_global_",
-    #     name=rand_name,
-    # )
-
-    # cfg = destructure_store(
-    #     OmegaConf.merge(store[group][(group, parent)], store[group][(group, rand_name)]),
-    #     group=group,
-    #     package="_global_",
-    #     name=name,
-    # )
-
-    # from gen.configs.base import BaseConfig
-    # group = "modes"
-    # rand_name = "".join(random.choices(string.ascii_letters, k=6))
-    # name="sd212"
-    # parent="sd21"
-    # kwargs=dict(model=dict(token_embedding_dim=768))
-
-    # cfg = make_config(
-    #     hydra_defaults=["sd21"],
-    #     zen_dataclass={"kw_only": True},
-    #     **kwargs,
-    # )
-
-    # destructure_store(
-    #     cfg,
-    #     group=group,
-    #     package="_global_",
-    #     name=rand_name,
-    # )
-
-    # cfg = destructure_store(
-    #     OmegaConf.merge(store[group][(group, parent)], store[group][(group, rand_name)]),
-    #     group=group,
-    #     package="_global_",
-    #     name=name,
-    # )
+    mode_store(
+        name="sd212",
+        model=dict(token_embedding_dim=1024),
+        hydra_defaults=["sd21"], # Inherits!
+    )
