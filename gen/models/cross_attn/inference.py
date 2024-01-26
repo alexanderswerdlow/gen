@@ -9,12 +9,11 @@ from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
-from gen.utils.logging_utils import log_info
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
 
 if TYPE_CHECKING:
-    from gen.models.cross_attn.base_mapper import BaseMapper
+    from gen.models.cross_attn.base import BaseMapper
 
 
 def infer_batch(self: BaseMapper, batch: dict, num_images_per_prompt: int = 1, pipeline_kwargs: Optional[dict] = None) -> Image.Image:
@@ -47,7 +46,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(
         text="GT", relative_font_scale=0.004
     )
-    ret["validation"] = Im.concat_vertical(orig_image, gt_info)
+    ret["validation"] = gt_info
 
     batch["input_ids"] = orig_input_ids.clone()
     prompt_image, pipeline_kwargs, conditioning_data = self.infer_batch(
@@ -60,7 +59,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
         Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}", relative_font_scale=0.004)
         for i, prompt_image_ in enumerate(prompt_image)
     )
-    ret["validation"] = Im.concat_vertical(ret["validation"], generated_images)
+    ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
 
     if self.cfg.inference.save_prompt_embeds:
         assert conditioning_data["mask_instance_idx"].shape[0] == conditioning_data["mask_tokens"].shape[0]
@@ -114,12 +113,11 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
         batch_["gen_segmentation"] = torch.cat(batch_["gen_segmentation"], dim=0)
         batch_["input_ids"] = orig_input_ids.clone()
         batch_["input_ids"] = batch_["input_ids"].repeat(batch_["gen_segmentation"].shape[0], 1)
-    
+
         for k, v in batch.items():
-            if isinstance(v, torch.Tensor):
-                if v not in batch_:
-                    assert v.shape[0] == 1
-                    batch_[k] = repeat(v[0], "... -> h ...", h=batch_["gen_segmentation"].shape[0])
+            if isinstance(v, torch.Tensor) and k not in batch_:
+                assert v.shape[0] == 1
+                batch_[k] = repeat(v[0], "... -> h ...", h=batch_["gen_segmentation"].shape[0])
 
         prompt_images, _, _ = self.infer_batch(batch=batch_)
         if self.cfg.model.break_a_scene_cross_attn_loss:
@@ -135,7 +133,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             composited_image = composited_image.convert("RGB")
             removed_mask_imgs.append(Im.concat_vertical(prompt_image[0], mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
 
-        ret["validation"] = Im.concat_horizontal(ret["validation"], *removed_mask_imgs)
+        ret["validation"] = Im.concat_horizontal(ret["validation"], Im.concat_horizontal(*removed_mask_imgs), spacing=15)
         batch["gen_segmentation"] = orig_gen_segmentation
 
     if self.cfg.inference.infer_new_prompts:
@@ -157,16 +155,27 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             "A photograph of two {} on a table",
         ]
         prompts = [prompt.format(self.cfg.model.placeholder_token) for prompt in prompts]
-        batch["input_ids"] = []
-        for prompt in prompts:
-            batch["input_ids"].append(get_tokens(tokenizer=self.tokenizer, prompt=prompt)[None])
-        batch["input_ids"] = torch.cat(batch["input_ids"], dim=0)
+        batch_ = {}
 
-        prompt_images, _, _ = self.infer_batch(batch=batch)
+        batch_["input_ids"] = []
+        for prompt in prompts:
+            batch_["input_ids"].append(get_tokens(tokenizer=self.tokenizer, prompt=prompt)[None])
+        batch_["input_ids"] = torch.cat(batch_["input_ids"], dim=0).to(self.device)
+
+        
+        for k, v in batch.items():
+            if isinstance(v, torch.Tensor) and k not in batch_:
+                assert v.shape[0] == 1
+                batch_[k] = repeat(v[0], "... -> h ...", h=batch_["input_ids"].shape[0])
+
+        prompt_images, _, _ = self.infer_batch(batch=batch_)
+        if self.cfg.model.break_a_scene_cross_attn_loss:
+            self.controller.reset()
 
         ret["prompt_images"] = Im.concat_horizontal(
-            prompt_image.write_text(prompt, relative_font_scale=0.003) for prompt_image, prompt in zip(prompt_images, prompts)
+            Im(prompt_image).write_text(prompt, relative_font_scale=0.00125) for prompt_image, prompt in zip(prompt_images, prompts)
         )
+        ret["prompt_images"] = Im.concat_horizontal(orig_image, ret["prompt_images"], spacing=20)
 
     return ret
 

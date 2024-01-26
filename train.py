@@ -30,7 +30,7 @@ from gen.models.neti.validator import ValidationHandler
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import Profiler, is_main_process, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn
-from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing_dirs, unwrap
+from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing_dirs, load_from_ckpt, unwrap
 from inference import run_inference_dataloader
 
 
@@ -148,47 +148,12 @@ class Trainer:
         # Afterwards we recalculate our number of training epochs
         self.cfg.trainer.num_train_epochs = math.ceil(self.cfg.trainer.max_train_steps / num_update_steps_per_epoch)
 
-    def load_from_ckpt(self):
-        if self.cfg.trainer.ckpt == "latest":
-            # Get the most recent checkpoint
-            dirs = os.listdir(self.cfg.checkpoint_dir)
-            dirs = [d for d in dirs if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("_")[-1]))
-            path = dirs[-1] if len(dirs) > 0 else None
-        else:
-            path = Path(self.cfg.trainer.ckpt)
-
-        if path is None:
-            log_error(f"Checkpoint '{self.cfg.trainer.ckpt}' does not exist. Exiting.")
-            raise FileNotFoundError
-        else:
-            log_info(f"Resuming from checkpoint {path}")
-            if path.is_file() or self.cfg.trainer.load_weights_only_no_state:
-                from accelerate.utils.modeling import load_checkpoint_in_model
-
-                load_checkpoint_in_model(self.model, str(path))
-            else:
-                self.accelerator.load_state(path)
-
-            if path.is_file():
-                global_step = int(path.parent.name.split("_")[-1])
-            else:
-                global_step = int(path.name.split("_")[-1] if "_" in path.name else path.parent.name.split("_")[-1])
-
-            # first_epoch = global_step // num_update_steps_per_epoch
-            first_epoch = 0
-            log_info(f"Continuing training from epoch {first_epoch} and global step {global_step}")
-            return global_step
-
     def checkpoint(self, state: TrainingState):
         prefix = "checkpoint"
         handle_checkpointing_dirs(self.cfg, prefix="checkpoint")
         save_path = self.cfg.checkpoint_dir / f"{prefix}_{state.global_step}"
         save_path.mkdir(exist_ok=True, parents=True)
-        if self.cfg.model.per_timestep_conditioning:
-            self.checkpoint_handler.save_model(model=self.model, accelerator=self.accelerator, save_name=f"{state.global_step}")
-        else:
-            unwrap(self.model).checkpoint(self.accelerator, state, save_path)
+        unwrap(self.model).checkpoint(self.accelerator, state, save_path)
 
     def validate(self, state: TrainingState):
         validation_start_time = time()
@@ -211,7 +176,7 @@ class Trainer:
             output_path=self.cfg.output_dir / "images",
         )
 
-        self.model.set_training_mode()
+        unwrap(self.model).set_training_mode()
         
         log_info(
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.wandb_url}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
@@ -264,7 +229,7 @@ class Trainer:
         first_epoch = 0
 
         # Potentially load in the weights and states from a previous save
-        initial_global_step = self.load_from_ckpt() if self.cfg.trainer.ckpt else 0
+        initial_global_step = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=self.model) if self.cfg.trainer.ckpt else 0
 
         if self.cfg.profile:
             profiler = Profiler(output_dir=self.cfg.output_dir, active_steps=self.cfg.trainer.profiler_active_steps)

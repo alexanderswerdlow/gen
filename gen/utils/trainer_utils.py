@@ -15,11 +15,44 @@ from accelerate.utils import extract_model_from_parallel
 from image_utils import Im
 
 from gen.utils.decoupled_utils import is_main_process
-from gen.utils.logging_utils import log_info
+from gen.utils.logging_utils import log_info, log_error
 
 if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
 
+
+def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module) -> int:
+    if cfg.trainer.ckpt == "latest":
+        # Get the most recent checkpoint
+        dirs = os.listdir(cfg.checkpoint_dir)
+        dirs = [d for d in dirs if d.startswith("checkpoint")]
+        dirs = sorted(dirs, key=lambda x: int(x.split("_")[-1]))
+        path = dirs[-1] if len(dirs) > 0 else None
+    else:
+        path = Path(cfg.trainer.ckpt)
+
+    if path is None:
+        log_error(f"Checkpoint '{cfg.trainer.ckpt}' does not exist. Exiting.")
+        raise FileNotFoundError
+    else:
+        log_info(f"Resuming from checkpoint {path}")
+        if path.is_file() or cfg.trainer.load_weights_only_no_state:
+            from accelerate.utils.modeling import load_checkpoint_in_model
+
+            load_checkpoint_in_model(model, str(path))
+        else:
+            accelerator.load_state(path)
+
+        if path.is_file():
+            global_step = int(path.parent.name.split("_")[-1])
+        else:
+            global_step = int(path.name.split("_")[-1] if "_" in path.name else path.parent.name.split("_")[-1])
+
+        # first_epoch = global_step // num_update_steps_per_epoch
+        first_epoch = 0
+        log_info(f"Continuing from epoch {first_epoch} and global step {global_step}")
+        return global_step
+        
 def handle_checkpointing_dirs(cfg: BaseConfig, prefix: str):
     # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
     if cfg.trainer.checkpoints_total_limit is not None:

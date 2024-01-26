@@ -7,7 +7,7 @@ from accelerate import Accelerator
 from torch import nn
 from transformers import CLIPTokenizer
 from gen.configs import BaseConfig
-from gen.models.cross_attn.base_mapper import BaseMapper
+from gen.models.cross_attn.base import BaseMapper
 from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import NeTIMapper
 from gen.models.neti.positional_encoding import BasicEncoder, NeTIPositionalEncoding

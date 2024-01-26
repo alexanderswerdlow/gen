@@ -75,6 +75,7 @@ def load_stable_diffusion_model(
 
     scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
     pipeline.scheduler = scheduler
+    pipeline.set_progress_bar_config(disable=True)
 
     # if cfg.model.lora_unet:
     #     pipeline.load_lora_weights(args.output_dir)

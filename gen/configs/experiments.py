@@ -209,7 +209,7 @@ def get_experiments():
             train_dataset=dict(batch_size=6, augmentation=dict(enable_crop=False, enable_horizontal_flip=True)),
             validation_dataset=dict(augmentation=dict(enable_crop=False, enable_horizontal_flip=True)),
         ),
-        inference=dict(infer_new_prompts=True, num_masks_to_remove=6, save_prompt_embeds=True)
+        inference=dict(infer_new_prompts=True, num_masks_to_remove=6, save_prompt_embeds=False)
     )
 
     mode_store(

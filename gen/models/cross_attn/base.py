@@ -49,7 +49,7 @@ class BaseMapper(Trainable):
 
         self.clip: BaseModel = hydra.utils.instantiate(
             self.cfg.model.encoder, _recursive_=True, num_from_back=3, tensor_input=True
-        )  # , compile=self.cfg.trainer.compile
+        )
 
         if self.cfg.model.use_dataset_segmentation is False:
             from gen.models.sam import HQSam
@@ -523,6 +523,12 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.break_a_scene_masked_loss:
             loss_mask = break_a_scene_masked_loss(cfg=self.cfg, batch=batch, text_encoder_dict=text_encoder_dict)
+            # global img_idx
+            # im_path = f"/home/aswerdlo/repos/gen/output/masks/{img_idx}_mask.png"
+            # from image_utils import Im
+            # Im(loss_mask).save(im_path)
+            # Im((batch["gen_pixel_values"] + 1) / 2).save(im_path.replace("_mask.png", ".png"))
+            # img_idx += 1
             model_pred, target = model_pred * loss_mask, target * loss_mask
 
         losses = dict()
