@@ -51,16 +51,18 @@ def run_inference_dataloader(
     output_path.mkdir(exist_ok=True, parents=True)
     unwrap(model).set_inference_mode()
     log_info(f"Running inference. Dataloder size: {len(dataloader)}")
+    outputs = []
     for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
         output = unwrap(model).run_inference(batch=batch, state=state)
+        outputs.append(output)
 
+    outputs = {k: [d[k] for d in outputs] for k in outputs[0].keys()}
     device = batch["gen_pixel_values"].device
     wait_for_everyone()
-    for k, v in sorted(output.items()):
-        if isinstance(v, dict):
-            output_dict = accelerate_gather(v)
-            if is_main_process():
-                save_tensor_dict(output_dict, path=output_path / f"{k}_{state.global_step}.npz")
+    for k, v in sorted(outputs.items()):
+        if isinstance(v[0], dict):
+            output_dict = {str(idx): d_ for idx, d_ in enumerate(v)}
+            save_tensor_dict(output_dict, path=output_path / f"{k}_{state.global_step}_{get_rank()}.npz")
         else:
             output_images = gather(device, v)
             if is_main_process():

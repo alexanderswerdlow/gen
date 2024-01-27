@@ -491,7 +491,7 @@ class BaseMapper(Trainable):
         add_mask_conditioning: bool = True,
         mask_tokens: Optional[Float[Tensor, "n d"]] = None,  # We can optionally specify mask tokens to use [e.g., for composing during inference]
         mask_batch_idx: Optional[Integer[Tensor, "n"]] = None,
-    ) -> tuple[Float[Tensor, "b d"], ConditioningData]:
+    ) -> ConditioningData:
         conditioning_data = ConditioningData(
             placeholder_token=self.placeholder_token_id,
             mask_tokens=mask_tokens,

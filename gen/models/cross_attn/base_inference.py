@@ -137,7 +137,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             composited_image = orig_image.pil.copy().convert("RGBA")
             composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
             composited_image = composited_image.convert("RGB")
-            removed_mask_imgs.append(Im.concat_vertical(prompt_image[0], mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
+            removed_mask_imgs.append(Im.concat_vertical(prompt_images[j], mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
 
         ret["validation"] = Im.concat_horizontal(ret["validation"], Im.concat_horizontal(*removed_mask_imgs), spacing=15)
         batch["gen_segmentation"] = orig_gen_segmentation
