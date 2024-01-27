@@ -1,12 +1,12 @@
 from typing import Optional, Union
 
 import torch
+from gen.models.cross_attn.pipeline_stable_diffusion import StableDiffusionPipeline
 from diffusers import (
     AutoencoderKL,
     DDIMScheduler,
     DPMSolverMultistepScheduler,
     StableDiffusionControlNetPipeline,
-    StableDiffusionPipeline,
     UNet2DConditionModel,
 )
 from diffusers.utils.logging import disable_progress_bar
