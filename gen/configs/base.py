@@ -51,8 +51,8 @@ class BaseConfig:
     reference_dir: Optional[Path] = None  # Used to symlink slurm logs
 
     run_name: Optional[str] = None  # Run name used for wandb
-    wandb_url: Optional[str] = None # Set in code
-    wandb_run_id: Optional[str] = None # Set in code
+    wandb_url: Optional[str] = None  # Set in code
+    wandb_run_id: Optional[str] = None  # Set in code
     cwd: Optional[Path] = None
     defaults: List[Any] = field(default_factory=lambda: defaults)
 
@@ -86,17 +86,23 @@ store(get_hydra_config())
 
 exp_store(
     name="gen",
-    inference=dict(visualize_attention_map=True),
     trainer=dict(
-        num_train_epochs=1000,
-        checkpointing_steps=10000,
-        gradient_accumulation_steps=4,
-        learning_rate=5e-5,
-        eval_every_n_epochs=None,
-        eval_every_n_steps=1000,
         tracker_project_name="gen",
+        num_train_epochs=10000,
+        max_train_steps=100000,
+        eval_every_n_epochs=None,
+        eval_every_n_steps=500,
+        checkpointing_steps=5000,
+        checkpoints_total_limit=1,
+        save_accelerator_format=True,
+        learning_rate=4e-7,
+        lr_scheduler="constant_with_warmup",
+        gradient_accumulation_steps=4,
         enable_dynamic_grad_accum=True,
-        checkpoints_total_limit=1
+        scale_lr_batch_size=True,
+        log_gradients=100,
+        gradient_checkpointing=True,
+        compile=False,
     ),
     dataset=dict(
         num_validation_images=1,
@@ -104,7 +110,25 @@ exp_store(
         validation_dataset=dict(batch_size=1, subset_size=4),
         reset_validation_dataset_every_epoch=True,
     ),
-    model=dict(),
+    inference=dict(
+        empty_string_cfg=True,
+        guidance_scale=7.5,
+        use_custom_pipeline=False,
+        visualize_attention_map=False,
+        num_masks_to_remove=4,
+        num_images_per_prompt=2,
+        infer_new_prompts=True,
+        save_prompt_embeds=False,
+    ),
+    model=dict(
+        use_dataset_segmentation=True,
+        mask_cross_attn=True,
+        freeze_text_encoder=True,
+        decoder_transformer=dict(add_self_attn=False),
+        per_timestep_conditioning=False,
+        freeze_mapper=False,
+        freeze_unet=True,
+    ),
     hydra_defaults=[
         "_self_",
         {"override /dataset": "movi_e"},
