@@ -1,19 +1,23 @@
 import math
+from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
-from typing import Union
+from typing import Any, Optional, TypedDict, Union
 
+import einx
 import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate import Accelerator
+from beartype import beartype
 from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
 from einops import rearrange
 from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
 from torch import Tensor
-from transformers import CLIPTokenizer, AutoTokenizer
+from transformers import AutoTokenizer, CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
 
 from gen.configs import BaseConfig
@@ -24,28 +28,39 @@ from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.encoder_utils import BaseModel, ClipFeatureExtractor
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import Trainable, TrainingState
-from functools import cached_property
-from typing import Optional
-from dataclasses import dataclass
+
+
+class InputData(TypedDict):
+    gen_pixel_values: Float[Tensor, "b c h w"]
+    gen_segmentation: Integer[Tensor, "b h w c"]
+    disc_pixel_values: Float[Tensor, "b c h w"]
+    input_ids: Integer[Tensor, "b l"]
+    state: Optional[TrainingState]
 
 
 @dataclass
 class ConditioningData:
     placeholder_token: int
     attn_dict: Optional[dict[str, Tensor]] = None
-    encoder_hidden_states: Optional[Float[Tensor, "b d"]] = None
     clip_feature_cls_token: Optional[Float[Tensor, "n d"]] = None
     mask_tokens: Optional[Float[Tensor, "n d"]] = None
     mask_batch_idx: Optional[Integer[Tensor, "n"]] = None
     mask_instance_idx: Optional[Integer[Tensor, "n"]] = None
     input_prompt: Optional[list[str]] = None
+    
+    # These are passed to the U-Net or pipeline
+    encoder_hidden_states: Optional[Float[Tensor, "b d"]] = None
+    unet_kwargs: Optional[dict[str, Any]] = field(default_factory=dict)
 
+class AttentionMetadata(TypedDict):
+    layer_idx: int
+    num_layers: int
 
 class BaseMapper(Trainable):
     def __init__(self, cfg: BaseConfig):
         super().__init__()
         self.cfg: BaseConfig = cfg
-        self.weight_dtype = getattr(torch, cfg.trainer.dtype.split(".")[-1])
+        self.dtype = getattr(torch, cfg.trainer.dtype.split(".")[-1]) # dtype of most intermediate tensors and frozen weights. Notably, we always use FP32 for trainable params.
 
         self.initialize_diffusers_models()
         self.initialize_custom_models()
@@ -136,6 +151,11 @@ class BaseMapper(Trainable):
             self.controller = AttentionStore()
             register_attention_control(self.controller, self.unet)
 
+        elif self.cfg.model.layer_specialization:
+            from gen.models.cross_attn.attn_proc import register_layerwise_attention
+            num_cross_attn_layers = register_layerwise_attention(self.unet)
+            assert num_cross_attn_layers == self.cfg.model.num_unet_cross_attn_layers
+
     def set_training_mode(self, set_grad: bool = False):
         """
         Set training mode for the proper models and freeze/unfreeze them.
@@ -146,7 +166,7 @@ class BaseMapper(Trainable):
         `element 0 of tensors does not require grad and does not have a grad_fn`
         """
         if set_grad:
-            self.vae.to(device=self.device, dtype=self.weight_dtype)
+            self.vae.to(device=self.device, dtype=self.dtype)
             self.vae.requires_grad_(False)
 
         if self.cfg.model.use_dataset_segmentation is False:
@@ -173,7 +193,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.freeze_unet:
             if set_grad:
-                self.unet.to(device=self.device, dtype=self.weight_dtype)
+                self.unet.to(device=self.device, dtype=self.dtype)
                 self.unet.requires_grad_(False)
             self.unet.eval()
         else:
@@ -183,7 +203,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.freeze_text_encoder:
             if set_grad:
-                self.text_encoder.to(device=self.device, dtype=self.weight_dtype)
+                self.text_encoder.to(device=self.device, dtype=self.dtype)
                 self.text_encoder.requires_grad_(False)
             self.text_encoder.eval()
         else:
@@ -233,7 +253,7 @@ class BaseMapper(Trainable):
             unet=self.unet,
             vae=self.vae,
             model=self,
-            torch_dtype=self.weight_dtype,
+            torch_dtype=self.dtype,
         )
 
         self.eval()
@@ -263,7 +283,7 @@ class BaseMapper(Trainable):
 
     def get_standard_conditioning_for_inference(
         self,
-        batch: dict,
+        batch: InputData,
         disable_conditioning: bool = False,
     ):
         # Validate input
@@ -280,13 +300,13 @@ class BaseMapper(Trainable):
         ]
 
         # passed to StableDiffusionPipeline/StableDiffusionControlNetPipeline
-        pipeline_kwargs = dict(prompt_embeds=conditioning_data.encoder_hidden_states)
+        conditioning_data.unet_kwargs["prompt_embeds"] = conditioning_data.encoder_hidden_states
         if self.cfg.model.controlnet:
-            pipeline_kwargs["image"] = self.get_controlnet_conditioning(batch)
+            conditioning_data.unet_kwargs["image"] = self.get_controlnet_conditioning(batch)
 
-        return pipeline_kwargs, conditioning_data
+        return conditioning_data
 
-    def check_add_segmentation(self, batch: dict):
+    def check_add_segmentation(self, batch: InputData):
         """
         This function checks if we have segmentation for the current batch. If we do not, we add dummy segmentation or use HQSam to get segmentation.
         """
@@ -353,7 +373,7 @@ class BaseMapper(Trainable):
         """
         bs: int = batch["disc_pixel_values"].shape[0]
         device = batch["gen_pixel_values"].device
-        dtype = self.weight_dtype
+        dtype = self.dtype
 
         clip_feature_cls_token = None
 
@@ -394,6 +414,10 @@ class BaseMapper(Trainable):
                     mask[self.cfg.model.background_mask_idx] = True  # We always keep the background mask
                 elif self.cfg.model.dropout_background_only:
                     mask[torch.arange(mask.shape[0]) != self.cfg.model.background_mask_idx] = True
+
+                if mask.sum().item() == 0:
+                    log_info("Warning, we would have dropped all masks but instead we preserved the background")
+                    mask[self.cfg.model.background_mask_idx] = True
 
                 one_hot_mask = one_hot_mask[mask]
                 one_hot_idx = one_hot_idx[mask]
@@ -441,7 +465,7 @@ class BaseMapper(Trainable):
 
         return conditioning_data
 
-    def compute_mask_tokens(self, batch: dict, conditioning_data: ConditioningData):
+    def compute_mask_tokens(self, batch: InputData, conditioning_data: ConditioningData):
         """
         Generates mask tokens by adding segmentation if necessary, then setting up and calling the cross attention module 
         """
@@ -449,19 +473,27 @@ class BaseMapper(Trainable):
         conditioning_data = self.add_cross_attn_params(batch, conditioning_data)
 
         queries = self.mapper.learnable_token[None, :].repeat(conditioning_data.mask_batch_idx.shape[0], 1)
-        conditioning_data.attn_dict["x"] = queries.to(self.weight_dtype)
-        conditioning_data.mask_tokens = self.mapper.cross_attn(conditioning_data).to(self.weight_dtype)
+        conditioning_data.attn_dict["x"] = queries.to(self.dtype)
+        conditioning_data.mask_tokens = self.mapper.cross_attn(conditioning_data).to(self.dtype)
+
+        if self.cfg.model.layer_specialization:
+            conditioning_data.encoder_hidden_states = einx.rearrange("b t d -> b t (n d)", conditioning_data.encoder_hidden_states, n=self.cfg.model.num_unet_cross_attn_layers)
+
+            layerwise_mask_tokens = einx.rearrange("b (l c) -> b l c", conditioning_data.mask_tokens, l=self.cfg.model.num_unet_cross_attn_layers) # Break e.g., 1024 -> 16 x 64
+            layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens) # Batched 64 -> 1024
+            conditioning_data.mask_tokens = einx.rearrange("b l c -> b (l c)", layerwise_mask_tokens).to(self.dtype)
 
         return conditioning_data
 
     def update_hidden_state_with_mask_tokens(
         self,
-        batch: dict,
+        batch: InputData,
         conditioning_data: ConditioningData,
     ):
         bs = batch["input_ids"].shape[0]
         for b in range(bs):
-            token_is_padding = (batch["input_ids"][b] == self.pad_token_id).nonzero()  # Everything after EOS token should also be a pad token
+            cur_ids = batch["input_ids"][b]
+            token_is_padding = (cur_ids == self.pad_token_id).nonzero()  # Everything after EOS token should also be a pad token
             assert (token_is_padding.shape[0] == (batch["input_ids"].shape[1] - token_is_padding[0])).item()
 
             mask_part_of_batch = (conditioning_data.mask_batch_idx == b).nonzero().squeeze(1)  # Figure out which masks we need to add
@@ -470,24 +502,26 @@ class BaseMapper(Trainable):
 
             # We take everything before the placeholder token and combine it with "placeholder_token and placeholder_token and ..."
             # We then add the rest of the sentence on (including the EOS token and padding tokens)
-            placeholder_locs = (batch["input_ids"][b] == self.placeholder_token_id).nonzero()
+            placeholder_locs = (cur_ids == self.placeholder_token_id).nonzero()
             assert placeholder_locs.shape[0] == 1  # We should only have one placeholder token
-            start_of_prompt = batch["input_ids"][b, : placeholder_locs[0]]
-            end_of_prompt = batch["input_ids"][b, placeholder_locs[0] + 1 :]
+            start_of_prompt = cur_ids[:placeholder_locs[0]]
+            end_of_prompt = cur_ids[placeholder_locs[0] + 1 :]
             additional_eos_token = torch.tensor([self.eos_token_id]).to(self.device)
 
-            batch["input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, additional_eos_token), dim=0)[
-                : batch["input_ids"].shape[1]
-            ]
-
+            batch["input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, additional_eos_token), dim=0)[:cur_ids.shape[0]]
+        
         # Overwrite mask locations
         learnable_idxs = (batch["input_ids"] == self.placeholder_token_id).nonzero(as_tuple=True)
         conditioning_data.encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = conditioning_data.mask_tokens
+
+        if self.cfg.model.layer_specialization:
+            conditioning_data.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=dict(layer_idx=0, num_layers=self.cfg.model.num_unet_cross_attn_layers))
+
         return conditioning_data
 
     def get_hidden_state(
         self,
-        batch: dict,
+        batch: InputData,
         add_mask_conditioning: bool = True,
         mask_tokens: Optional[Float[Tensor, "n d"]] = None,  # We can optionally specify mask tokens to use [e.g., for composing during inference]
         mask_batch_idx: Optional[Integer[Tensor, "n"]] = None,
@@ -496,7 +530,7 @@ class BaseMapper(Trainable):
             placeholder_token=self.placeholder_token_id,
             mask_tokens=mask_tokens,
             mask_batch_idx=mask_batch_idx,
-            encoder_hidden_states=self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.weight_dtype),
+            encoder_hidden_states=self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype),
         )
 
         if add_mask_conditioning:
@@ -508,14 +542,17 @@ class BaseMapper(Trainable):
         return conditioning_data
 
     def get_controlnet_conditioning(self, batch):
-        return batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=self.weight_dtype)
+        return batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=self.dtype)
 
     # TODO: Fully dropout conditioning for CFG!!
-    def forward(self, batch: dict):
+    @beartype
+    def forward(self, batch: InputData):
+        batch = InputData(**batch)
+
         batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
 
         # Convert images to latent space
-        latents = self.vae.encode(batch["gen_pixel_values"].to(dtype=self.weight_dtype)).latent_dist.sample()
+        latents = self.vae.encode(batch["gen_pixel_values"].to(dtype=self.dtype)).latent_dist.sample()
         latents = latents * self.vae.config.scaling_factor
 
         # Sample noise that we'll add to the latents
@@ -547,12 +584,12 @@ class BaseMapper(Trainable):
                 noisy_latents,
                 timesteps,
                 encoder_hidden_states=encoder_hidden_states.to(torch.float32),
-                down_block_additional_residuals=[sample.to(dtype=self.weight_dtype) for sample in down_block_res_samples],
-                mid_block_additional_residual=mid_block_res_sample.to(dtype=self.weight_dtype),
+                down_block_additional_residuals=[sample.to(dtype=self.dtype) for sample in down_block_res_samples],
+                mid_block_additional_residual=mid_block_res_sample.to(dtype=self.dtype),
             ).sample
         else:
             # TODO: We shouldn't need to cast to FP32 here
-            model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states.to(torch.float32)).sample
+            model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states.to(torch.float32), **conditioning_data.unet_kwargs).sample
 
         # Get the target for loss depending on the prediction type
         if self.noise_scheduler.config.prediction_type == "epsilon":

@@ -22,6 +22,8 @@ class ModelConfig:
 
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     token_embedding_dim: int = 768
+    num_unet_cross_attn_layers: int = 16 # Number of cross-attentions between U-Net latents and text-tokens
+
     resolution: int = 512
 
     revision: Optional[str] = None
@@ -61,6 +63,7 @@ class ModelConfig:
     break_a_scene_cross_attn_loss_second_stage: bool = False
     dropout_foreground_only: bool = False
     dropout_background_only: bool = False
+    layer_specialization: bool = False # Whether to map token_embedding_dim -> num_unet_cross_attn_layers * token_embedding_dim so that each layer has its own embedding
 
     # NeTI Specific Configs below
     placeholder_token_id: Optional[int] = None

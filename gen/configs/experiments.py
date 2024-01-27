@@ -115,10 +115,10 @@ def get_experiments():
 
     mode_store(
         name="small_gpu",
-        dataset=dict(train_dataset=dict(batch_size=1), validation_dataset=dict(batch_size=1)),
-        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False)),
-        trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False),
-        inference=dict(visualize_attention_map=False, infer_new_prompts=False, max_batch_size=1, num_masks_to_remove=1),
+        dataset=dict(train_dataset=dict(batch_size=1, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
+        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False, depth=1), lora_rank=4),
+        trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False),
+        inference=dict(visualize_attention_map=False, infer_new_prompts=False, max_batch_size=1, num_masks_to_remove=1, num_images_per_prompt=1),
     )
 
     mode_store(
@@ -138,8 +138,6 @@ def get_experiments():
     mode_store(
         name="break_a_scene",
         model=dict(
-            pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base",
-            token_embedding_dim=1024,
             lora_rank=128,
             break_a_scene_cross_attn_loss=True,
             break_a_scene_masked_loss=True,

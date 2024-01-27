@@ -181,7 +181,7 @@ class Trainer:
         unwrap(self.model).set_training_mode()
         
         log_info(
-            f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.wandb_url}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
+            f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.get('wandb_url', None)}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
         )
 
     def unfreeze_unet(self, state: TrainingState):
@@ -263,11 +263,13 @@ class Trainer:
                     global_step_metrics["examples_seen_per_gpu"] += batch["gen_pixel_values"].shape[0]
                     state: TrainingState = TrainingState(
                         epoch_step=step,
-                        total_epoch_steps=len(self.train_dataloader),
+                        num_epoch_steps=len(self.train_dataloader),
                         global_step=global_step,
                         epoch=epoch,
+                        true_step=true_step
                     )
 
+                    batch["state"] = state
                     match self.cfg.model.model_type:
                         case ModelType.BASE_MAPPER:
                             losses = self.model(batch)

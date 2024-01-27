@@ -76,8 +76,9 @@ def handle_checkpointing_dirs(cfg: BaseConfig, prefix: str):
 @dataclass
 class TrainingState:
     epoch_step: int  # Step in the current epoch. Resets every epoch.
-    total_epoch_steps: int  # Total number of steps in the current epoch. [E.g., dataloader size on a single GPU]
+    num_epoch_steps: int  # Total number of steps in the current epoch. [E.g., dataloader size on a single GPU]
     global_step: int  # Current number of steps which does not reset.
+    true_step: int
     epoch: int
 
 class Trainable(nn.Module, ABC):
@@ -109,7 +110,7 @@ def check_every_n_epochs(state: TrainingState, n: Optional[int], run_first: bool
     # Check if the current step is the last one in the epoch. We always want to run on the last step of the epoch. If we have n=5, then we run at the end of epochs 0 [if except_first == False], 5, 10, 15, etc.
     return (
         n is not None
-        and (state.epoch_step == state.total_epoch_steps - 1)
+        and (state.epoch_step == state.num_epoch_steps - 1)
         and ((state.epoch + 1) % n == 0 or (state.epoch == 0 and run_first))
         and (is_main_process() or all_processes)
     )
@@ -150,10 +151,10 @@ def unwrap(model):
 
 
 if __name__ == "__main__":
-    assert check_every_n_steps(TrainingState(epoch_step=0, total_epoch_steps=0, global_step=0, epoch=0), 10)
-    assert not check_every_n_steps(TrainingState(epoch_step=0, total_epoch_steps=0, global_step=0, epoch=0), 10, run_first=True)
-    assert check_every_n_steps(TrainingState(epoch_step=0, total_epoch_steps=0, global_step=10, epoch=0), 10)
+    assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10)
+    assert not check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10, run_first=True)
+    assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=10, epoch=0), 10)
 
-    assert check_every_n_epochs(TrainingState(epoch_step=9, total_epoch_steps=10, global_step=0, epoch=0), 1)
-    assert not check_every_n_epochs(TrainingState(epoch_step=9, total_epoch_steps=10, global_step=0, epoch=0), 1, run_first=True)
-    assert check_every_n_epochs(TrainingState(epoch_step=9, total_epoch_steps=10, global_step=0, epoch=5), 5)
+    assert check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=0), 1)
+    assert not check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=0), 1, run_first=True)
+    assert check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=5), 5)

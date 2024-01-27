@@ -128,6 +128,8 @@ exp_store(
         per_timestep_conditioning=False,
         freeze_mapper=False,
         freeze_unet=True,
+        pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base",
+        token_embedding_dim=1024,
     ),
     hydra_defaults=[
         "_self_",

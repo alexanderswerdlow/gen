@@ -12,7 +12,7 @@ from image_utils import Im
 from PIL import Image
 
 if TYPE_CHECKING:
-    from gen.models.cross_attn.base_model import ConditioningData
+    from gen.models.cross_attn.base_model import ConditioningData, InputData
     from gen.configs.base import BaseConfig
 
 def view_images(
@@ -246,7 +246,7 @@ def aggregate_attention(controller: AttentionStore, res: int, from_where: List[s
     return out
 
 
-def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: dict, controller: AttentionStore, conditioning_data: ConditioningData):
+def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: InputData, controller: AttentionStore, conditioning_data: ConditioningData):
     attn_loss = 0
     batch_size: int = batch["disc_pixel_values"].shape[0]
     gen_seg_ = rearrange(batch["gen_segmentation"], "b h w c -> b c () h w").float()
@@ -259,18 +259,28 @@ def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: dict, controller: Atte
         cur_batch_mask = learnable_idxs[0] == batch_idx  # Find the masks for this batch
         token_indices = learnable_idxs[1][cur_batch_mask]
 
-        segmentation_indices = conditioning_data.mask_instance_idx[
-            cur_batch_mask
-        ]  # We may dropout masks so we need to map between dataset segmentation idx and the mask idx in the sentence
+        # We may dropout masks so we need to map between dataset segmentation idx and the mask idx in the sentence
+        segmentation_indices = conditioning_data.mask_instance_idx[cur_batch_mask] 
         attn_masks = agg_attn[..., token_indices]
-
+        imgs = []
         for idx, mask_id in enumerate(segmentation_indices):
             asset_attn_mask = attn_masks[..., idx] / attn_masks[..., idx].max()
-            attn_loss += F.mse_loss(
-                GT_masks[mask_id, 0].float(),
-                asset_attn_mask.float(),
-                reduction="mean",
-            )
+
+            # attn_loss += F.mse_loss(
+            #     asset_attn_mask.float(),
+            #     GT_masks[mask_id, 0].float(),
+            #     reduction="mean",
+            # )
+
+            # This loss seems to be better
+            attn_loss += F.mse_loss((asset_attn_mask.reshape(-1).softmax(dim=0).reshape(16, 16) * GT_masks[mask_id, 0].float()).sum(), torch.tensor(1.0).to(GT_masks.device))
+
+        #     if batch["state"].true_step % 20 == 0:
+        #         imgs.append(Im(Im.concat_horizontal(Im(GT_masks[mask_id, 0].float()[None, ..., None]), Im(asset_attn_mask[None, ..., None])).torch[0, ..., None]).pil)
+
+        # if batch["state"].true_step % 20 == 0:
+        #     Im.concat_vertical(*imgs).save(f'attn_{batch["state"].true_step}_{batch_idx}.png')
+        #     Im(agg_attn.permute(2, 0, 1)[..., None]).normalize(normalize_min_max=True).save(f'all_attn_{batch["state"].true_step}_{batch_idx}.png')
 
     attn_loss = cfg.model.break_a_scene_cross_attn_loss_weight * (attn_loss / batch_size)
     controller.reset()
@@ -283,7 +293,7 @@ def remove_element(tensor, row_index):
 
 def break_a_scene_masked_loss(
     cfg: BaseConfig,
-    batch: dict,
+    batch: InputData,
     conditioning_data: ConditioningData
 ):
     max_masks = []
@@ -295,6 +305,11 @@ def break_a_scene_masked_loss(
         else:
             max_masks.append(torch.max(object_masks, axis=-1).values)
 
+        # from image_utils import Im
+        # Im(max_masks[-1][..., None]).save(f'loss_{batch["state"].true_step}_{b}.png')
+        # Im((batch["gen_pixel_values"][b] + 1) / 2).save(f'img_{batch["state"].true_step}_{b}.png')
+
     max_masks = torch.stack(max_masks, dim=0)[:, None]
     downsampled_mask = F.interpolate(input=max_masks.float(), size=(64, 64))
+
     return downsampled_mask

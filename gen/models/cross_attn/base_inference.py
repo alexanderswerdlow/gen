@@ -1,4 +1,5 @@
 from __future__ import annotations
+from calendar import c
 from contextlib import nullcontext
 
 from typing import TYPE_CHECKING, Optional, Any
@@ -24,7 +25,8 @@ def infer_batch(
     if pipeline_kwargs is None:
         with torch.cuda.amp.autocast():
             assert self.cfg.inference.empty_string_cfg
-            pipeline_kwargs, conditioning_data = self.get_standard_conditioning_for_inference(batch=batch)
+            conditioning_data = self.get_standard_conditioning_for_inference(batch=batch)
+            pipeline_kwargs = conditioning_data.unet_kwargs
 
     desired_context = nullcontext() if self.cfg.model.freeze_unet else torch.cuda.amp.autocast()
     with desired_context:
@@ -34,7 +36,7 @@ def infer_batch(
             **pipeline_kwargs,
         ).images
 
-    return images, pipeline_kwargs, conditioning_data
+    return images, conditioning_data
 
 
 @torch.no_grad()
@@ -55,7 +57,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     ret["validation"] = gt_info
 
     batch["input_ids"] = orig_input_ids.clone()
-    prompt_image, pipeline_kwargs, conditioning_data = self.infer_batch(
+    prompt_image, conditioning_data = self.infer_batch(
         batch=batch,
         num_images_per_prompt=self.cfg.inference.num_images_per_prompt,
     )
@@ -125,7 +127,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
                 assert v.shape[0] == 1
                 batch_[k] = repeat(v[0], "... -> h ...", h=batch_["gen_segmentation"].shape[0])
 
-        prompt_images, _, _ = self.infer_batch(batch=batch_)
+        prompt_images, _ = self.infer_batch(batch=batch_)
         if self.cfg.model.break_a_scene_cross_attn_loss:
             self.controller.reset()
 
@@ -173,7 +175,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
                 assert v.shape[0] == 1
                 batch_[k] = repeat(v[0], "... -> h ...", h=batch_["input_ids"].shape[0])
 
-        prompt_images, _, _ = self.infer_batch(batch=batch_)
+        prompt_images, _ = self.infer_batch(batch=batch_)
         if self.cfg.model.break_a_scene_cross_attn_loss:
             self.controller.reset()
 
