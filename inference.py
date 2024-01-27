@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import wandb
 from accelerate import Accelerator
-from accelerate.utils import wait_for_everyone, gather as accelerate_gather, gather_object as accelerate_gather_object
+from accelerate.utils import concatenate, wait_for_everyone, gather as accelerate_gather, gather_object as accelerate_gather_object
 from image_utils import Im
 from PIL import Image
 from torch.utils.data import DataLoader
@@ -18,6 +18,7 @@ from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import get_rank, is_main_process, save_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, unwrap
+from accelerate.utils import recursively_apply
 
 
 def inference(cfg: BaseConfig, accelerator: Accelerator):
@@ -32,12 +33,23 @@ def inference(cfg: BaseConfig, accelerator: Accelerator):
     validation_dataloader, model = accelerator.prepare(validation_dataloader, model)
 
     run_inference_dataloader(
-        accelerator=accelerator,
-        state=TrainingState(0, 0, 0, 0), 
-        dataloader=validation_dataloader,
-        model=model,
-        output_path=cfg.output_dir
+        accelerator=accelerator, state=TrainingState(0, 0, 0, 0), dataloader=validation_dataloader, model=model, output_path=cfg.output_dir
     )
+
+
+def _gpu_gather(tensor, device: torch.device):
+    def _gpu_gather_one(tensor):
+        if isinstance(tensor, torch.Tensor):
+            tensor = tensor.to(device=device)
+        elif isinstance(tensor, Im):
+            tensor = tensor.torch.to(device=device)
+
+        if tensor.shape[0] != 1:
+            tensor = tensor.unsqueeze(0)
+
+        return tensor
+
+    return recursively_apply(_gpu_gather_one, tensor, error_on_other_type=True, test_type=lambda x: isinstance(x, (torch.Tensor, Im)))
 
 
 def run_inference_dataloader(
@@ -47,7 +59,6 @@ def run_inference_dataloader(
     output_path: Path,
     state: TrainingState,
 ):
-    
     output_path.mkdir(exist_ok=True, parents=True)
     unwrap(model).set_inference_mode()
     log_info(f"Running inference. Dataloder size: {len(dataloader)}")
@@ -56,43 +67,28 @@ def run_inference_dataloader(
         output = unwrap(model).run_inference(batch=batch, state=state)
         outputs.append(output)
 
-    outputs = {k: [d[k] for d in outputs] for k in outputs[0].keys()}
-    device = batch["gen_pixel_values"].device
-    for k, v in sorted(outputs.items()):
-        if isinstance(v[0], dict):
-            output_dict = {str(idx): d_ for idx, d_ in enumerate(v)}
-            save_tensor_dict(output_dict, path=output_path / f"{k}_{state.global_step}_{get_rank()}.npz")
-        else:
-            output_images = gather(device, v)
-            log_with_accelerator(
-                accelerator=accelerator,
-                images=output_images,
-                save_folder=output_path,
-                name=k,
-                global_step=(state.global_step if state.global_step is not None else i),
-                spacing=25,
-            )
+    # Each tensor should go from [1, ...] -> [len(dataloder) * num_gpus, ...]
+    outputs = _gpu_gather(outputs, device=batch["gen_pixel_values"].device) # Make sure all outputs are on the same device and any Im objects are converted to tensors
+    outputs = concatenate(outputs) # Concat outputs from each inference step
+    outputs = accelerate_gather(outputs) # Combine over GPUs. 
+    
+    if is_main_process():
+        for k, v in sorted(outputs.items()):
+            if isinstance(v, dict):
+                save_tensor_dict(v, path=output_path / f"{k}_{state.global_step}.npz")
+            else:
+                output_images = [Im(v[i]) for i in range(v.shape[0])]
+                log_with_accelerator(
+                    accelerator=accelerator,
+                    images=output_images,
+                    save_folder=output_path,
+                    name=k,
+                    global_step=(state.global_step if state.global_step is not None else i),
+                    spacing=25,
+                )
+
+    wait_for_everyone()
     log_info(f"Saved to {output_path}")
-
-
-def gather(device: torch.device, img: Union[Im, Iterable[Im]], gather_different: bool = False):
-    if gather_different:
-        ret = accelerate_gather_object(img)
-    else:
-        if isinstance(img, Iterable):
-            tensor = torch.cat([img_.torch.to(device).unsqueeze(0) for img_ in img], dim=0)
-        else:
-            tensor = img.torch.to(device).unsqueeze(0)
-
-        concat_tensor = accelerate_gather(tensor)
-
-        try:
-            ret = [Im(concat_tensor[i]) for i in range(concat_tensor.shape[0])]
-        except:
-            print(concat_tensor.shape, concat_tensor.dtype, concat_tensor.device)
-            raise
-
-    return ret
 
 
 def log_with_accelerator(
