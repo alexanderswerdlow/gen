@@ -116,7 +116,7 @@ def get_experiments():
     mode_store(
         name="small_gpu",
         dataset=dict(train_dataset=dict(batch_size=1, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
-        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False, depth=1), lora_rank=4),
+        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False)),
         trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False),
         inference=dict(visualize_attention_map=False, infer_new_prompts=False, max_batch_size=1, num_masks_to_remove=1, num_images_per_prompt=1),
     )

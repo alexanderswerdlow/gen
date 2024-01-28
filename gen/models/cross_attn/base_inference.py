@@ -12,20 +12,29 @@ from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
+from gen.utils.decoupled_utils import load_tensor_dict
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
 
 if TYPE_CHECKING:
-    from gen.models.cross_attn.base_model import BaseMapper, ConditioningData
+    from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
 
 
 def infer_batch(
-    self: BaseMapper, batch: dict, num_images_per_prompt: int = 1, pipeline_kwargs: Optional[dict] = None
+    self: BaseMapper,
+    batch: InputData,
+    num_images_per_prompt: int = 1,
+    pipeline_kwargs: Optional[dict] = None,
+    conditioning_data: Optional[ConditioningData] = None,
 ) -> tuple[list[Any], dict, ConditioningData]:
+    if "input_ids" in batch:
+        orig_input_ids = batch["input_ids"].clone()
+        batch["input_ids"] = orig_input_ids.clone()
+
     if pipeline_kwargs is None:
         with torch.cuda.amp.autocast():
             assert self.cfg.inference.empty_string_cfg
-            conditioning_data = self.get_standard_conditioning_for_inference(batch=batch)
+            conditioning_data = self.get_standard_conditioning_for_inference(batch=batch, conditioning_data=conditioning_data)
             pipeline_kwargs = conditioning_data.unet_kwargs
 
     desired_context = nullcontext() if self.cfg.model.freeze_unet else torch.cuda.amp.autocast()
@@ -35,6 +44,9 @@ def infer_batch(
             guidance_scale=self.cfg.inference.guidance_scale,
             **pipeline_kwargs,
         ).images
+
+    if "formatted_input_ids" in batch:
+        del batch["formatted_input_ids"]
 
     return images, conditioning_data
 
@@ -46,7 +58,6 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     """
 
     assert batch["input_ids"].shape[0] == 1
-    orig_input_ids = batch["input_ids"].clone()
 
     ret = {}
 
@@ -56,7 +67,6 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     )
     ret["validation"] = gt_info
 
-    batch["input_ids"] = orig_input_ids.clone()
     prompt_image, conditioning_data = self.infer_batch(
         batch=batch,
         num_images_per_prompt=self.cfg.inference.num_images_per_prompt,
@@ -71,16 +81,20 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
 
     if self.cfg.inference.save_prompt_embeds:
         assert conditioning_data.mask_instance_idx.shape[0] == conditioning_data.mask_tokens.shape[0]
-        all_masks = [full_seg]
+
+        orig_gen_segmentation = batch["gen_segmentation"].clone()
+        all_masks = []
         for j in conditioning_data.mask_instance_idx:
-            all_masks.append(
-                Im(get_layered_image_from_binary_mask(batch["gen_segmentation"][..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8).write_text(
-                    f"Mask: {j}"
-                )
-            )
+            mask_image = Im(get_layered_image_from_binary_mask(orig_gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+            mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
+            mask_alpha = (orig_gen_segmentation[..., [j]].squeeze() * (255 / 1.5)).cpu().numpy().astype(np.uint8)
+            composited_image = orig_image.pil.copy().convert("RGBA")
+            composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
+            composited_image = composited_image.convert("RGB")
+            all_masks.append(Im(composited_image).write_text(f"token_{j}").resize(256, 256).np.squeeze(0))
 
         ret["individual_masks"] = Im.concat_horizontal(*all_masks, spacing=10)
-        ret["mask_tokens"] = {"mask_tokens": conditioning_data.mask_tokens[None]}
+        ret["conditioning_data"] = {"mask_tokens": conditioning_data.mask_tokens, "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}
 
     if self.cfg.model.break_a_scene_cross_attn_loss:
         batch_size = (2 if self.cfg.inference.guidance_scale > 1.0 else 1) * self.cfg.inference.num_images_per_prompt
@@ -88,9 +102,9 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
         agg_attn_cond = aggregate_attention(
             controller=self.controller, res=16, from_where=("up", "down"), is_cross=True, select=-1, batch_size=batch_size
         )
-        attn_img_cond = Im(save_cross_attention_vis(tokenizer=self.tokenizer, tokens=batch["input_ids"][0], attention_maps=agg_attn_cond)).write_text(
-            "Cond"
-        )
+        attn_img_cond = Im(
+            save_cross_attention_vis(tokenizer=self.tokenizer, tokens=batch["formatted_input_ids"][0], attention_maps=agg_attn_cond)
+        ).write_text("Cond")
 
         agg_attn_uncond = aggregate_attention(
             controller=self.controller, res=16, from_where=("up", "down"), is_cross=True, select=0, batch_size=batch_size
@@ -103,7 +117,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             return_tensors="pt",
         )
         attn_img_uncond = Im(
-            save_cross_attention_vis(tokenizer=self.tokenizer, tokens=uncond_tokens["input_ids"][0], attention_maps=agg_attn_uncond)
+            save_cross_attention_vis(tokenizer=self.tokenizer, tokens=uncond_tokens["formatted_input_ids"][0], attention_maps=agg_attn_uncond)
         ).write_text("Uncond")
 
         ret["attn_vis"] = Im.concat_vertical(attn_img_cond, attn_img_uncond)
@@ -119,8 +133,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             batch_["gen_segmentation"].append(orig_gen_segmentation[..., torch.arange(orig_gen_segmentation.size(-1)) != j])
 
         batch_["gen_segmentation"] = torch.cat(batch_["gen_segmentation"], dim=0)
-        batch_["input_ids"] = orig_input_ids.clone()
-        batch_["input_ids"] = batch_["input_ids"].repeat(batch_["gen_segmentation"].shape[0], 1)
+        batch_["input_ids"] = batch["input_ids"].repeat(batch_["gen_segmentation"].shape[0], 1)
 
         for k, v in batch.items():
             if isinstance(v, torch.Tensor) and k not in batch_:
@@ -187,9 +200,68 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     return ret
 
 
+def take_from(slices: tuple[int, slice], data: tuple[dict]):
+    output_mask_tokens = []
+    output_mask_rgb = []
+    for idx, sl in slices:
+        output_mask_tokens.append(data[idx]["mask_tokens"][sl])
+        output_mask_rgb.append(data[idx]["mask_rgb"][sl])
 
+    output_mask_tokens = torch.cat(output_mask_tokens, dim=0)
+    output_mask_rgb = np.concatenate(output_mask_rgb, axis=0)
+
+    return output_mask_tokens, output_mask_rgb
 
 
 @torch.no_grad()
 def run_custom_inference(self: BaseMapper, batch: dict, state: TrainingState, embed_path: Path):
+    from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
+
+    image_0_dict = load_tensor_dict("/home/aswerdlow/research/gen/outputs/debug/debug_debug_2024-01-28_14_53_30/conditioning_data_0_1.npz")
+    image_1_dict = load_tensor_dict("/home/aswerdlow/research/gen/outputs/debug/debug_debug_2024-01-28_14_53_30/conditioning_data_0_2.npz")
+
+    image_0_tokens = image_0_dict["mask_tokens"]
+    image_1_tokens = image_1_dict["mask_tokens"]
+
+    prompt_image_0, conditioning_data_0 = self.infer_batch(
+        batch=batch,
+        conditioning_data=ConditioningData(mask_tokens=image_0_tokens, mask_batch_idx=torch.zeros((image_0_tokens.shape[0],), dtype=torch.int64)),
+    )
+    prompt_image_1, conditioning_data_1 = self.infer_batch(
+        batch=batch,
+        conditioning_data=ConditioningData(mask_tokens=image_1_tokens, mask_batch_idx=torch.zeros((image_1_tokens.shape[0],), dtype=torch.int64)),
+    )
+
+    final_tokens, final_rgb = take_from(
+        slices=(
+            # (1, slice(0, 1)),
+            (0, slice(1, 2)),
+            (1, slice(1, 2)),
+        ),
+        data=(image_0_dict, image_1_dict),
+    )
+
+    mask_batch_idx = torch.zeros((final_tokens.shape[0],), dtype=torch.int64)
+    prompt_image, conditioning_data = self.infer_batch(
+        batch=batch, conditioning_data=ConditioningData(mask_tokens=final_tokens, mask_batch_idx=mask_batch_idx), num_images_per_prompt=4
+    )
+
+    from torchvision import utils
+
+    Im.concat_vertical(
+        Im.concat_horizontal(
+            Im(prompt_image_).write_text(text=f"Gen {i}", relative_font_scale=0.004)
+            for i, prompt_image_ in enumerate(prompt_image)
+        ),
+        Im(utils.make_grid(Im(final_rgb).torch)).write_text("Combined Conditioned masks [GT]"),
+        Im.concat_horizontal(
+            Im(image_0_dict["orig_image"]).write_text("First Image GT", relative_font_scale=0.001),
+            Im(prompt_image_0[0]).write_text("First Image Autoencoded", relative_font_scale=0.001),
+        ),
+        Im.concat_horizontal(
+            Im(image_1_dict["orig_image"]).write_text("Second Image GT", relative_font_scale=0.001),
+            Im(prompt_image_1[0]).write_text("Second Image Autoencoded", relative_font_scale=0.001),
+        ),
+    ).save("test_00.png")
+
     breakpoint()

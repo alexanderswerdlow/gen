@@ -16,6 +16,7 @@ from image_utils import Im
 
 from gen.utils.decoupled_utils import is_main_process
 from gen.utils.logging_utils import log_info, log_error
+from accelerate.utils.modeling import load_checkpoint_in_model
 
 if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
@@ -31,22 +32,26 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module) 
     else:
         path = Path(cfg.trainer.ckpt)
 
+    if path.is_dir() and any(child.is_dir() and child.name == "state" for child in path.iterdir()):
+        path = path / "state"
+
     if path is None:
         log_error(f"Checkpoint '{cfg.trainer.ckpt}' does not exist. Exiting.")
         raise FileNotFoundError
     else:
         log_info(f"Resuming from checkpoint {path}")
         if path.is_file() or cfg.trainer.load_weights_only_no_state:
-            from accelerate.utils.modeling import load_checkpoint_in_model
-
             load_checkpoint_in_model(model, str(path))
         else:
             accelerator.load_state(path)
-
-        if path.is_file():
-            global_step = int(path.parent.name.split("_")[-1])
-        else:
-            global_step = int(path.name.split("_")[-1] if "_" in path.name else path.parent.name.split("_")[-1])
+        try:
+            if path.is_file():
+                global_step = int(path.parent.parent.name.split("_")[-1])
+            else:
+                global_step = int(path.name.split("_")[-1] if "_" in path.name else path.parent.name.split("_")[-1])
+        except:
+            log_error(f"Could not parse global step from checkpoint path {path}. Setting to 0.")
+            global_step = 0
 
         # first_epoch = global_step // num_update_steps_per_epoch
         first_epoch = 0

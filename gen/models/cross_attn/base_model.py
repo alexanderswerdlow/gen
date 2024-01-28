@@ -40,7 +40,7 @@ class InputData(TypedDict):
 
 @dataclass
 class ConditioningData:
-    placeholder_token: int
+    placeholder_token: Optional[int] = None
     attn_dict: Optional[dict[str, Tensor]] = None
     clip_feature_cls_token: Optional[Float[Tensor, "n d"]] = None
     mask_tokens: Optional[Float[Tensor, "n d"]] = None
@@ -285,6 +285,7 @@ class BaseMapper(Trainable):
         self,
         batch: InputData,
         disable_conditioning: bool = False,
+        conditioning_data: Optional[ConditioningData] = None,
     ):
         # Validate input
         bs: int = batch["disc_pixel_values"].shape[0]
@@ -292,11 +293,13 @@ class BaseMapper(Trainable):
             if isinstance(v, torch.Tensor):
                 assert v.shape[0] == bs
 
-        conditioning_data = self.get_hidden_state(batch, add_mask_conditioning=disable_conditioning is False)
+        assert "formatted_input_ids" not in batch
+
+        conditioning_data = self.get_hidden_state(batch, add_mask_conditioning=disable_conditioning is False, conditioning_data=conditioning_data)
 
         bs = batch["disc_pixel_values"].shape[0]
         conditioning_data.input_prompt = [
-            [x for x in self.tokenizer.convert_ids_to_tokens(batch["input_ids"][y]) if "<|" not in x] for y in range(bs)
+            [x for x in self.tokenizer.convert_ids_to_tokens(batch["formatted_input_ids"][y]) if "<|" not in x] for y in range(bs)
         ]
 
         # passed to StableDiffusionPipeline/StableDiffusionControlNetPipeline
@@ -491,6 +494,8 @@ class BaseMapper(Trainable):
         conditioning_data: ConditioningData,
     ):
         bs = batch["input_ids"].shape[0]
+
+        batch["formatted_input_ids"] = batch["input_ids"].clone()
         for b in range(bs):
             cur_ids = batch["input_ids"][b]
             token_is_padding = (cur_ids == self.pad_token_id).nonzero()  # Everything after EOS token should also be a pad token
@@ -508,11 +513,11 @@ class BaseMapper(Trainable):
             end_of_prompt = cur_ids[placeholder_locs[0] + 1 :]
             additional_eos_token = torch.tensor([self.eos_token_id]).to(self.device)
 
-            batch["input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, additional_eos_token), dim=0)[:cur_ids.shape[0]]
+            batch["formatted_input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, additional_eos_token), dim=0)[:cur_ids.shape[0]]
         
         # Overwrite mask locations
-        learnable_idxs = (batch["input_ids"] == self.placeholder_token_id).nonzero(as_tuple=True)
-        conditioning_data.encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = conditioning_data.mask_tokens
+        learnable_idxs = (batch["formatted_input_ids"] == self.placeholder_token_id).nonzero(as_tuple=True)
+        conditioning_data.encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = conditioning_data.mask_tokens.to(conditioning_data.encoder_hidden_states)
 
         if self.cfg.model.layer_specialization:
             conditioning_data.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=dict(layer_idx=0, num_layers=self.cfg.model.num_unet_cross_attn_layers))
@@ -523,15 +528,13 @@ class BaseMapper(Trainable):
         self,
         batch: InputData,
         add_mask_conditioning: bool = True,
-        mask_tokens: Optional[Float[Tensor, "n d"]] = None,  # We can optionally specify mask tokens to use [e.g., for composing during inference]
-        mask_batch_idx: Optional[Integer[Tensor, "n"]] = None,
+        conditioning_data: Optional[ConditioningData] = None,  # We can optionally specify mask tokens to use [e.g., for composing during inference]
     ) -> ConditioningData:
-        conditioning_data = ConditioningData(
-            placeholder_token=self.placeholder_token_id,
-            mask_tokens=mask_tokens,
-            mask_batch_idx=mask_batch_idx,
-            encoder_hidden_states=self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype),
-        )
+        if conditioning_data is None:
+            conditioning_data = ConditioningData()
+
+        conditioning_data.placeholder_token=self.placeholder_token_id,
+        conditioning_data.encoder_hidden_states=self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype)
 
         if add_mask_conditioning:
             if conditioning_data.mask_tokens is None or conditioning_data.mask_batch_idx is None:
@@ -548,6 +551,8 @@ class BaseMapper(Trainable):
     @beartype
     def forward(self, batch: InputData):
         batch = InputData(**batch)
+
+        assert "formatted_input_ids" not in batch
 
         batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
 
