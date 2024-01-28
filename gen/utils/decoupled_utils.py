@@ -1,6 +1,7 @@
 import glob
 import hashlib
 import os
+import pickle
 import subprocess
 import sys
 from collections import defaultdict

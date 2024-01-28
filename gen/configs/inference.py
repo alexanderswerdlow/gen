@@ -39,5 +39,5 @@ store_child_config(
     group="inference",
     parent="basemapper",
     child="composable",
-    inference_func = partial(run_custom_inference, num_objects=2)
+    inference_func = partial(run_custom_inference)
 )

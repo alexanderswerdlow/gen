@@ -92,7 +92,7 @@ exp_store(
         max_train_steps=100000,
         eval_every_n_epochs=None,
         eval_every_n_steps=500,
-        checkpointing_steps=5000,
+        checkpointing_steps=1000,
         checkpoints_total_limit=1,
         save_accelerator_format=True,
         learning_rate=4e-7,

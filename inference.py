@@ -16,7 +16,7 @@ import wandb
 from gen.configs.base import BaseConfig
 from gen.datasets.base_dataset import Split
 from gen.models.utils import get_model_from_cfg
-from gen.utils.decoupled_utils import get_rank, is_main_process, save_tensor_dict
+from gen.utils.decoupled_utils import all_gather, get_rank, is_main_process, save_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, unwrap
 
@@ -33,7 +33,7 @@ def inference(cfg: BaseConfig, accelerator: Accelerator):
     validation_dataloader, model = accelerator.prepare(validation_dataloader, model)
 
     run_inference_dataloader(
-        accelerator=accelerator, state=TrainingState(0, 0, 0, 0), dataloader=validation_dataloader, model=model, output_path=cfg.output_dir
+        accelerator=accelerator, state=TrainingState(0, 0, 0, 0, 0), dataloader=validation_dataloader, model=model, output_path=cfg.output_dir
     )
 
 

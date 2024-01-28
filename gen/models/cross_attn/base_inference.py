@@ -1,8 +1,9 @@
 from __future__ import annotations
+
 from calendar import c
 from contextlib import nullcontext
-
-from typing import TYPE_CHECKING, Optional, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 import torch
@@ -15,8 +16,7 @@ from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
 
 if TYPE_CHECKING:
-    from gen.models.cross_attn.base_model import BaseMapper
-    from gen.models.cross_attn.base_model import ConditioningData
+    from gen.models.cross_attn.base_model import BaseMapper, ConditioningData
 
 
 def infer_batch(
@@ -187,9 +187,9 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     return ret
 
 
-from pathlib import Path
+
 
 
 @torch.no_grad()
-def run_custom_inference(self: BaseMapper, batch: dict, state: TrainingState, filepath: Path, num_objects: int = 3):
+def run_custom_inference(self: BaseMapper, batch: dict, state: TrainingState, embed_path: Path):
     breakpoint()
