@@ -118,7 +118,7 @@ exp_store(
         num_masks_to_remove=4,
         num_images_per_prompt=2,
         infer_new_prompts=True,
-        save_prompt_embeds=False,
+        save_prompt_embeds=True,
     ),
     model=dict(
         use_dataset_segmentation=True,
@@ -130,6 +130,7 @@ exp_store(
         freeze_unet=True,
         pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base",
         token_embedding_dim=1024,
+        break_a_scene_masked_loss=True
     ),
     hydra_defaults=[
         "_self_",

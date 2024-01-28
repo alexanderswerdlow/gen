@@ -40,7 +40,7 @@ shared_movi_args = dict(
     path=MOVI_DATASET_PATH,
     num_objects=23,
     legacy_transforms=False,
-    augmentation=dict(minimal_source_augmentation=True, enable_crop=True),
+    augmentation=dict(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
 )
 
 def get_datasets(): # TODO: These do not need to be global configs

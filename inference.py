@@ -1,24 +1,26 @@
+import pickle
+from collections import defaultdict
+from itertools import chain
 from pathlib import Path
 from typing import Iterable, List, Optional, Union
 
 import hydra
 import numpy as np
 import torch
-import wandb
+import torch.distributed as dist
 from accelerate import Accelerator
-from accelerate.utils import concatenate, wait_for_everyone, gather as accelerate_gather, gather_object as accelerate_gather_object
 from image_utils import Im
 from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import wandb
 from gen.configs.base import BaseConfig
 from gen.datasets.base_dataset import Split
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import get_rank, is_main_process, save_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, unwrap
-from accelerate.utils import recursively_apply
 
 
 def inference(cfg: BaseConfig, accelerator: Accelerator):
@@ -37,19 +39,65 @@ def inference(cfg: BaseConfig, accelerator: Accelerator):
     )
 
 
-def _gpu_gather(tensor, device: torch.device):
-    def _gpu_gather_one(tensor):
-        if isinstance(tensor, torch.Tensor):
-            tensor = tensor.to(device=device)
-        elif isinstance(tensor, Im):
-            tensor = tensor.torch.to(device=device)
+def is_dist_avail_and_initialized():
+    if not dist.is_available():
+        return False
+    if not dist.is_initialized():
+        return False
+    return True
 
-        if tensor.shape[0] != 1:
-            tensor = tensor.unsqueeze(0)
 
-        return tensor
+def get_world_size():
+    if not is_dist_avail_and_initialized():
+        return 1
+    return dist.get_world_size()
 
-    return recursively_apply(_gpu_gather_one, tensor, error_on_other_type=True, test_type=lambda x: isinstance(x, (torch.Tensor, Im)))
+
+def all_gather(data):
+    """
+    Run all_gather on arbitrary picklable data (not necessarily tensors)
+    Args:
+        data: any picklable object
+    Returns:
+        list[data]: list of data gathered from each rank
+    """
+    world_size = get_world_size()
+    if world_size == 1:
+        return [data]
+
+    # serialized to a Tensor
+    buffer = pickle.dumps(data)
+    storage = torch.ByteStorage.from_buffer(buffer)
+    tensor = torch.ByteTensor(storage).to("cuda")
+
+    # obtain Tensor size of each rank
+    local_size = torch.tensor([tensor.numel()], device="cuda")
+    size_list = [torch.tensor([0], device="cuda") for _ in range(world_size)]
+    dist.all_gather(size_list, local_size)
+    size_list = [int(size.item()) for size in size_list]
+    max_size = max(size_list)
+
+    # receiving Tensor from all ranks
+    # we pad the tensor because torch all_gather does not support
+    # gathering tensors of different shapes
+    tensor_list = []
+    for _ in size_list:
+        tensor_list.append(torch.empty((max_size,), dtype=torch.uint8, device="cuda"))
+    if local_size != max_size:
+        padding = torch.empty(size=(max_size - local_size,), dtype=torch.uint8, device="cuda")
+        tensor = torch.cat((tensor, padding), dim=0)
+    dist.all_gather(tensor_list, tensor)
+
+    data_list = []
+    for size, tensor in zip(size_list, tensor_list):
+        buffer = tensor.cpu().numpy().tobytes()[:size]
+        data_list.append(pickle.loads(buffer))
+
+    return data_list
+
+
+def flatten(list_of_lists):
+    return list(chain.from_iterable(list_of_lists))
 
 
 def run_inference_dataloader(
@@ -67,17 +115,20 @@ def run_inference_dataloader(
         output = unwrap(model).run_inference(batch=batch, state=state)
         outputs.append(output)
 
-    # Each tensor should go from [1, ...] -> [len(dataloder) * num_gpus, ...]
-    outputs = _gpu_gather(outputs, device=batch["gen_pixel_values"].device) # Make sure all outputs are on the same device and any Im objects are converted to tensors
-    outputs = concatenate(outputs) # Concat outputs from each inference step
-    outputs = accelerate_gather(outputs) # Combine over GPUs. 
-    
+    outputs = all_gather(outputs)  # Combine over GPUs.
+    outputs = flatten(outputs)  # Concat outputs from each GPU
+
     if is_main_process():
-        for k, v in sorted(outputs.items()):
-            if isinstance(v, dict):
-                save_tensor_dict(v, path=output_path / f"{k}_{state.global_step}.npz")
+        new_dict = defaultdict(list)
+        for d in outputs:
+            for k, v in d.items():
+                new_dict[k].append(v)
+        for k, v in sorted(new_dict.items()):
+            if isinstance(v[0], dict):
+                for i in range(len(v)):
+                    save_tensor_dict(v[i], path=output_path / f"{k}_{state.global_step}_{i}.npz")
             else:
-                output_images = [Im(v[i]) for i in range(v.shape[0])]
+                output_images = [Im(im) for im in v]
                 log_with_accelerator(
                     accelerator=accelerator,
                     images=output_images,
@@ -87,7 +138,6 @@ def run_inference_dataloader(
                     spacing=25,
                 )
 
-    wait_for_everyone()
     log_info(f"Saved to {output_path}")
 
 
