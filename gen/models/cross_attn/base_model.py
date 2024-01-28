@@ -25,7 +25,7 @@ from gen.models.cross_attn.break_a_scene import break_a_scene_cross_attn_loss, b
 from gen.models.cross_attn.modules import Mapper
 from gen.models.utils import find_true_indices_batched
 from gen.utils.diffusers_utils import load_stable_diffusion_model
-from gen.utils.encoder_utils import BaseModel, ClipFeatureExtractor
+from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import Trainable, TrainingState
 
@@ -80,7 +80,7 @@ class BaseMapper(Trainable):
         self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, _recursive_=True, num_from_back=3, tensor_input=True)
 
         if self.cfg.model.use_dataset_segmentation is False:
-            from gen.models.sam import HQSam
+            from gen.models.encoders.sam import HQSam
 
             self.hqsam = HQSam(model_type="vit_b")
 

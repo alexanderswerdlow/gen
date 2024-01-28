@@ -7,7 +7,7 @@ from hydra_zen.typing import Builds
 
 from gen.configs.utils import auto_store, store_child_config
 from gen.models.neti.decoder import DecoderTransformer
-from gen.utils.encoder_utils import BaseModel, ClipFeatureExtractor
+from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 
 
 class ModelType(Enum):

@@ -19,7 +19,7 @@ from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
 from gen.models.neti.neti_mapper import UNET_LAYERS, NeTIMapper
 from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.decoupled_utils import is_main_process
-from gen.utils.encoder_utils import ClipFeatureExtractor
+from gen.models.encoders.encoder import ClipFeatureExtractor
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.trainer_utils import unwrap
 from gen.models.utils import find_true_indices_batched
@@ -54,7 +54,7 @@ class BaseMapper(nn.Module):
             for block in self.clip.base_model.transformer.resblocks[-self.cfg.model.unfreeze_last_n_clip_layers :]:
                 block.requires_grad_(True)
 
-        from gen.models.sam import HQSam
+        from gen.models.encoders.sam import HQSam
         self.hqsam = HQSam(model_type="vit_b")
         self.hqsam.eval()
         self.hqsam.requires_grad_(False)

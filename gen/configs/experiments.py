@@ -3,7 +3,7 @@ from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs import trainer
 from gen.configs.models import ModelConfig
 from gen.configs.utils import mode_store, store_child_config
-from gen.utils.encoder_utils import ResNet50
+from gen.models.encoders.encoder import ResNet50
 from accelerate.utils import PrecisionType
 
 import string

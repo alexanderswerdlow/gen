@@ -19,7 +19,7 @@ from torch import Tensor
 from torchvision.models.feature_extraction import (create_feature_extractor,
                                                    get_graph_node_names)
 
-from gen.utils.extracted_encoder_utils import (interpolate_embeddings,
+from gen.models.encoders.extracted_encoder_utils import (interpolate_embeddings,
                                                pad_image_and_adjust_coords)
 
 ImArr: TypeAlias = Union[Image.Image, Tensor]
