@@ -42,6 +42,7 @@ class InputData(TypedDict):
 class ConditioningData:
     placeholder_token: Optional[int] = None
     attn_dict: Optional[dict[str, Tensor]] = None
+    clip_feature_map: Optional[Float[Tensor, "b d h w"]] = None
     clip_feature_cls_token: Optional[Float[Tensor, "n d"]] = None
     mask_tokens: Optional[Float[Tensor, "n d"]] = None
     mask_batch_idx: Optional[Integer[Tensor, "n"]] = None
@@ -465,6 +466,8 @@ class BaseMapper(Trainable):
         conditioning_data.clip_feature_cls_token = clip_feature_cls_token
         conditioning_data.mask_batch_idx = mask_batch_idx
         conditioning_data.mask_instance_idx = mask_instance_idx
+        if self.cfg.model.clip_shift_scale_conditioning:
+            conditioning_data.clip_feature_map = rearrange(clip_feature_map, "b (h w) d -> b d h w", h=latent_dim, w=latent_dim)
 
         return conditioning_data
 

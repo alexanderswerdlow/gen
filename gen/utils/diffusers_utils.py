@@ -14,8 +14,6 @@ from transformers import CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
 
 from gen.configs.base import BaseConfig
-from gen.models.neti.neti_clip_text_encoder import NeTICLIPTextModel
-from gen.models.neti.xti_attention_processor import XTIAttenProc
 from gen.utils.trainer_utils import Trainable, unwrap
 
 
@@ -25,7 +23,7 @@ def load_stable_diffusion_model(
     model: Trainable,
     torch_dtype: torch.dtype,
     tokenizer: Optional[CLIPTokenizer] = None,
-    text_encoder: Optional[NeTICLIPTextModel] = None,
+    text_encoder: Optional[CLIPTextModel] = None,
     unet: Optional[UNet2DConditionModel] = None,
     vae: Optional[AutoencoderKL] = None,
 ) -> Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline]:
@@ -45,7 +43,7 @@ def load_stable_diffusion_model(
         kwargs["tokenizer"] = CLIPTokenizer.from_pretrained(pretrained_model_name_or_path, subfolder="tokenizer")
 
     if text_encoder is None:
-        text_cls = NeTICLIPTextModel if cfg.model.per_timestep_conditioning else CLIPTextModel
+        text_cls = CLIPTextModel
         kwargs["text_encoder"] = text_cls.from_pretrained(
             pretrained_model_name_or_path,
             subfolder="text_encoder",
@@ -79,8 +77,5 @@ def load_stable_diffusion_model(
 
     # if cfg.model.lora_unet:
     #     pipeline.load_lora_weights(args.output_dir)
-
-    if cfg.model.per_timestep_conditioning:
-        pipeline.unet.set_attn_processor(XTIAttenProc())
 
     return pipeline

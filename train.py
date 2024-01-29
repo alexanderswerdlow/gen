@@ -25,8 +25,6 @@ from transformers import CLIPTokenizer
 
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
-from gen.models.neti.checkpoint_handler import CheckpointHandler
-from gen.models.neti.validator import ValidationHandler
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import Profiler, is_main_process, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn

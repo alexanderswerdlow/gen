@@ -6,7 +6,7 @@ from hydra_zen import builds
 from hydra_zen.typing import Builds
 
 from gen.configs.utils import auto_store, store_child_config
-from gen.models.neti.decoder import DecoderTransformer
+from gen.models.cross_attn.decoder import DecoderTransformer
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 
 
@@ -64,28 +64,15 @@ class ModelConfig:
     dropout_foreground_only: bool = False
     dropout_background_only: bool = False
     layer_specialization: bool = False # Whether to map token_embedding_dim -> num_unet_cross_attn_layers * token_embedding_dim so that each layer has its own embedding
+    clip_shift_scale_conditioning: bool = False # Whether to use the CLIP shift and scale embeddings as conditioning
+    placeholder_token_id: Optional[int] = None
+    mask_cross_attn: bool = True
 
     # NeTI Specific Configs below
-    placeholder_token_id: Optional[int] = None
-    super_category_token: str = "object"
-    mask_cross_attn: bool = True
     encode_token_without_tl: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
     use_cls_token_projected: bool = False # These define where to get the single token
     use_cls_token_final_layer: bool = False
     use_cls_token_mean: bool = False
-    tmp_revert_to_neti_logic: bool = False
-    use_custom_position_encoding: bool = False # Whether to use original the NeTI mapper or our custom T+L mapper
-    use_timestep_layer_encoding: bool = True # Whether to use T+L in our custom mapper, otherwise just a learned emb
-    enable_norm_scale: bool = True
-    cross_attn_residual: bool = True
-    use_nested_dropout: bool = True # Whether to use our Nested Dropout technique
-    nested_dropout_prob: float = 0.5 # Probability to apply nested dropout during training
-    normalize_mapper_output: bool = True # Whether to normalize the norm of the mapper's output vector
-    target_norm: Optional[float] = None # Target norm for the mapper's output vector
-    use_positional_encoding: bool = True # Whether to use positional encoding over the input to the mapper
-    pe_sigmas: Dict[str, float] = field(default_factory=lambda: {"sigma_t": 0.03, "sigma_l": 2.0}) # Sigmas used for computing positional encoding
-    num_pe_time_anchors: int = 10 # Number of time anchors for computing our positional encodings
-    output_bypass: bool = True # Whether to output the textual bypass vector
 
 
 @dataclass
@@ -110,18 +97,11 @@ store_child_config(
     child="cross_attn",
     unfreeze_last_n_clip_layers=None,
     dropout_masks=0.2,
-    enable_norm_scale=False,
-    use_timestep_layer_encoding=True,
-    nested_dropout_prob=0.5,
 )
 store_child_config(
     cls=ModelConfig,
     group="model",
     parent="basemapper",
     child="neti",
-    enable_norm_scale=False,
-    use_timestep_layer_encoding=False,
-    nested_dropout_prob=0.5,
     mask_cross_attn=False,
-    output_bypass=False,
 )
