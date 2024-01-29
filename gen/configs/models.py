@@ -22,7 +22,7 @@ class ModelConfig:
 
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     token_embedding_dim: int = 768
-    num_unet_cross_attn_layers: int = 16 # Number of cross-attentions between U-Net latents and text-tokens
+    num_conditioning_pairs: int = 8 # Number of cross-attentions between U-Net latents and text-tokens
 
     resolution: int = 512
 

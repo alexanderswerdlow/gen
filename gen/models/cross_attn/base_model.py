@@ -155,7 +155,7 @@ class BaseMapper(Trainable):
         elif self.cfg.model.layer_specialization:
             from gen.models.cross_attn.attn_proc import register_layerwise_attention
             num_cross_attn_layers = register_layerwise_attention(self.unet)
-            assert num_cross_attn_layers == self.cfg.model.num_unet_cross_attn_layers
+            assert num_cross_attn_layers == 2 * self.cfg.model.num_conditioning_pairs
 
     def set_training_mode(self, set_grad: bool = False):
         """
@@ -483,9 +483,9 @@ class BaseMapper(Trainable):
         conditioning_data.mask_tokens = self.mapper.cross_attn(conditioning_data).to(self.dtype)
 
         if self.cfg.model.layer_specialization:
-            conditioning_data.encoder_hidden_states = einx.rearrange("b t d -> b t (n d)", conditioning_data.encoder_hidden_states, n=self.cfg.model.num_unet_cross_attn_layers)
+            conditioning_data.encoder_hidden_states = einx.rearrange("b t d -> b t (n d)", conditioning_data.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
 
-            layerwise_mask_tokens = einx.rearrange("b (l c) -> b l c", conditioning_data.mask_tokens, l=self.cfg.model.num_unet_cross_attn_layers) # Break e.g., 1024 -> 16 x 64
+            layerwise_mask_tokens = einx.rearrange("b (l c) -> b l c", conditioning_data.mask_tokens, l=self.cfg.model.num_conditioning_pairs) # Break e.g., 1024 -> 16 x 64
             layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens) # Batched 64 -> 1024
             conditioning_data.mask_tokens = einx.rearrange("b l c -> b (l c)", layerwise_mask_tokens).to(self.dtype)
 
@@ -523,7 +523,7 @@ class BaseMapper(Trainable):
         conditioning_data.encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = conditioning_data.mask_tokens.to(conditioning_data.encoder_hidden_states)
 
         if self.cfg.model.layer_specialization:
-            conditioning_data.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=dict(layer_idx=0, num_layers=self.cfg.model.num_unet_cross_attn_layers))
+            conditioning_data.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=dict(layer_idx=0, num_layers=self.cfg.model.num_conditioning_pairs))
 
         return conditioning_data
 

@@ -67,7 +67,8 @@ class XFormersAttnProcessor:
         if encoder_hidden_states is not None and attn_meta is not None:
             # TODO: We assume that we *always* call all cross-attn layers in order, and that we never skip any.
             # This makes it easier for e.g., inference so we don't need to reset the counter, but is pretty hacky.
-            encoder_hidden_states = encoder_hidden_states.chunk(attn_meta["num_layers"], dim=-1)[attn_meta["layer_idx"] % attn_meta["num_layers"]]
+            cond_idx = min(attn_meta["layer_idx"], attn_meta["num_layers"] - attn_meta["layer_idx"])
+            encoder_hidden_states = encoder_hidden_states.chunk(attn_meta["num_layers"], dim=-1)[cond_idx]
             attn_meta["layer_idx"] = attn_meta["layer_idx"] + 1
         # END MODIFICATION
             

@@ -23,7 +23,7 @@ class Mapper(nn.Module):
         self.cross_attn = CrossAttn(cfg=cfg, input_dim=self.cfg.model.cross_attn_dim, output_dim=cfg.model.token_embedding_dim)
         if self.cfg.model.layer_specialization:
             self.layer_specialization = nn.Sequential(
-                nn.Linear(cfg.model.token_embedding_dim // self.cfg.model.num_unet_cross_attn_layers, cfg.model.token_embedding_dim), 
+                nn.Linear(cfg.model.token_embedding_dim // self.cfg.model.num_conditioning_pairs, cfg.model.token_embedding_dim), 
                 nn.LayerNorm(cfg.model.token_embedding_dim)
             )
         self.apply(_init_weights)
