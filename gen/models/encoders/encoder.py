@@ -249,6 +249,29 @@ class ClipFeatureExtractor(FeatureExtractorModel):
     def forward_base_model(self, image: ImArr, **kwargs):
         return self.base_model(image)
     
+class ViTFeatureExtractor(VIT):
+    def __init__(
+            self, 
+            return_nodes = {
+                'ln_post': 'ln_post',
+            },
+            **kwargs
+        ):
+        self.return_nodes = return_nodes
+        super().__init__(**kwargs)
+
+    def get_nodes(self):
+        return get_graph_node_names(self.base_model)
+    
+    def create_model(self):
+        self.base_model = super().create_model()
+        model = create_feature_extractor(self.base_model, return_nodes=self.return_nodes)
+        return model
+    
+    def forward(self, image: ImArr, **kwargs):
+        breakpoint()
+        return super().forward(image, **kwargs)
+    
 def get_pil_img():
     return Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').scale(0.5).resize(224, 224).pil
 
@@ -273,5 +296,11 @@ def simple_example():
     output = model(image)
     print(output.keys())
 
+def simple_example_():
+    image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').scale(0.5).resize(224, 224).pil
+    model = ViTFeatureExtractor().cuda()
+    output = model(image)
+    print(output.keys())
+
 if __name__ == '__main__':
-    pass
+    simple_example_()

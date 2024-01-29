@@ -57,6 +57,7 @@ class ConditioningData:
 class AttentionMetadata(TypedDict):
     layer_idx: int
     num_layers: int
+    num_cond_vectors: int
 
 class BaseMapper(Trainable):
     def __init__(self, cfg: BaseConfig):
@@ -190,9 +191,6 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.unfreeze_last_n_clip_layers is not None:
             log_warn(f"Unfreezing last {self.cfg.model.unfreeze_last_n_clip_layers} CLIP layers")
-            if set_grad: 
-                self.clip.base_model.proj.requires_grad_(True)
-
             for block in self.clip.base_model.transformer.resblocks[-self.cfg.model.unfreeze_last_n_clip_layers :]:
                 if set_grad: 
                     block.requires_grad_(True)
@@ -323,7 +321,7 @@ class BaseMapper(Trainable):
         if self.cfg.model.use_dataset_segmentation:
             return batch  # We already have segmentation
 
-        if self.cfg.model.encode_token_without_tl:
+        if self.cfg.model.use_dummy_mask:
             original = batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1]))
             assert False
 
@@ -520,7 +518,7 @@ class BaseMapper(Trainable):
         conditioning_data.encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = conditioning_data.mask_tokens.to(conditioning_data.encoder_hidden_states)
 
         if self.cfg.model.layer_specialization:
-            conditioning_data.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=dict(layer_idx=0, num_layers=self.cfg.model.num_conditioning_pairs))
+            conditioning_data.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=dict(layer_idx=0, num_layers=self.cfg.model.num_conditioning_pairs * 2, num_cond_vectors=self.cfg.model.num_conditioning_pairs))
 
         return conditioning_data
 
@@ -597,7 +595,7 @@ class BaseMapper(Trainable):
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
         
-        conditioning_data = self.get_hidden_state(batch, add_conditioning=self.cfg.model.mask_cross_attn)
+        conditioning_data = self.get_hidden_state(batch, add_conditioning=True)
         if self.training: self.dropout_cfg(conditioning_data)
 
         encoder_hidden_states = conditioning_data.encoder_hidden_states

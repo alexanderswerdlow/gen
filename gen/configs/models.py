@@ -22,7 +22,6 @@ class ModelConfig:
 
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     token_embedding_dim: int = 768
-    num_conditioning_pairs: int = 8 # Number of cross-attentions between U-Net latents and text-tokens
 
     resolution: int = 512
 
@@ -59,20 +58,19 @@ class ModelConfig:
     background_mask_idx: int = 0 # Used for the break-a-scene mask loss to not count loss for the background mask
     placeholder_token: str = "masks"
 
+    training_cfg_dropout: Optional[float] = None # Whether to use dropout in the training cfg
+    training_layer_dropout: Optional[float] = None # Whether to use dropout in the training cfg
+
     # Quick experiment configs
     break_a_scene_cross_attn_loss_second_stage: bool = False
     dropout_foreground_only: bool = False
     dropout_background_only: bool = False
-    layer_specialization: bool = False # Whether to map token_embedding_dim -> num_unet_cross_attn_layers * token_embedding_dim so that each layer has its own embedding
-    clip_shift_scale_conditioning: bool = False # Whether to use the CLIP shift and scale embeddings as conditioning
-    placeholder_token_id: Optional[int] = None
-    mask_cross_attn: bool = True
-    training_cfg_dropout: Optional[float] = None # Whether to use dropout in the training cfg
-    training_layer_dropout: Optional[float] = None # Whether to use dropout in the training cfg
-    add_pos_emb_after_clip: bool = False
+    layer_specialization: bool = False # Give each layer has its own embedding
+    num_conditioning_pairs: int = 8 # Number of cross-attentions between U-Net latents and text-tokens
 
-    # NeTI Specific Configs below
-    encode_token_without_tl: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
+    clip_shift_scale_conditioning: bool = False # Whether to use the CLIP shift and scale embeddings as conditioning
+    add_pos_emb_after_clip: bool = False
+    use_dummy_mask: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
 
 
 @dataclass
@@ -80,7 +78,6 @@ class ControlNetConfig(ModelConfig):
     model_type: ModelType = ModelType.CONTROLNET
     controlnet_model_name_or_path: Optional[str] = None
     tokenizer_name: Optional[str] = None
-    mask_cross_attn: bool = False
 
 
 auto_store(ControlNetConfig, name="controlnet")

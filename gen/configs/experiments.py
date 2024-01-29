@@ -170,9 +170,10 @@ def get_experiments():
     mode_store(
         name="finetune_clip",
         model=dict(
-            unfreeze_last_n_clip_layers=6,
+            unfreeze_last_n_clip_layers=8,
             layer_specialization=True,
         ),
-        dataset=dict(train_dataset=dict(batch_size=16)),
+        dataset=dict(train_dataset=dict(batch_size=20)),
+        inference=dict(use_ddim=True),
         hydra_defaults=["movi_overfit", "movi_augmentation", "unet_lora"],
     )

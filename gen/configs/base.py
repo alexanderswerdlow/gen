@@ -122,7 +122,6 @@ exp_store(
     ),
     model=dict(
         use_dataset_segmentation=True,
-        mask_cross_attn=True,
         freeze_text_encoder=True,
         decoder_transformer=dict(add_self_attn=False),
         per_timestep_conditioning=False,
