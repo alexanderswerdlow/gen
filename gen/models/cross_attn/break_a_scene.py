@@ -300,7 +300,9 @@ def break_a_scene_masked_loss(
     for b in range(batch['gen_pixel_values'].shape[0]):
         mask_idxs_for_batch = conditioning_data.mask_instance_idx[conditioning_data.mask_batch_idx == b]
         object_masks = batch["gen_segmentation"][b, ..., mask_idxs_for_batch]
-        if object_masks.shape[-1] == 0:
+        if conditioning_data.batch_cond_dropout is not None and conditioning_data.batch_cond_dropout[b].item(): # We do not have conditioning for this entire sample so put loss on everything
+            max_masks.append(object_masks.new_ones((512, 512)))
+        elif object_masks.shape[-1] == 0:
             max_masks.append(object_masks.new_zeros((512, 512))) # Zero out loss if there are no masks
         else:
             max_masks.append(torch.max(object_masks, axis=-1).values)

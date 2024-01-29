@@ -166,3 +166,13 @@ def get_experiments():
         dataset=dict(train_dataset=dict(batch_size=20)),
         hydra_defaults=["break_a_scene"],
     )
+
+    mode_store(
+        name="finetune_clip",
+        model=dict(
+            unfreeze_last_n_clip_layers=6,
+            layer_specialization=True,
+        ),
+        dataset=dict(train_dataset=dict(batch_size=16)),
+        hydra_defaults=["movi_overfit", "movi_augmentation", "unet_lora"],
+    )

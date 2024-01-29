@@ -130,7 +130,10 @@ exp_store(
         freeze_unet=True,
         pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base",
         token_embedding_dim=1024,
-        break_a_scene_masked_loss=True
+        break_a_scene_masked_loss=True,
+        dropout_masks=0.15,
+        training_cfg_dropout=0.12,
+        training_layer_dropout=0.15,
     ),
     hydra_defaults=[
         "_self_",

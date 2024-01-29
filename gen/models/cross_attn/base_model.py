@@ -27,6 +27,7 @@ from gen.models.utils import find_true_indices_batched
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.utils.logging_utils import log_info, log_warn
+from gen.utils.tokenization_utils import get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
 
 
@@ -43,10 +44,10 @@ class ConditioningData:
     placeholder_token: Optional[int] = None
     attn_dict: Optional[dict[str, Tensor]] = None
     clip_feature_map: Optional[Float[Tensor, "b d h w"]] = None
-    clip_feature_cls_token: Optional[Float[Tensor, "n d"]] = None
     mask_tokens: Optional[Float[Tensor, "n d"]] = None
     mask_batch_idx: Optional[Integer[Tensor, "n"]] = None
     mask_instance_idx: Optional[Integer[Tensor, "n"]] = None
+    batch_cond_dropout: Optional[Bool[Tensor, "b"]] = None
     input_prompt: Optional[list[str]] = None
     
     # These are passed to the U-Net or pipeline
@@ -189,8 +190,13 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.unfreeze_last_n_clip_layers is not None:
             log_warn(f"Unfreezing last {self.cfg.model.unfreeze_last_n_clip_layers} CLIP layers")
+            if set_grad: 
+                self.clip.base_model.proj.requires_grad_(True)
+
             for block in self.clip.base_model.transformer.resblocks[-self.cfg.model.unfreeze_last_n_clip_layers :]:
-                block.requires_grad_(True)
+                if set_grad: 
+                    block.requires_grad_(True)
+                block.train()
 
         if self.cfg.model.freeze_unet:
             if set_grad:
@@ -296,7 +302,7 @@ class BaseMapper(Trainable):
 
         assert "formatted_input_ids" not in batch
 
-        conditioning_data = self.get_hidden_state(batch, add_mask_conditioning=disable_conditioning is False, conditioning_data=conditioning_data)
+        conditioning_data = self.get_hidden_state(batch, add_conditioning=disable_conditioning is False, conditioning_data=conditioning_data)
 
         bs = batch["disc_pixel_values"].shape[0]
         conditioning_data.input_prompt = [
@@ -379,24 +385,16 @@ class BaseMapper(Trainable):
         device = batch["gen_pixel_values"].device
         dtype = self.dtype
 
-        clip_feature_cls_token = None
-
         # isinstance fails with torch dynamo
         if "resnet" in self.clip.model_name:
             clip_feature_map = self.clip(((batch["gen_pixel_values"] + 1) / 2).to(device=device, dtype=dtype))
             clip_feature_map = rearrange(clip_feature_map, "b d h w -> b (h w) d")
-            clip_feature_cls_token = torch.mean(clip_feature_map, dim=1)
         else:
             clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype)).permute(1, 0, 2)
             clip_feature_map = rearrange(clip_feature_map, "l b d -> b l d")
+            if self.cfg.model.add_pos_emb_after_clip:
+                clip_feature_map = clip_feature_map + self.clip.base_model.positional_embedding[None]
             clip_feature_map = clip_feature_map[:, 1:, :]
-
-            if self.cfg.model.use_cls_token_projected:
-                clip_feature_cls_token = self.clip.forward_base_model(batch["disc_pixel_values"].to(device=device, dtype=dtype))
-            elif self.cfg.model.use_cls_token_final_layer:
-                clip_feature_cls_token = clip_feature_map[:, -1, :]
-            elif self.cfg.model.use_cls_token_mean:
-                clip_feature_cls_token = torch.mean(clip_feature_map, dim=1)
 
         latent_dim = int(math.sqrt(clip_feature_map.shape[1]))
         feature_map_masks = []
@@ -431,7 +429,7 @@ class BaseMapper(Trainable):
             one_hot_idx = one_hot_idx[empty_mask]
 
             if one_hot_mask.shape[0] == 0:
-                log_info("Warning, no masks found for this image")
+                log_info("Warning, no masks found for this image!")
                 continue
 
             assert batch["disc_pixel_values"].shape[-1] == batch["disc_pixel_values"].shape[-2]
@@ -463,7 +461,6 @@ class BaseMapper(Trainable):
             x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k
         )
 
-        conditioning_data.clip_feature_cls_token = clip_feature_cls_token
         conditioning_data.mask_batch_idx = mask_batch_idx
         conditioning_data.mask_instance_idx = mask_instance_idx
         if self.cfg.model.clip_shift_scale_conditioning:
@@ -530,7 +527,7 @@ class BaseMapper(Trainable):
     def get_hidden_state(
         self,
         batch: InputData,
-        add_mask_conditioning: bool = True,
+        add_conditioning: bool = True,
         conditioning_data: Optional[ConditioningData] = None,  # We can optionally specify mask tokens to use [e.g., for composing during inference]
     ) -> ConditioningData:
         if conditioning_data is None:
@@ -539,7 +536,7 @@ class BaseMapper(Trainable):
         conditioning_data.placeholder_token=self.placeholder_token_id,
         conditioning_data.encoder_hidden_states=self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype)
 
-        if add_mask_conditioning:
+        if add_conditioning:
             if conditioning_data.mask_tokens is None or conditioning_data.mask_batch_idx is None:
                 conditioning_data = self.compute_mask_tokens(batch, conditioning_data)
 
@@ -550,7 +547,32 @@ class BaseMapper(Trainable):
     def get_controlnet_conditioning(self, batch):
         return batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=self.dtype)
 
-    # TODO: Fully dropout conditioning for CFG!!
+    @cached_property
+    def uncond_hidden_states(self):
+        uncond_input_ids = get_uncond_tokens(self.tokenizer).to(self.device)
+        uncond_encoder_hidden_states = self.text_encoder(input_ids=uncond_input_ids[None]).last_hidden_state.to(dtype=self.dtype).squeeze(0)
+        return uncond_encoder_hidden_states
+    
+    def dropout_cfg(self, conditioning_data: ConditioningData):
+        # We dropout the entire conditioning [all-layers] for a subset of batches.
+        if self.cfg.model.training_cfg_dropout is not None: 
+            uncond_encoder_hidden_states = self.uncond_hidden_states
+
+            if self.cfg.model.layer_specialization: # If we have different embeddings per-layer, we need to repeat the uncond embeddings
+                uncond_encoder_hidden_states = einx.rearrange("t d -> t (n d)", uncond_encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
+
+            dropout_idx = torch.rand(conditioning_data.encoder_hidden_states.shape[0]) < self.cfg.model.training_cfg_dropout
+            conditioning_data.encoder_hidden_states[dropout_idx] = uncond_encoder_hidden_states
+            conditioning_data.batch_cond_dropout = dropout_idx
+
+        # We also might dropout only specific pairs of layers. In this case, we use the same uncond embeddings.
+        # Note that there is a rare chance that we could dropout all layers but still compute loss.
+        if self.cfg.model.layer_specialization and self.cfg.model.training_layer_dropout is not None:
+            dropout_idx = torch.rand(self.cfg.model.num_conditioning_pairs) < self.cfg.model.training_layer_dropout
+            conditioning_data.encoder_hidden_states = einx.rearrange("b t (n d) -> b n t d", conditioning_data.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
+            conditioning_data.encoder_hidden_states[:, dropout_idx] = self.uncond_hidden_states
+            conditioning_data.encoder_hidden_states = einx.rearrange("b n t d -> b t (n d)", conditioning_data.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
+            
     @beartype
     def forward(self, batch: InputData):
         batch = InputData(**batch)
@@ -574,7 +596,10 @@ class BaseMapper(Trainable):
         # (this is the forward diffusion process)
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
-        conditioning_data = self.get_hidden_state(batch, add_mask_conditioning=self.cfg.model.mask_cross_attn)
+        
+        conditioning_data = self.get_hidden_state(batch, add_conditioning=self.cfg.model.mask_cross_attn)
+        if self.training: self.dropout_cfg(conditioning_data)
+
         encoder_hidden_states = conditioning_data.encoder_hidden_states
 
         if self.cfg.model.controlnet:

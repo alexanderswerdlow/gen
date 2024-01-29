@@ -67,12 +67,12 @@ class ModelConfig:
     clip_shift_scale_conditioning: bool = False # Whether to use the CLIP shift and scale embeddings as conditioning
     placeholder_token_id: Optional[int] = None
     mask_cross_attn: bool = True
+    training_cfg_dropout: Optional[float] = None # Whether to use dropout in the training cfg
+    training_layer_dropout: Optional[float] = None # Whether to use dropout in the training cfg
+    add_pos_emb_after_clip: bool = False
 
     # NeTI Specific Configs below
     encode_token_without_tl: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
-    use_cls_token_projected: bool = False # These define where to get the single token
-    use_cls_token_final_layer: bool = False
-    use_cls_token_mean: bool = False
 
 
 @dataclass
@@ -96,12 +96,4 @@ store_child_config(
     parent="basemapper",
     child="cross_attn",
     unfreeze_last_n_clip_layers=None,
-    dropout_masks=0.2,
-)
-store_child_config(
-    cls=ModelConfig,
-    group="model",
-    parent="basemapper",
-    child="neti",
-    mask_cross_attn=False,
 )
