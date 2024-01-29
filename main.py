@@ -204,7 +204,7 @@ def main(cfg: BaseConfig):
             cloudpickle.dump(cfg, f)
         
         # If the code changes, we may be unable to load the pickled config so we also save the yaml.
-        OmegaConf.save(config=cfg, f=cfg.output_dir / '.hydra' / 'final_config.yaml', resolve=True)
+        OmegaConf.save(config=cfg, f=cfg.output_dir / '.hydra' / 'final_config.yaml', resolve=False)
 
     check_gpu_memory_usage()
 

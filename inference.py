@@ -92,13 +92,20 @@ def log_with_accelerator(
         Im(images[0]).save(save_path)
     else:
         for i in range(len(images)):
-            save_path = save_folder / f"{name}_{global_step}_{i}.png"
-            Im(images[i]).save(save_path)
-
-    if accelerator is not None:
-        for tracker in accelerator.trackers:
-            if tracker.name == "tensorboard":
-                np_images = np.stack([np.asarray(img) for img in images])
-                tracker.writer.add_images(name, np_images, global_step, dataformats="NHWC")
-            if tracker.name == "wandb":
-                tracker.log({name: wandb.Image(Im.concat_horizontal(images, spacing=spacing, fill=(255, 255, 255)).pil)}, step=global_step)
+            try:
+                save_path = save_folder / f"{name}_{global_step}_{i}.png"
+                Im(images[i]).save(save_path)
+            except Exception as e:
+                print(e)
+                log_info(f"Failed to save image: {save_path}, name {name}")
+    try:
+        if accelerator is not None:
+            for tracker in accelerator.trackers:
+                if tracker.name == "tensorboard":
+                    np_images = np.stack([np.asarray(img) for img in images])
+                    tracker.writer.add_images(name, np_images, global_step, dataformats="NHWC")
+                if tracker.name == "wandb":
+                    tracker.log({name: wandb.Image(Im.concat_horizontal(images, spacing=spacing, fill=(255, 255, 255)).pil)}, step=global_step)
+    except Exception as e:
+        print(e)
+        log_info(f"Wandb Failed to save image: {save_path}, name {name}")

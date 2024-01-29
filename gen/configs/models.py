@@ -7,7 +7,7 @@ from hydra_zen.typing import Builds
 
 from gen.configs.utils import auto_store, store_child_config
 from gen.models.cross_attn.decoder import DecoderTransformer
-from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
+from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor, ViTFeatureExtractor
 
 
 class ModelType(Enum):
@@ -50,6 +50,7 @@ class ModelConfig:
     
     decoder_transformer: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
+    encoder_dim: int = 1024 # Dim of each token from encoder [E.g., CLIP]
 
     lora_rank: int = 4
     break_a_scene_cross_attn_loss: bool = False
@@ -91,6 +92,7 @@ store_child_config(
     cls=ModelConfig,
     group="model",
     parent="basemapper",
-    child="cross_attn",
-    unfreeze_last_n_clip_layers=None,
+    child="basemapper_vit",
+    encoder=builds(ViTFeatureExtractor, return_only="norm", populate_full_signature=False),
+    encoder_dim=768,
 )

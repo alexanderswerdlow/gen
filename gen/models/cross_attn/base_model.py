@@ -80,7 +80,7 @@ class BaseMapper(Trainable):
     def initialize_custom_models(self):
         self.mapper = Mapper(cfg=self.cfg).to(self.cfg.trainer.device)
 
-        self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, _recursive_=True, num_from_back=3, tensor_input=True)
+        self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder)
 
         if self.cfg.model.use_dataset_segmentation is False:
             from gen.models.encoders.sam import HQSam
@@ -384,7 +384,7 @@ class BaseMapper(Trainable):
         dtype = self.dtype
 
         # isinstance fails with torch dynamo
-        if "resnet" in self.clip.model_name:
+        if not isinstance(self.clip, BaseModel):
             clip_feature_map = self.clip(((batch["gen_pixel_values"] + 1) / 2).to(device=device, dtype=dtype))
             clip_feature_map = rearrange(clip_feature_map, "b d h w -> b (h w) d")
         else:

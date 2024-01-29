@@ -14,6 +14,9 @@ from gen.configs.inference import InferenceConfig
 from gen.configs.models import ModelConfig
 from gen.configs.trainer import TrainerConfig
 from gen.configs.utils import destructure_store, exp_store, mode_store
+import hydra
+
+from gen.models.encoders.encoder import TimmModel
 
 defaults = [
     "_self_",
@@ -79,8 +82,15 @@ def get_run_dir(_, *, _root_: BaseConfig):
         _root_.run_name = _root_.run_name + f'{datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}'
         return Path(_root_.first_level_output_path) / _root_.second_level_output_path / _root_.run_name
 
+def get_transform(_, *, _root_: BaseConfig):
+    """
+    We instantiate the model container (without actually loading the params) to get the transforms.
+    """
+    model: TimmModel = hydra.utils.instantiate(OmegaConf.to_container(_root_.model.encoder), deferred_init=True)
+    return model.transform
 
 OmegaConf.register_new_resolver("get_run_dir", get_run_dir)
+OmegaConf.register_new_resolver("get_transform", get_transform)
 
 store(get_hydra_config())
 
@@ -131,13 +141,11 @@ exp_store(
         token_embedding_dim=1024,
         break_a_scene_masked_loss=True,
         dropout_masks=0.15,
-        training_cfg_dropout=0.12,
-        training_layer_dropout=0.15,
     ),
     hydra_defaults=[
         "_self_",
         {"override /dataset": "movi_e"},
-        {"override /model": "cross_attn"},
+        {"override /model": "basemapper"},
     ],
 )
 

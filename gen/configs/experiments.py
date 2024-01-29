@@ -32,14 +32,12 @@ shared_overfit_movi_args = dict(
     custom_split="train",
     path=MOVI_OVERFIT_DATASET_PATH,
     num_objects=1,
-    legacy_transforms=False,
     augmentation=dict(minimal_source_augmentation=True, enable_crop=False),
 )
 
 shared_movi_args = dict(
     path=MOVI_DATASET_PATH,
     num_objects=23,
-    legacy_transforms=False,
     augmentation=dict(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
 )
 
@@ -170,10 +168,14 @@ def get_experiments():
     mode_store(
         name="finetune_clip",
         model=dict(
-            unfreeze_last_n_clip_layers=8,
+            unfreeze_last_n_clip_layers=None,
             layer_specialization=True,
+            decoder_transformer=dict(depth=2),
+            training_cfg_dropout=0.12,
+            training_layer_dropout=0.15,
         ),
-        dataset=dict(train_dataset=dict(batch_size=20)),
+        dataset=dict(train_dataset=dict(batch_size=10)),
         inference=dict(use_ddim=True),
+        trainer=dict(eval_every_n_steps=200),
         hydra_defaults=["movi_overfit", "movi_augmentation", "unet_lora"],
     )

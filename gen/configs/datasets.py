@@ -38,6 +38,7 @@ def get_override_dict(**kwargs):
     )
 
 
+
 auto_store(DatasetConfig, train_dataset=get_dataset(ControlnetDataset), validation_dataset=get_dataset(ControlnetDataset), name="controlnet")
 
 auto_store(DatasetConfig, train_dataset=get_dataset(CocoCaptions), validation_dataset=get_dataset(CocoCaptions), name="coco_captions")
@@ -72,6 +73,9 @@ augmentation = builds(
     minimal_source_augmentation=True,
     source_only_augmentation=True,
     target_resolution="${model.resolution}",
+    # A little hacky but very useful. We instantiate the model to get the transforms, making sure
+    # that we always have the right transform
+    source_normalization="${get_transform:model}",
     populate_full_signature=True,
 )
 

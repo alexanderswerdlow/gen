@@ -1,5 +1,5 @@
 import os
-from typing import Any, List
+from typing import Any, Callable, List
 
 import kornia.augmentation as K
 import torch
@@ -50,9 +50,10 @@ class Augmentation:
         minimal_source_augmentation: bool = False,
         enable_crop: bool = True,
         enable_horizontal_flip: bool = True,
+        source_normalization: Callable = get_open_clip_transforms_v2(),
     ):
         self.source_resolution = source_resolution
-        self.source_normalization = get_open_clip_transforms_v2()
+        self.source_normalization = source_normalization
         self.target_normalization = get_stable_diffusion_transforms(resolution=target_resolution)
 
         source_transforms = []

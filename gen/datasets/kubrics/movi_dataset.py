@@ -38,7 +38,6 @@ class MoviDataset(AbstractDataset, Dataset):
         augment: bool = False,
         num_dataset_frames: int = 24,
         num_objects: int = 23,
-        legacy_transforms: bool = False,
         augmentation: Optional[Augmentation] = Augmentation(),
         custom_split: Optional[str] = None,
         subset: Optional[tuple[str]] = None,
@@ -52,7 +51,6 @@ class MoviDataset(AbstractDataset, Dataset):
         self.root = path  # Path to the dataset containing folders of "movi_a", "movi_e", etc.
         self.dataset = dataset  # str of dataset name (e.g. "movi_a")
         self.resolution = resolution
-        self.legacy_transforms = legacy_transforms
         self.return_video = return_video
         self.fake_return_n = fake_return_n
         self.use_single_mask = use_single_mask
@@ -71,13 +69,9 @@ class MoviDataset(AbstractDataset, Dataset):
         self.augment = augment
         self.num_classes = num_objects
 
-        if self.legacy_transforms:
-            self.gen_image_transforms = get_stable_diffusion_transforms(resolution)
-            self.disc_image_transforms = get_open_clip_transforms_v2()
-        else:
-            self.augmentation = augmentation
-            if self.split == Split.VALIDATION:
-                self.augmentation.set_validation()
+        self.augmentation = augmentation
+        if self.split == Split.VALIDATION:
+            self.augmentation.set_validation()
 
         self.override_text = override_text
         if self.override_text:
@@ -135,58 +129,30 @@ class MoviDataset(AbstractDataset, Dataset):
 
         rgb = rearrange(rgb, "... h w c -> ... c h w") / 255.0  # [0, 1]
 
-        if self.legacy_transforms:
-            bounding_boxes = BoundingBoxes(bbx, format=BoundingBoxFormat.XYXY, canvas_size=rgb.shape[-2:])
-            instance = Mask(instance.squeeze(-1))
+        source_data, target_data = self.augmentation(
+            source_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
+            target_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
+        )
 
-            gen_rgb, gen_bbx, gen_instance = self.gen_image_transforms(Image(rgb), bounding_boxes, instance)
-            gen_instance = torch.nn.functional.one_hot(gen_instance.long(), num_classes=self.num_classes + 1).numpy()
+        # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
+        source_data.image = source_data.image.squeeze(0)
+        source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        target_data.image = target_data.image.squeeze(0)
+        target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
 
-            gen_bbx[..., [0, 2]] /= gen_rgb.shape[1]
-            gen_bbx[..., [1, 3]] /= gen_rgb.shape[2]
-            assert gen_bbx.min() >= 0 and gen_bbx.max() <= 1
+        if self.use_single_mask:
+            source_data.segmentation = torch.ones_like(source_data.segmentation)[..., [0]]
+            target_data.segmentation = torch.ones_like(target_data.segmentation)[..., [0]]
 
-            disc_rgb, disc_bbx, disc_instance = self.disc_image_transforms(Image(rgb), bounding_boxes, instance)
-            disc_instance = torch.nn.functional.one_hot(disc_instance.long(), num_classes=self.num_classes + 1).numpy()
-            disc_bbx[..., [0, 2]] /= disc_rgb.shape[1]
-            disc_bbx[..., [1, 3]] /= disc_rgb.shape[2]
-            assert disc_bbx.min() >= 0 and disc_bbx.max() <= 1
-
-            ret = {
-                "gen_pixel_values": gen_rgb,
-                "gen_bbox": gen_bbx,
-                "gen_segmentation": gen_instance,
-                "disc_pixel_values": disc_rgb,
-                "disc_bbox": disc_bbx,
-                "disc_segmentation": disc_instance,
-                "input_ids": get_tokens(self.tokenizer),
-            }
-
-        else:
-            source_data, target_data = self.augmentation(
-                source_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
-                target_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
-            )
-
-            # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
-            source_data.image = source_data.image.squeeze(0)
-            source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
-            target_data.image = target_data.image.squeeze(0)
-            target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
-
-            if self.use_single_mask:
-                source_data.segmentation = torch.ones_like(source_data.segmentation)[..., [0]]
-                target_data.segmentation = torch.ones_like(target_data.segmentation)[..., [0]]
-
-            ret = {
-                "gen_pixel_values": target_data.image,
-                "gen_grid": target_data.grid,
-                "gen_segmentation": target_data.segmentation,
-                "disc_pixel_values": source_data.image,
-                "disc_grid": source_data.grid,
-                "disc_segmentation": source_data.segmentation,
-                "input_ids": get_tokens(self.tokenizer),
-            }
+        ret = {
+            "gen_pixel_values": target_data.image,
+            "gen_grid": target_data.grid,
+            "gen_segmentation": target_data.segmentation,
+            "disc_pixel_values": source_data.image,
+            "disc_grid": source_data.grid,
+            "disc_segmentation": source_data.segmentation,
+            "input_ids": get_tokens(self.tokenizer),
+        }
 
         if self.return_video:
             ret["video"] = path
