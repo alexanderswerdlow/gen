@@ -551,6 +551,9 @@ class BaseMapper(Trainable):
         if self.cfg.model.layer_specialization:
             conditioning_data.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=dict(layer_idx=0, num_layers=self.cfg.model.num_conditioning_pairs * 2, num_cond_vectors=self.cfg.model.num_conditioning_pairs))
 
+        if self.cfg.model.clip_shift_scale_conditioning:
+            conditioning_data.encoder_hidden_states[:] = self.uncond_hidden_states
+
         return conditioning_data
 
     def get_hidden_state(

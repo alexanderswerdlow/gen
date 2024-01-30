@@ -121,9 +121,9 @@ def get_experiments():
 
     mode_store(
         name="unet_finetune",
-        dataset=dict(train_dataset=dict(batch_size=9)),
+        dataset=dict(train_dataset=dict(batch_size=8)),
         trainer=dict(learning_rate=1e-7),
-        model=dict(freeze_unet=False),
+        model=dict(freeze_unet=False, lora_unet=False),
     )
 
     mode_store(
