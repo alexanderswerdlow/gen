@@ -275,3 +275,7 @@ def viz():
 # Im(loss_mask).save(im_path)
 # Im((batch["gen_pixel_values"] + 1) / 2).save(im_path.replace("_mask.png", ".png"))
 # img_idx += 1
+    
+            # from image_utils import Im
+        # Im(max_masks[-1][..., None]).save(f'loss_{batch["state"].true_step}_{b}.png')
+        # Im((batch["gen_pixel_values"][b] + 1) / 2).save(f'img_{batch["state"].true_step}_{b}.png')

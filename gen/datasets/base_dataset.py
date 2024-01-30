@@ -5,7 +5,7 @@ from typing import Any, Optional
 from torch.utils.data import DataLoader, RandomSampler, Subset
 
 from gen.utils.logging_utils import log_info, log_warn
-
+from torch import Generator
 
 class Split(Enum):
     TRAIN = 0
@@ -48,11 +48,12 @@ class AbstractDataset(ABC):
     def collate_fn(self, batch):
         pass
 
-    def get_dataloader(self):
+    def get_dataloader(self, g: Optional[Generator] = None):
         orig_dataset = self.get_dataset()
         if self.allow_subset and self.subset_size is not None:
             if self.random_subset:
-                dataset = Subset(orig_dataset, list(RandomSampler(orig_dataset, num_samples=self.subset_size)))
+
+                dataset = Subset(orig_dataset, list(RandomSampler(orig_dataset, num_samples=self.subset_size, generator=g)))
             else:
                 idxs = list(range(len(orig_dataset)))
 

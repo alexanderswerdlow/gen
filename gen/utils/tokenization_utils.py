@@ -4,5 +4,5 @@ def get_tokens(tokenizer, prompt: str = DEFAULT_PROMPT, placeholder_token: str =
     assert prompt.count(placeholder_token) == 1
     return tokenizer(DEFAULT_PROMPT, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt").input_ids.squeeze(0)
 
-def get_uncond_tokens(tokenizer):
-    return tokenizer("", max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt").input_ids.squeeze(0)
+def get_uncond_tokens(tokenizer, prompt: str = ""):
+    return tokenizer(prompt, max_length=tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt").input_ids.squeeze(0)

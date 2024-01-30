@@ -26,7 +26,7 @@ from transformers import CLIPTokenizer
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.utils import get_model_from_cfg
-from gen.utils.decoupled_utils import Profiler, is_main_process, write_to_file
+from gen.utils.decoupled_utils import Profiler, get_rank, is_main_process, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing_dirs, load_from_ckpt, unwrap
 from inference import run_inference_dataloader
@@ -162,7 +162,10 @@ class Trainer:
                 self.validation_dataset_holder.subset_size = self.cfg.trainer.num_gpus
             else:
                 self.validation_dataset_holder.subset_size = max(self.cfg.dataset.validation_dataset.subset_size, self.cfg.trainer.num_gpus)
-            self.validation_dataloader = self.validation_dataset_holder.get_dataloader()
+
+            g = torch.Generator()
+            g.manual_seed(state.global_step + get_rank())
+            self.validation_dataloader = self.validation_dataset_holder.get_dataloader(generator=g)
             self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
 
         param_keys = get_named_params(self.models).keys()
