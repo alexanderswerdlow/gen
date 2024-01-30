@@ -75,7 +75,7 @@ def load_stable_diffusion_model(
     pipeline.scheduler = scheduler
     pipeline.set_progress_bar_config(disable=True)
 
-    # if cfg.model.lora_unet:
+    # if cfg.model.unet_lora:
     #     pipeline.load_lora_weights(args.output_dir)
 
     return pipeline

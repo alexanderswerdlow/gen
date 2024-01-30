@@ -136,8 +136,8 @@ class BaseMapper(Trainable):
     def add_adapters(self):
         self.set_training_mode(set_grad=True)
 
-        assert not (self.cfg.model.freeze_unet is False and (self.cfg.model.unfreeze_unet_after_n_steps is not None or self.cfg.model.lora_unet))
-        if self.cfg.model.lora_unet:
+        assert not (self.cfg.model.freeze_unet is False and (self.cfg.model.unfreeze_unet_after_n_steps is not None or self.cfg.model.unet_lora))
+        if self.cfg.model.unet_lora:
             from peft import LoraConfig
 
             unet_lora_config = LoraConfig(
@@ -203,7 +203,6 @@ class BaseMapper(Trainable):
             if set_grad:
                 self.hqsam.requires_grad_(False)
 
-        # TODO: Check
         if self.cfg.model.freeze_clip:
             if set_grad:
                 self.clip.requires_grad_(False)
@@ -302,12 +301,29 @@ class BaseMapper(Trainable):
         if self.cfg.model.break_a_scene_cross_attn_loss:
             self.controller.reset()
 
+    def get_param_groups(self):
+        if not self.cfg.finetune_variable_learning_rate: return None
+        
+        unet_params = dict(self.unet.named_parameters())
+
+        def get_params(params, keys):
+            group = {k:v for k,v in params.items() if all([key in k for key in keys])}
+            for k, p in group.items():
+                del params[k]
+            return group
+
+        return [ # Order matters here
+            {"params": get_params(unet_params, ('attn2',)), "lr": self.cfg.trainer.learning_rate},
+            {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
+            {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate},
+        ]
+
     def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):
         # TODO: save_state/load_state saves everything from prepare() regardless of whether it's frozen
         # This is very inefficient but simpler for now.
         accelerator.save_state(path / "state", safe_serialization=False)
         accelerator.save_model(self.mapper, save_directory=path / "model", safe_serialization=False)
-        if self.cfg.model.lora_unet:
+        if self.cfg.model.unet_lora:
             from peft.utils import get_peft_model_state_dict
 
             unet_lora_state_dict = get_peft_model_state_dict(self.unet)
@@ -425,6 +441,8 @@ class BaseMapper(Trainable):
 
         if 'resnet' not in self.clip.model_name:
             clip_feature_map = clip_feature_map[:, 1:, :]
+            if 'dino' in self.clip.model_name and 'reg' in self.clip.model_name:
+                clip_feature_map = clip_feature_map[:, 4:, :]
 
         latent_dim = round(math.sqrt(clip_feature_map.shape[1]))
         feature_map_masks = []
@@ -437,7 +455,7 @@ class BaseMapper(Trainable):
             one_hot_idx = torch.arange(one_hot_mask.shape[0], device=device)
             
             if one_hot_mask.shape[0] == 0:
-                log_info("Warning, no masks found for this image")
+                log_warn("No masks found for this image")
                 continue
 
             if self.cfg.model.dropout_masks is not None and self.training:
@@ -448,7 +466,7 @@ class BaseMapper(Trainable):
                     dropout_mask[torch.arange(dropout_mask.shape[0]) != self.cfg.model.background_mask_idx] = True
 
                 if dropout_mask.sum().item() == 0:
-                    log_info("Warning, we would have dropped all masks but instead we preserved the background")
+                    log_warn("We would have dropped all masks but instead we preserved the background", main_process_only=False)
                     dropout_mask[self.cfg.model.background_mask_idx] = True
             else:
                 dropout_mask = one_hot_mask.new_full((one_hot_mask.shape[0],), True, dtype=torch.bool)
@@ -463,7 +481,7 @@ class BaseMapper(Trainable):
             one_hot_idx = one_hot_idx[combinbed_mask]
 
             if one_hot_mask.shape[0] == 0:
-                log_info("Warning, dropped out all masks for this image!")
+                log_warn("Dropped out all masks for this image!")
                 continue
 
             assert batch["disc_pixel_values"].shape[-1] == batch["disc_pixel_values"].shape[-2]

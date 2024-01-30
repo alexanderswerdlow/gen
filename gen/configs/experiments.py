@@ -108,12 +108,12 @@ def get_experiments():
         name="unet_finetune",
         dataset=dict(train_dataset=dict(batch_size=8)),
         trainer=dict(learning_rate=1e-7),
-        model=dict(freeze_unet=False, lora_unet=False),
+        model=dict(freeze_unet=False, unet_lora=False),
     )
 
     mode_store(
         name="unet_lora",
-        model=dict(lora_unet=True, lora_rank=256),
+        model=dict(unet_lora=True, lora_rank=256),
         trainer=dict(learning_rate=1e-6),
         dataset=dict(train_dataset=dict(batch_size=20)),
     )
@@ -135,7 +135,7 @@ def get_experiments():
 
     mode_store(
         name="break_a_scene_two_stage",
-        model=dict(lora_unet=False, unfreeze_unet_after_n_steps=100),
+        model=dict(unet_lora=False, unfreeze_unet_after_n_steps=100),
         trainer=dict(
             finetune_learning_rate=2e-6,
             learning_rate=5e-4,

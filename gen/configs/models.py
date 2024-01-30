@@ -33,7 +33,7 @@ class ModelConfig:
 
     controlnet: bool = False # Add a controlnet on top of the main U-Net
     freeze_unet: bool = True
-    lora_unet: bool = False # Perform low-rank adaptation on the main U-Net
+    unet_lora: bool = False # Perform low-rank adaptation on the main U-Net
     freeze_mapper: bool = False # Freezes the cross-attention mapper itself. Useful for debugging.
     freeze_text_encoder: bool = True # We freeze the CLIP Text encoder by default
     freeze_text_encoder_except_token_embeddings: bool = False # We can choose to only train the token embeddings like in break-a-scene
@@ -63,6 +63,7 @@ class ModelConfig:
 
     # Quick experiment configs
     break_a_scene_cross_attn_loss_second_stage: bool = False
+    finetune_variable_learning_rate: bool = False
     dropout_foreground_only: bool = False
     dropout_background_only: bool = False
     layer_specialization: bool = False # Give each layer has its own embedding

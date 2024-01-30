@@ -87,6 +87,9 @@ class Trainer:
                 if is_main_process():
                     summary(model, col_names=("trainable", "num_params"), depth=3)
 
+                if (param_groups_ := self.model.get_param_groups()) is not None:
+                    assert len([d['params'] for d in param_groups_]) == len(get_named_params(self.models).values())
+
         validate_params(self.models, self.dtype)
 
     def init_dataloader(self):
@@ -110,7 +113,7 @@ class Trainer:
     def init_optimizer(self):
         optimizer_class = torch.optim.AdamW
         self.optimizer = optimizer_class(
-            get_named_params(self.models).values(),
+            get_named_params(self.models).values() if self.model.get_param_groups() is None else self.model.get_param_groups(),
             lr=self.cfg.trainer.learning_rate,
             betas=(self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2),
             weight_decay=self.cfg.trainer.adam_weight_decay,
@@ -327,12 +330,6 @@ class Trainer:
                     break
 
                 last_end_step_time = time()
-
-            # TODO: Something weird happens with webdataset:
-            # UserWarning: Length of IterableDataset <abc.WebDataset_Length object at 0x7f0748da4640> was reported to be 2 (when accessing len(dataloader)), but 3 samples have been fetched.
-            # if step >= len(self.train_dataloader) - 1:
-            #     log_info(f"Exited early at step {global_step}")
-            #     break
 
         # Create the pipeline using using the trained modules and save it.
         self.accelerator.wait_for_everyone()

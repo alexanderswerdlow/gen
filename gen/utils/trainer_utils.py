@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Any
 
 import torch.nn as nn
 from accelerate import Accelerator
@@ -98,6 +98,8 @@ class Trainable(nn.Module, ABC):
     @abstractmethod
     def set_inference_mode(self):
         ...
+
+    def get_param_groups(self) -> Optional[dict[str, Any]]: return None
 
     @abstractmethod
     def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):

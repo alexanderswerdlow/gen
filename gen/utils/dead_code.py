@@ -279,3 +279,9 @@ def viz():
             # from image_utils import Im
         # Im(max_masks[-1][..., None]).save(f'loss_{batch["state"].true_step}_{b}.png')
         # Im((batch["gen_pixel_values"][b] + 1) / 2).save(f'img_{batch["state"].true_step}_{b}.png')
+    
+                # TODO: Something weird happens with webdataset:
+            # UserWarning: Length of IterableDataset <abc.WebDataset_Length object at 0x7f0748da4640> was reported to be 2 (when accessing len(dataloader)), but 3 samples have been fetched.
+            # if step >= len(self.train_dataloader) - 1:
+            #     log_info(f"Exited early at step {global_step}")
+            #     break
