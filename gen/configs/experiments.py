@@ -162,6 +162,6 @@ def get_experiments():
         ),
         dataset=dict(train_dataset=dict(batch_size=20)),
         inference=dict(use_ddim=True, max_batch_size=4, vary_cfg_plot=True),
-        trainer=dict(eval_every_n_steps=200),
+        trainer=dict(eval_every_n_steps=200, learning_rate=1e-7),
         hydra_defaults=["movi_overfit", "movi_augmentation", "unet_lora"],
     )

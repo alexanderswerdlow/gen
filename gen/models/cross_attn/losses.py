@@ -75,17 +75,27 @@ def evenly_weighted_mask_loss(
     losses = []
 
     for b in range(batch['gen_pixel_values'].shape[0]):
+        if conditioning_data.batch_cond_dropout is not None and conditioning_data.batch_cond_dropout[b].item():
+            losses.append(F.mse_loss(pred[b], target[b], reduction="mean"))
+            continue
+
         mask_idxs_for_batch = conditioning_data.mask_instance_idx[conditioning_data.mask_batch_idx == b]
         object_masks = batch["gen_segmentation"][b, ..., mask_idxs_for_batch]
 
         gt_masks = F.interpolate(rearrange(object_masks, 'h w c -> c () h w').float(), size=(64, 64)).squeeze(1)
         gt_masks = rearrange(gt_masks, 'c h w -> c (h w)') > 0.5
-    
+        
+        batch_losses = []
         for i in range(object_masks.shape[-1]):
             pred_ = pred[b, :, gt_masks[i, :]]
             target_ = target[b, :, gt_masks[i, :]]
             loss = F.mse_loss(pred_, target_, reduction="mean")
-            losses.append(loss)
+            batch_losses.append(loss)
+
+        if len(batch_losses) == 0:
+            losses.append(torch.tensor(0.0))
+        else:
+            losses.append(torch.stack(batch_losses).mean())
 
     return torch.stack(losses).mean()
 

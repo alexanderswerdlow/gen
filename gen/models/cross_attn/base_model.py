@@ -630,6 +630,9 @@ class BaseMapper(Trainable):
         # Note that there is a rare chance that we could dropout all layers but still compute loss.
         if self.cfg.model.layer_specialization and self.cfg.model.training_layer_dropout is not None:
             dropout_idx = torch.rand(self.cfg.model.num_conditioning_pairs) < self.cfg.model.training_layer_dropout
+            if dropout_idx.sum().item() == dropout_idx.shape[0]:
+                dropout_idx[torch.randint(high=dropout_idx.shape[0], size=(1,)).to(dropout_idx.device)] = False
+
             conditioning_data.encoder_hidden_states = einx.rearrange(
                 "b t (n d) -> b n t d", conditioning_data.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs
             )
