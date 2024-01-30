@@ -43,7 +43,6 @@ class ModelConfig:
 
     dropout_masks: Optional[float] = None # We can randomly dropout object masks during training. The background is always preserved.
     per_timestep_conditioning: bool = True # Switches to the NeTI-style conditioning scheme where we get an embedding per T+L
-    enable_neti: bool = False # Even in the NeTI-style conditioning scheme, we may want to disable the NeTI mapper itself and use a different T+L enc
 
     use_dataset_segmentation: bool = True # Determines if we use the dataset GT or SAM
     cross_attn_dim: int = 1024

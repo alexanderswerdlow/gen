@@ -175,7 +175,7 @@ def get_experiments():
             training_layer_dropout=0.15,
         ),
         dataset=dict(train_dataset=dict(batch_size=10)),
-        inference=dict(use_ddim=True),
+        inference=dict(use_ddim=True, max_batch_size=4),
         trainer=dict(eval_every_n_steps=200),
         hydra_defaults=["movi_overfit", "movi_augmentation", "unet_lora"],
     )

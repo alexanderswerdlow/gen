@@ -8,6 +8,7 @@ import einx
 import hydra
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate import Accelerator
@@ -29,7 +30,7 @@ from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.tokenization_utils import get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
-
+from gen.models.utils import _init_weights
 
 class InputData(TypedDict):
     gen_pixel_values: Float[Tensor, "b c h w"]
@@ -70,7 +71,6 @@ class BaseMapper(Trainable):
         self.add_adapters()
 
         from gen.models.cross_attn.base_inference import infer_batch
-
         BaseMapper.infer_batch = infer_batch
 
     @property
@@ -79,13 +79,33 @@ class BaseMapper(Trainable):
 
     def initialize_custom_models(self):
         self.mapper = Mapper(cfg=self.cfg).to(self.cfg.trainer.device)
-
         self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder)
 
         if self.cfg.model.use_dataset_segmentation is False:
             from gen.models.encoders.sam import HQSam
-
             self.hqsam = HQSam(model_type="vit_b")
+
+        if self.cfg.model.clip_shift_scale_conditioning:
+            # This is very very bad practice
+            def _basic_init(module):
+                if isinstance(module, nn.Linear):
+                    torch.nn.init.xavier_uniform_(module.weight)
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0)
+                
+            clip_proj_layers = [] 
+            all_layer_data = [(k, v.shape[0]) for k,v in dict(self.unet.named_parameters()).items() if 'resnets' in k and 'conv1.weight' in k]
+            dims = []
+            dims.extend([v for k,v in all_layer_data if 'down_blocks' in k])
+            dims.extend([v for k,v in all_layer_data if 'mid_block' in k])
+            dims.extend([v for k,v in all_layer_data if 'up_blocks' in k])
+
+            for idx, dim in enumerate(dims):
+                clip_proj_layers.append(nn.Sequential(
+                    nn.Linear(self.cfg.model.encoder_dim, dim * 2),
+                ))
+            self.clip_proj_layers = nn.ModuleList(clip_proj_layers)
+            self.clip_proj_layers.apply(_basic_init)
 
     def initialize_diffusers_models(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
         # Load the tokenizer
@@ -233,6 +253,11 @@ class BaseMapper(Trainable):
             if set_grad:
                 self.controlnet.requires_grad_(True)
             self.controlnet.train()
+
+        if self.cfg.model.clip_shift_scale_conditioning:
+            if set_grad:
+                self.clip_proj_layers.requires_grad_(True)
+            self.clip_proj_layers.train()
 
         if hasattr(self, "controller"):
             self.controller.reset()
@@ -462,7 +487,13 @@ class BaseMapper(Trainable):
         conditioning_data.mask_batch_idx = mask_batch_idx
         conditioning_data.mask_instance_idx = mask_instance_idx
         if self.cfg.model.clip_shift_scale_conditioning:
-            conditioning_data.clip_feature_map = rearrange(clip_feature_map, "b (h w) d -> b d h w", h=latent_dim, w=latent_dim)
+            clip_feature_maps = []
+            for idx, layer in enumerate(self.clip_proj_layers):
+                proj_feature_map = layer(clip_feature_map)
+                clip_feature_maps.append(rearrange(proj_feature_map, "b (h w) d -> b d h w", h=latent_dim, w=latent_dim))
+
+            metadata_dict = AttentionMetadata(layer_idx=0, num_layers=len(self.clip_proj_layers), num_cond_vectors=len(self.clip_proj_layers))
+            conditioning_data.unet_kwargs["femb"] = (metadata_dict, clip_feature_maps)
 
         return conditioning_data
 
