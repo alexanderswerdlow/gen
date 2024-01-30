@@ -22,6 +22,7 @@ class InferenceConfig:
     visualize_embeds: bool = False
     infer_new_prompts: bool = False
     save_prompt_embeds: bool = False
+    vary_cfg_plot: bool = False
     max_batch_size: int = 16
 
     set_seed: bool = False

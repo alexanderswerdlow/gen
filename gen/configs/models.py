@@ -7,7 +7,7 @@ from hydra_zen.typing import Builds
 
 from gen.configs.utils import auto_store, store_child_config
 from gen.models.cross_attn.decoder import DecoderTransformer
-from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor, ViTFeatureExtractor
+from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor, ResNetFeatureExtractor, ViTFeatureExtractor
 
 
 class ModelType(Enum):
@@ -72,6 +72,7 @@ class ModelConfig:
     add_pos_emb_after_clip: bool = False
     use_dummy_mask: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
     weighted_object_loss: bool = False
+    unfreeze_resnet: bool = False
 
 
 @dataclass
@@ -95,4 +96,13 @@ store_child_config(
     child="basemapper_vit",
     encoder=builds(ViTFeatureExtractor, return_only="norm", populate_full_signature=False),
     encoder_dim=768,
+)
+store_child_config(
+    cls=ModelConfig,
+    group="model",
+    parent="basemapper",
+    child="basemapper_resnet",
+    encoder=builds(ResNetFeatureExtractor, return_only="layer2", pretrained=False, populate_full_signature=False),
+    encoder_dim=128,
+    unfreeze_resnet=True
 )

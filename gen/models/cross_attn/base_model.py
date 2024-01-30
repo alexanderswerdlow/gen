@@ -93,14 +93,6 @@ class BaseMapper(Trainable):
             self.hqsam = HQSam(model_type="vit_b")
 
         if self.cfg.model.clip_shift_scale_conditioning:
-            # This is very very bad practice
-            def _basic_init(module):
-                if isinstance(module, nn.Linear):
-                    torch.nn.init.xavier_uniform_(module.weight)
-                    if module.bias is not None:
-                        nn.init.constant_(module.bias, 0)
-
-                        
             def zero_module(module):
                 for p in module.parameters():
                     nn.init.zeros_(p)
@@ -118,7 +110,6 @@ class BaseMapper(Trainable):
                     nn.Conv2d(self.cfg.model.encoder_dim, dim * 2, kernel_size=1)
                 )
             self.clip_proj_layers = nn.ModuleList(clip_proj_layers)
-            # self.clip_proj_layers.apply(_basic_init)
             self.clip_proj_layers = zero_module(self.clip_proj_layers)
 
     def initialize_diffusers_models(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
@@ -230,6 +221,12 @@ class BaseMapper(Trainable):
                 if set_grad:
                     block.requires_grad_(True)
                 block.train()
+
+        if self.cfg.model.unfreeze_resnet:
+            for module in list(self.clip.base_model.children())[:6]:
+                if set_grad:
+                    module.requires_grad_(True)
+                module.train()
 
         if self.cfg.model.freeze_unet:
             if set_grad:
@@ -422,17 +419,14 @@ class BaseMapper(Trainable):
         dtype = self.dtype
 
         # isinstance fails with torch dynamo
-        if not isinstance(self.clip, BaseModel):
-            clip_feature_map = self.clip(((batch["gen_pixel_values"] + 1) / 2).to(device=device, dtype=dtype))
-            clip_feature_map = rearrange(clip_feature_map, "b d h w -> b (h w) d")
-        else:
-            clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype)).permute(1, 0, 2)
-            clip_feature_map = rearrange(clip_feature_map, "l b d -> b l d")
-            if self.cfg.model.add_pos_emb_after_clip:
-                clip_feature_map = clip_feature_map + self.clip.base_model.positional_embedding[None]
+        clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype)) # b l d
+        if self.cfg.model.add_pos_emb_after_clip:
+            clip_feature_map = clip_feature_map + self.clip.base_model.positional_embedding[None]
+
+        if 'resnet' not in self.clip.model_name:
             clip_feature_map = clip_feature_map[:, 1:, :]
 
-        latent_dim = int(math.sqrt(clip_feature_map.shape[1]))
+        latent_dim = round(math.sqrt(clip_feature_map.shape[1]))
         feature_map_masks = []
         mask_batch_idx = []
         mask_instance_idx = []
@@ -441,31 +435,35 @@ class BaseMapper(Trainable):
         for i in range(bs):
             one_hot_mask: Bool[Tensor, "d h w"] = batch["gen_segmentation"][i].permute(2, 0, 1).bool()
             one_hot_idx = torch.arange(one_hot_mask.shape[0], device=device)
-
+            
             if one_hot_mask.shape[0] == 0:
                 log_info("Warning, no masks found for this image")
                 continue
 
             if self.cfg.model.dropout_masks is not None and self.training:
-                mask = torch.rand(one_hot_mask.size(0)) > self.cfg.model.dropout_masks
+                dropout_mask = torch.rand(one_hot_mask.size(0)).to(device) > self.cfg.model.dropout_masks
                 if self.cfg.model.dropout_foreground_only:
-                    mask[self.cfg.model.background_mask_idx] = True  # We always keep the background mask
+                    dropout_mask[self.cfg.model.background_mask_idx] = True  # We always keep the background mask
                 elif self.cfg.model.dropout_background_only:
-                    mask[torch.arange(mask.shape[0]) != self.cfg.model.background_mask_idx] = True
+                    dropout_mask[torch.arange(dropout_mask.shape[0]) != self.cfg.model.background_mask_idx] = True
 
-                if mask.sum().item() == 0:
+                if dropout_mask.sum().item() == 0:
                     log_info("Warning, we would have dropped all masks but instead we preserved the background")
-                    mask[self.cfg.model.background_mask_idx] = True
+                    dropout_mask[self.cfg.model.background_mask_idx] = True
+            else:
+                dropout_mask = one_hot_mask.new_full((one_hot_mask.shape[0],), True, dtype=torch.bool)
 
-                one_hot_mask = one_hot_mask[mask]
-                one_hot_idx = one_hot_idx[mask]
+            empty_mask = torch.sum(one_hot_mask, dim=[1, 2]) > 64  # Remove empty masks. Because of flash attention bugs, we require a minimum of 64 pixels. 14 is too few.
 
-            empty_mask = torch.sum(one_hot_mask, dim=[1, 2]) > 0
-            one_hot_mask = one_hot_mask[empty_mask]  # Remove empty masks
-            one_hot_idx = one_hot_idx[empty_mask]
+            if (dropout_mask & empty_mask).sum().item() == 0:
+                dropout_mask[(~dropout_mask).nonzero(as_tuple=True)[0]] = True
+
+            combinbed_mask = dropout_mask & empty_mask
+            one_hot_mask = one_hot_mask[combinbed_mask]
+            one_hot_idx = one_hot_idx[combinbed_mask]
 
             if one_hot_mask.shape[0] == 0:
-                log_info("Warning, no masks found for this image!")
+                log_info("Warning, dropped out all masks for this image!")
                 continue
 
             assert batch["disc_pixel_values"].shape[-1] == batch["disc_pixel_values"].shape[-2]
@@ -576,6 +574,7 @@ class BaseMapper(Trainable):
             )
 
         if self.cfg.model.clip_shift_scale_conditioning:
+            assert not self.cfg.model.layer_specialization
             conditioning_data.encoder_hidden_states[:] = self.shift_scale_uncond_hidden_states
 
         return conditioning_data

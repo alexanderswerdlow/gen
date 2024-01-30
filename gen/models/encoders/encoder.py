@@ -78,7 +78,7 @@ class BaseModel(ABC, nn.Module):
             self.model = torch.compile(self.model, **compile_kwargs)
 
     def create_model_timm(self, model_name: str, **kwargs):
-        return timm.create_model(model_name, pretrained=True, **kwargs)
+        return timm.create_model(model_name, **kwargs)
 
     @abstractmethod
     def create_model(self, **kwargs):
@@ -128,17 +128,20 @@ class TimmModel(BaseModel):
     def transform(self):
         pretrained_cfg = timm.get_pretrained_cfg(self.model_name, allow_unregistered=False)
         cfg = resolve_data_config(pretrained_cfg=pretrained_cfg.to_dict())
-        if hasattr(self, "img_size"):
+        if hasattr(self, "img_size") and self.img_size is not None:
             cfg["input_size"] = self.img_size
         transform_ = create_transform(**cfg)
         if self.tensor_input:
             transform_.transforms = [x for x in transform_.transforms if not isinstance(x, torchvision.transforms.ToTensor)]
         return transform_
 
-    def create_model(self):
-        kwargs = {}
+    def create_model(self, **kwargs):
         if self.img_size is not None:
             kwargs["img_size"] = self.img_size
+
+        if "pretrained" not in kwargs:
+            kwargs["pretrained"] = True
+
         return super().create_model_timm(self.model_name, **kwargs)
 
 
@@ -198,9 +201,9 @@ class SwinV2(TimmModel):
         return self.model.forward(image)
 
 
-class ResNet50(TimmModel):
-    def __init__(self, model_name: str = "resnet50.fb_ssl_yfcc100m_ft_in1k"):
-        super().__init__(model_name=model_name)
+class ResNet(TimmModel):
+    def __init__(self, model_name: str = "resnet50.fb_ssl_yfcc100m_ft_in1k", **kwargs):
+        super().__init__(model_name=model_name, **kwargs)
 
     def pre_transform(self, image: ImArr, **kwargs):
         return image
@@ -210,7 +213,6 @@ class ResNet50(TimmModel):
 
     def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs):
         return self.model.forward(image)
-
 
 class TorchVisionModel(BaseModel):
     def __init__(self, model_builder: Callable, weights, **kwargs):
@@ -265,8 +267,8 @@ class ResNet18TorchVision(TorchVisionModel):
 
 
 class FeatureExtractorModel(BaseModel):
-    def create_model(self):
-        self.base_model = super().create_model()
+    def create_model(self, **kwargs):
+        self.base_model = super().create_model(**kwargs)
         return create_feature_extractor(self.base_model, return_nodes=self.return_nodes)
 
     def get_nodes(self):
@@ -326,12 +328,69 @@ class ViTFeatureExtractor(FeatureExtractorModel, VIT):
             "fc_norm": "fc_norm",
         },
         return_only: Optional[str] = None,
+        model_name: str = "vit_base_patch14_reg4_dinov2",
         **kwargs,
     ):
         self.return_nodes = return_nodes
         self.return_only = return_only
-        super().__init__(**kwargs)
+        super().__init__(model_name=model_name, **kwargs)
 
+
+class ResNetFeatureExtractor(FeatureExtractorModel, ResNet):
+    def __init__(
+        self,
+        return_nodes={
+            'layer2': 'layer2',
+        },
+        return_only: Optional[str] = None,
+        model_name = "resnet18",
+        pretrained: bool = True,
+        **kwargs,
+    ):
+        self.return_nodes = return_nodes
+        self.return_only = return_only
+        self.pretrained = pretrained
+        super().__init__(model_name=model_name, **kwargs)
+
+    def forward(self, input: torch.Tensor):
+        output = super().forward(input)
+        return rearrange(output, "b d h w -> b (h w) d")
+
+    def create_model(self):
+        return super().create_model(pretrained=self.pretrained)
+    
+    @functools.cached_property
+    def transform(self):
+        transform_ = super().transform
+        if self.tensor_input:
+            transform_.transforms = [x for x in transform_.transforms if not isinstance(x, torchvision.transforms.Resize)]
+        return transform_
+
+# class ResNetFeatureExtractor(ResNet):
+#     def __init__(
+#         self,
+#         model_name = "resnet18",
+#         pretrained: bool = True,
+#         return_nodes=None,
+#         return_only=None,
+#         **kwargs,
+#     ):
+#         self.pretrained = pretrained
+#         super().__init__(model_name=model_name, **kwargs)
+
+#     def create_model(self):
+#         return super().create_model(pretrained=self.pretrained, features_only=True)
+    
+#     def forward(self, image: ImArr, **kwargs):
+#         output = self.model(image)[2]
+#         return rearrange(output, "b d h w -> b (h w) d")
+    
+#     @functools.cached_property
+#     def transform(self):
+#         transform_ = super().transform
+#         if self.tensor_input:
+#             transform_.transforms = [x for x in transform_.transforms if not isinstance(x, torchvision.transforms.Resize)]
+#         return transform_
 
 def get_pil_img():
     return Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").scale(0.5).resize(224, 224).pil
@@ -363,9 +422,10 @@ def simple_example():
 
 def simple_example_():
     image = Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").scale(0.5).resize(224, 224).torch.cuda()
-    model = ViTFeatureExtractor().cuda()
+    model = ResNetFeatureExtractorV(return_only='layer2', pretrained=False).cuda()
     print(model.transform)
     output = model(image)
+    breakpoint()
     print(output.keys())
     breakpoint()
 

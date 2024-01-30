@@ -35,7 +35,6 @@ class MoviDataset(AbstractDataset, Dataset):
         override_text: bool = True,
         dataset: str = "movi_e",
         num_frames: int = 24,
-        augment: bool = False,
         num_dataset_frames: int = 24,
         num_objects: int = 23,
         augmentation: Optional[Augmentation] = Augmentation(),
@@ -66,7 +65,6 @@ class MoviDataset(AbstractDataset, Dataset):
 
         self.num_dataset_frames = num_dataset_frames
         self.num_frames = num_frames
-        self.augment = augment
         self.num_classes = num_objects
 
         self.augmentation = augmentation
@@ -177,17 +175,18 @@ if __name__ == "__main__":
         shuffle=True,
         subset_size=None,
         dataset="movi_e",
-        augment=False,
         num_frames=24,
         tokenizer=tokenizer,
-        path=MOVI_DATASET_PATH,
-        num_objects=23,
-        augmentation=Augmentation(minimal_source_augmentation=False, enable_crop=True),
+        path=MOVI_OVERFIT_DATASET_PATH,
+        num_objects=1,
+        augmentation=Augmentation(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
         return_video=True
     )
     dataloader = dataset.get_dataloader()
     for batch in dataloader:
-        st()
         from image_utils import Im, get_layered_image_from_binary_mask
-        Im(get_layered_image_from_binary_mask(batch['gen_segmentation'].squeeze(0))).save()
-        Im((batch['gen_pixel_values'][0] + 1) / 2).save(batch['video'][0])
+        gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'].squeeze(0))))
+        disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'].squeeze(0))))
+        print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][0, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][0, ..., 0].numel())
+        Im.concat_horizontal(gen_, disc_).save(batch['video'][0])
+

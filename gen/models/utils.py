@@ -100,7 +100,6 @@ class FourierPositionalEncodingNDims(nn.Module):
 def find_true_indices_batched(original, dh, dw):
     # Get dimensions
     masks, h, w = original.shape
-    # dh, dw, d = downscaled.shape
 
     # Reshape and unfold to align with the downscaled dimensions
     reshaped = original.unfold(1, h // dh, h // dh).unfold(2, w // dw, w // dw)

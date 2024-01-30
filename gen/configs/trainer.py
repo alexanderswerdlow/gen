@@ -25,7 +25,6 @@ class TrainerConfig:
     checkpoints_total_limit: Optional[int] = None
     ckpt: Optional[str] = None
     resume: bool = False
-    gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False
     learning_rate: float = 5e-6
     scale_lr_batch_size: bool = False

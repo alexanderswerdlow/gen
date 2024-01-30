@@ -1,24 +1,8 @@
 from hydra_zen import builds
-from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_OVERFIT_DATASET_PATH
-from gen.configs import trainer
-from gen.configs.models import ModelConfig
-from gen.configs.utils import mode_store, store_child_config
-from gen.models.encoders.encoder import ResNet50
-from accelerate.utils import PrecisionType
 
-import string
-import random
-from functools import partial
-from typing import Any, Optional
-from hydra_zen import builds, store
-from hydra_zen import make_config, store
-from hydra_zen.wrapper import default_to_config
-from dataclasses import is_dataclass
-from omegaconf import OmegaConf
-import inspect
-from typing import Optional, get_type_hints
-from omegaconf import DictConfig, OmegaConf
-from gen.configs.utils import destructure_store
+from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_OVERFIT_DATASET_PATH
+from gen.configs.utils import mode_store, store_child_config
+from gen.models.encoders.encoder import ResNetFeatureExtractor
 
 
 def get_override_dict(**kwargs):
@@ -109,7 +93,7 @@ def get_datasets(): # TODO: These do not need to be global configs
 def get_experiments():
     get_datasets()
 
-    mode_store(name="resnet", model=dict(encoder=builds(ResNet50, populate_full_signature=False), cross_attn_dim=256))
+    mode_store(name="resnet", model=dict(encoder=builds(ResNetFeatureExtractor, populate_full_signature=False), cross_attn_dim=256))
 
     mode_store(
         name="small_gpu",
@@ -117,6 +101,7 @@ def get_experiments():
         model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False)),
         trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False),
         inference=dict(visualize_attention_map=False, infer_new_prompts=False, max_batch_size=1, num_masks_to_remove=1, num_images_per_prompt=1),
+        debug=True
     )
 
     mode_store(
@@ -173,9 +158,10 @@ def get_experiments():
             decoder_transformer=dict(depth=2),
             training_cfg_dropout=0.12,
             training_layer_dropout=0.15,
+            weighted_object_loss=True,
         ),
-        dataset=dict(train_dataset=dict(batch_size=10)),
-        inference=dict(use_ddim=True, max_batch_size=4),
+        dataset=dict(train_dataset=dict(batch_size=20)),
+        inference=dict(use_ddim=True, max_batch_size=4, vary_cfg_plot=True),
         trainer=dict(eval_every_n_steps=200),
         hydra_defaults=["movi_overfit", "movi_augmentation", "unet_lora"],
     )

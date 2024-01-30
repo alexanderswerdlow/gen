@@ -48,12 +48,12 @@ class AbstractDataset(ABC):
     def collate_fn(self, batch):
         pass
 
-    def get_dataloader(self, g: Optional[Generator] = None):
+    def get_dataloader(self, generator: Optional[Generator] = None):
         orig_dataset = self.get_dataset()
         if self.allow_subset and self.subset_size is not None:
             if self.random_subset:
 
-                dataset = Subset(orig_dataset, list(RandomSampler(orig_dataset, num_samples=self.subset_size, generator=g)))
+                dataset = Subset(orig_dataset, list(RandomSampler(orig_dataset, num_samples=self.subset_size, generator=generator)))
             else:
                 idxs = list(range(len(orig_dataset)))
 

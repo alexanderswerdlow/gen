@@ -24,25 +24,29 @@ def infer_batch(
     self: BaseMapper,
     batch: InputData,
     num_images_per_prompt: int = 1,
-    pipeline_kwargs: Optional[dict] = None,
     conditioning_data: Optional[ConditioningData] = None,
+    **kwargs,
 ) -> tuple[list[Any], dict, ConditioningData]:
     if "input_ids" in batch:
         orig_input_ids = batch["input_ids"].clone()
         batch["input_ids"] = orig_input_ids.clone()
 
-    if pipeline_kwargs is None:
+    if conditioning_data is None or len(conditioning_data.unet_kwargs) == 0:
         with torch.cuda.amp.autocast():
             assert self.cfg.inference.empty_string_cfg
             conditioning_data = self.get_standard_conditioning_for_inference(batch=batch, conditioning_data=conditioning_data)
-            pipeline_kwargs = conditioning_data.unet_kwargs
+
+    if "guidance_scale" not in conditioning_data.unet_kwargs and "guidance_scale" not in kwargs:
+        kwargs["guidance_scale"] = self.cfg.inference.guidance_scale
+
+    if "num_images_per_prompt" not in conditioning_data.unet_kwargs:
+        kwargs['num_images_per_prompt'] = num_images_per_prompt
 
     desired_context = nullcontext() if self.cfg.model.freeze_unet else torch.cuda.amp.autocast()
     with desired_context:
         images = self.pipeline(
-            num_images_per_prompt=num_images_per_prompt,
-            guidance_scale=self.cfg.inference.guidance_scale,
-            **pipeline_kwargs,
+            **conditioning_data.unet_kwargs,
+            **kwargs
         ).images
 
     if "formatted_input_ids" in batch:
@@ -78,6 +82,14 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
         for i, prompt_image_ in enumerate(prompt_image)
     )
     ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
+
+    if self.cfg.inference.vary_cfg_plot:
+        scale_images = []
+        for scale in [1.0, 3.0, 5.0, 7.5, 10.0]:
+            prompt_images, conditioning_data = self.infer_batch(batch=batch, conditioning_data=conditioning_data, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, guidance_scale=0)
+            scale_images.append(Im.concat_vertical(prompt_images).write_text(f"CFG Scale: {scale:.1f}"))
+
+        ret["cfg_scale"] = Im.concat_horizontal(scale_images)
 
     if self.cfg.inference.save_prompt_embeds:
         assert conditioning_data.mask_instance_idx.shape[0] == conditioning_data.mask_tokens.shape[0]
@@ -129,33 +141,36 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
 
         batch_ = {}
         batch_["gen_segmentation"] = []
-        for j in range(orig_gen_segmentation.shape[-1])[: self.cfg.inference.num_masks_to_remove]:
-            batch_["gen_segmentation"].append(orig_gen_segmentation[..., torch.arange(orig_gen_segmentation.size(-1)) != j])
+        idxs = list(range(orig_gen_segmentation.shape[-1])[: self.cfg.inference.num_masks_to_remove])
+        for j in idxs:
+            mask_ = orig_gen_segmentation[..., torch.arange(orig_gen_segmentation.size(-1)) != j]
+            batch_["gen_segmentation"].append(mask_)
 
         batch_["gen_segmentation"] = torch.cat(batch_["gen_segmentation"], dim=0)
         batch_["input_ids"] = batch["input_ids"].repeat(batch_["gen_segmentation"].shape[0], 1)
 
-        for k, v in batch.items():
-            if isinstance(v, torch.Tensor) and k not in batch_:
-                assert v.shape[0] == 1
-                batch_[k] = repeat(v[0], "... -> h ...", h=batch_["gen_segmentation"].shape[0])
+        if batch_["gen_segmentation"].sum().item() != 0:
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor) and k not in batch_:
+                    assert v.shape[0] == 1
+                    batch_[k] = repeat(v[0], "... -> h ...", h=batch_["gen_segmentation"].shape[0])
 
-        prompt_images, _ = self.infer_batch(batch=batch_)
-        if self.cfg.model.break_a_scene_cross_attn_loss:
-            self.controller.reset()
+            prompt_images, _ = self.infer_batch(batch=batch_)
+            if self.cfg.model.break_a_scene_cross_attn_loss:
+                self.controller.reset()
 
-        removed_mask_imgs = []
-        for j in range(orig_gen_segmentation.shape[-1])[: self.cfg.inference.num_masks_to_remove]:
-            mask_image = Im(get_layered_image_from_binary_mask(orig_gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
-            mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
-            mask_alpha = (orig_gen_segmentation[..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
-            composited_image = orig_image.pil.copy().convert("RGBA")
-            composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
-            composited_image = composited_image.convert("RGB")
-            removed_mask_imgs.append(Im.concat_vertical(prompt_images[j], mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
+            removed_mask_imgs = []
+            for j in idxs:
+                mask_image = Im(get_layered_image_from_binary_mask(orig_gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+                mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
+                mask_alpha = (orig_gen_segmentation[..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+                composited_image = orig_image.pil.copy().convert("RGBA")
+                composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
+                composited_image = composited_image.convert("RGB")
+                removed_mask_imgs.append(Im.concat_vertical(prompt_images[j], mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
 
-        ret["validation"] = Im.concat_horizontal(ret["validation"], Im.concat_horizontal(*removed_mask_imgs), spacing=15)
-        batch["gen_segmentation"] = orig_gen_segmentation
+            ret["validation"] = Im.concat_horizontal(ret["validation"], Im.concat_horizontal(*removed_mask_imgs), spacing=15)
+            batch["gen_segmentation"] = orig_gen_segmentation
 
     if self.cfg.inference.infer_new_prompts:
         prompts = [

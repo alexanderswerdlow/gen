@@ -11,7 +11,7 @@ from kornia.augmentation.auto.rand_augment.rand_augment import RandAugment
 from kornia.augmentation.container import AugmentationSequential
 
 from gen.datasets.augmentation.utils import get_keypoints, get_viz_keypoints, process_output_keypoints, process_output_segmentation, viz
-from gen.datasets.utils import get_open_clip_transforms_v2, get_stable_diffusion_transforms
+from gen.datasets.utils import get_open_clip_transforms_v2, get_simple_transform, get_stable_diffusion_transforms
 
 randaug_policy: List[SUBPLOLICY_CONFIG] = [
     [("auto_contrast", 0, 1)],
@@ -50,7 +50,7 @@ class Augmentation:
         minimal_source_augmentation: bool = False,
         enable_crop: bool = True,
         enable_horizontal_flip: bool = True,
-        source_normalization: Callable = get_open_clip_transforms_v2(),
+        source_normalization: Callable = get_simple_transform(),
     ):
         self.source_resolution = source_resolution
         self.source_normalization = source_normalization
