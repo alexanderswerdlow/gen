@@ -74,6 +74,7 @@ class ModelConfig:
     use_dummy_mask: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
     weighted_object_loss: bool = False
     unfreeze_resnet: bool = False
+    attention_masking: bool = False
 
 
 @dataclass

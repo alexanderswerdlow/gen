@@ -21,7 +21,7 @@ def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: InputData, controller:
     attn_loss = 0
     batch_size: int = batch["disc_pixel_values"].shape[0]
     gen_seg_ = rearrange(batch["gen_segmentation"], "b h w c -> b c () h w").float()
-    learnable_idxs = (batch["input_ids"] == cond.placeholder_token).nonzero(as_tuple=True)
+    learnable_idxs = (batch["formatted_input_ids"] == cond.placeholder_token).nonzero(as_tuple=True)
 
     for batch_idx in range(batch_size):
         GT_masks = F.interpolate(input=gen_seg_[batch_idx], size=(16, 16))  # We interpolate per mask separately

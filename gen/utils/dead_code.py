@@ -285,3 +285,8 @@ def viz():
             # if step >= len(self.train_dataloader) - 1:
             #     log_info(f"Exited early at step {global_step}")
             #     break
+    
+#     torch.sum(feature_map_mask_, dim=[0]) >= 1).sum()
+
+# from image_utils import get_layered_image_from_binary_mask, Im, ChannelRange
+# Im(get_layered_image_from_binary_mask(feature_map_mask_.permute(1, 2, 0)), channel_range=ChannelRange.UINT8)

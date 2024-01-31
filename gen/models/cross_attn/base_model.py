@@ -62,6 +62,7 @@ class AttentionMetadata(TypedDict):
     num_layers: int
     num_cond_vectors: int
     add_pos_emb: bool
+    attention_mask: Optional[Float[Tensor, "b d h w"]]
 
 
 class BaseMapper(Trainable):
@@ -574,21 +575,22 @@ class BaseMapper(Trainable):
             end_of_prompt = cur_ids[placeholder_locs[0] + 1 :]
             additional_eos_token = torch.tensor([self.eos_token_id]).to(self.device)
 
-            batch["formatted_input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, additional_eos_token), dim=0)[
-                : cur_ids.shape[0]
-            ]
+            batch["formatted_input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, additional_eos_token), dim=0)[:cur_ids.shape[0]]
 
         # Overwrite mask locations
         learnable_idxs = (batch["formatted_input_ids"] == self.placeholder_token_id).nonzero(as_tuple=True)
         cond.encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
 
         if self.cfg.model.layer_specialization:
-            # breakpoint()
             cond.unet_kwargs["cross_attention_kwargs"] = dict(
                 attn_meta=dict(
-                    layer_idx=0, num_layers=self.cfg.model.num_conditioning_pairs * 2, num_cond_vectors=self.cfg.model.num_conditioning_pairs, add_pos_emb=self.cfg.model.add_pos_emb
+                    layer_idx=0,
+                    num_layers=self.cfg.model.num_conditioning_pairs * 2,
+                    num_cond_vectors=self.cfg.model.num_conditioning_pairs,
+                    add_pos_emb=self.cfg.model.add_pos_emb
                 )
             )
+
 
         if self.cfg.model.clip_shift_scale_conditioning:
             assert not self.cfg.model.layer_specialization
@@ -605,7 +607,7 @@ class BaseMapper(Trainable):
         if cond is None:
             cond = ConditioningData()
 
-        cond.placeholder_token = (self.placeholder_token_id,)
+        cond.placeholder_token = self.placeholder_token_id
         cond.encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype)
 
         if add_conditioning:
@@ -654,6 +656,37 @@ class BaseMapper(Trainable):
             cond.encoder_hidden_states[:, dropout_idx] = self.uncond_hidden_states
             cond.encoder_hidden_states = einx.rearrange("b n t d -> b t (n d)", cond.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
 
+
+    def attention_masking(self, batch: InputData, cond: Optional[ConditioningData]):
+        assert "cross_attention_kwargs" in cond.unet_kwargs
+        assert "attn_meta" in cond.unet_kwargs["cross_attention_kwargs"]
+
+        batch_size: int = batch["disc_pixel_values"].shape[0]
+        gen_seg_ = rearrange(batch["gen_segmentation"], "b h w c -> b c () h w").float()
+        learnable_idxs = (batch["formatted_input_ids"] == cond.placeholder_token).nonzero(as_tuple=True)
+        h, w = 64, 64
+
+        all_masks = []
+        for batch_idx in range(batch_size):
+            if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[batch_idx].item():
+                all_masks.append(torch.ones((batch["formatted_input_ids"].shape[-1], h, w)).to(device=learnable_idxs[0].device, dtype=torch.bool))
+                continue
+
+            cur_batch_mask = learnable_idxs[0] == batch_idx  # Find the masks for this batch
+            token_indices = learnable_idxs[1][cur_batch_mask]
+            segmentation_indices = cond.mask_instance_idx[cur_batch_mask] 
+
+            GT_masks = F.interpolate(input=gen_seg_[batch_idx][segmentation_indices], size=(h, w)).squeeze(1) > 0.5
+            tensor_nhw = torch.zeros(batch["formatted_input_ids"].shape[-1], h, w, dtype=torch.bool)
+
+            for i, d in enumerate(token_indices):
+                tensor_nhw[d] = GT_masks[i]
+
+            tensor_nhw[:, (~tensor_nhw.any(dim=0))] = True
+            all_masks.append(tensor_nhw)
+
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attention_mask"] = torch.stack(all_masks, dim=0).to(dtype=torch.bool)
+
     @beartype
     def forward(self, batch: InputData):
         batch = InputData(**batch)
@@ -680,6 +713,9 @@ class BaseMapper(Trainable):
         cond = self.get_hidden_state(batch, add_conditioning=True)
         if self.training:
             self.dropout_cfg(cond)
+
+        if self.cfg.model.attention_masking:
+            self.attention_masking(batch, cond)
 
         encoder_hidden_states = cond.encoder_hidden_states
 

@@ -1,15 +1,15 @@
+import math
 from typing import Callable, Optional, Union
-from einops import rearrange
 
 import torch
 import xformers
 import xformers.ops
 from diffusers.models.attention_processor import Attention
 from diffusers.utils import USE_PEFT_BACKEND
+from einops import rearrange
 
 from gen.models.cross_attn.base_model import AttentionMetadata
-from gen.models.utils import positionalencoding2d
-import math
+from gen.models.utils import find_true_indices_batched, positionalencoding2d
 
 
 def register_layerwise_attention(unet):
@@ -93,6 +93,19 @@ class XFormersAttnProcessor:
             # we do this explicitly because xformers doesn't broadcast the singleton dimension for us.
             _, query_tokens, _ = hidden_states.shape
             attention_mask = attention_mask.expand(-1, query_tokens, -1)
+
+        if encoder_hidden_states is not None and attn_meta is not None and "attention_mask" in attn_meta:
+            attention_mask = attn_meta["attention_mask"]
+            resized_attention_masks = []
+            latent_dim = round(math.sqrt(hidden_states.shape[1]))
+            for b in range(batch_size):
+                resized_attention_masks.append(find_true_indices_batched(original=attention_mask[b], dh=latent_dim, dw=latent_dim))
+            resized_attention_masks = torch.stack(resized_attention_masks).to(hidden_states.device)
+            resized_attention_masks = rearrange(resized_attention_masks, 'b tokens h w -> b (h w) tokens')
+            attention_mask = resized_attention_masks.repeat_interleave(attn.heads, dim=0)
+            attention_mask = (1 - attention_mask.to(torch.bfloat16)) * -10000.0
+            attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((*attention_mask.shape[:2], 3))], dim=-1).contiguous()
+            attention_mask = attention_mask[..., :77] # See: https://github.com/facebookresearch/xformers/issues/683
 
         if attn.group_norm is not None:
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)

@@ -3,11 +3,15 @@
 ## Install Instructions
 
 ```
+export TORCH_CUDA_ARCH_LIST="8.0;8.6" # only works on Ampere or newer [A100, A6000 ADA, A500, etc.]
+
+conda config --set solver libmamba
+
 conda create -n gen python=3.10
 
 conda activate gen
 
-pip install 'torch==2.1.*' 'torchvision==0.16.*' 'xformers==0.0.23' --index-url https://download.pytorch.org/whl/cu121
+pip install 'torch==2.2.*' 'torchvision==0.17.*' 'xformers==0.0.24' --index-url https://download.pytorch.org/whl/cu118
 pip install pip install ninja wheel packaging; pip install flash-attn --no-build-isolation
 pip install -r requirements.txt
 ```
