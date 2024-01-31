@@ -158,12 +158,25 @@ def get_experiments():
             decoder_transformer=dict(depth=2),
             training_cfg_dropout=0.12,
             training_layer_dropout=0.15,
-            # weighted_object_loss
         ),
         dataset=dict(train_dataset=dict(batch_size=20)),
         inference=dict(use_ddim=True, max_batch_size=4, vary_cfg_plot=True),
         trainer=dict(eval_every_n_steps=200),
         hydra_defaults=["movi_overfit", "movi_augmentation", "unet_lora"],
+    )
+
+    mode_store(
+        name="disable_unknown_configs",
+        model=dict(
+            add_pos_emb=False,
+            finetune_variable_learning_rate=False,
+            training_cfg_dropout=None,
+            training_layer_dropout=None,
+            weighted_object_loss=False,
+            break_a_scene_masked_loss=False,
+            break_a_scene_cross_attn_loss=False,
+        ),
+        inference=dict(use_ddim=False)
     )
 
     mode_store(

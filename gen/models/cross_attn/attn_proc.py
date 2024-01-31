@@ -11,7 +11,6 @@ from einops import rearrange
 from gen.models.cross_attn.base_model import AttentionMetadata
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
 
-
 def register_layerwise_attention(unet):
     attn_procs = {}
     cross_att_count = 0
@@ -134,7 +133,6 @@ class XFormersAttnProcessor:
             attention_mask = (1 - attention_mask.to(query)) * -10000.0
             attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((*attention_mask.shape[:2], 3))], dim=-1).contiguous()
             attention_mask = attention_mask[..., :77] # See: https://github.com/facebookresearch/xformers/issues/683
-            # print(attention_mask.shape, query.shape, key.shape, value.shape)
         # END MODIFICATION
 
         hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale)

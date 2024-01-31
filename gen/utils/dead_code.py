@@ -290,3 +290,25 @@ def viz():
 
 # from image_utils import get_layered_image_from_binary_mask, Im, ChannelRange
 # Im(get_layered_image_from_binary_mask(feature_map_mask_.permute(1, 2, 0)), channel_range=ChannelRange.UINT8)
+
+
+
+            # attn_proc
+            # print(torch.sum(resized_attention_masks, dim=[1, 2]) / (resized_attention_masks.numel() / resized_attention_masks.shape[0]))
+            # print(torch.sum(torch.sum(resized_attention_masks, dim=-1) > 1, dim=1) / (latent_dim**2))
+
+            # print(torch.sum(attention_mask[:10], dim=[1, 2]) / (resized_attention_masks.numel() / resized_attention_masks.shape[0]))
+            # print("\n\n")
+    
+            # print(attention_mask.shape, query.shape, key.shape, value.shape)
+            # cur_idx = (attn_meta["layer_idx"] - 1) % attn_meta["num_layers"]
+            # if cur_idx == 0:
+            #     from image_utils import get_layered_image_from_binary_mask, Im, ChannelRange
+            #     imgs_ = []
+            #     for b in range(batch_size):
+            #         img_ = Im(get_layered_image_from_binary_mask(rearrange(attention_mask[b * attn.heads] > -1, '(h w) tokens -> h w tokens', h=latent_dim)), channel_range=ChannelRange.UINT8)
+            #         imgs_.append(img_)
+
+            #     global idx_
+            #     Im.concat_horizontal(*imgs_).save(f'{idx_}_attn.png')
+            #     idx_ += 1

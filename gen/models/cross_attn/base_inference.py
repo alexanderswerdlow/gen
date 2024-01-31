@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from calendar import c
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -42,6 +41,10 @@ def infer_batch(
     if "num_images_per_prompt" not in cond.unet_kwargs:
         kwargs["num_images_per_prompt"] = num_images_per_prompt
 
+    # CFG must be enabled when masking as we make this assumption in attn_proc
+    if self.cfg.model.attention_masking:
+        assert kwargs["guidance_scale"] > 1
+
     desired_context = nullcontext() if self.cfg.model.freeze_unet else torch.cuda.amp.autocast()
     with desired_context:
         images = self.pipeline(**cond.unet_kwargs, **kwargs).images
@@ -82,14 +85,14 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
 
     if self.cfg.inference.vary_cfg_plot:
         scale_images = []
-        for scale in [1.0, 3.0, 5.0, 7.5, 10.0]:
-            if self.cfg.model.attention_masking and scale <= 1.1: continue # CFG must be enabled when masking
+        for scale in [0.0, 3.0, 5.0, 7.5, 10.0]:
+            if self.cfg.model.attention_masking and scale <= 1.0: continue 
             prompt_images, cond = self.infer_batch(
-                batch=batch, cond=cond, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, guidance_scale=0
+                batch=batch, cond=cond, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, guidance_scale=scale
             )
             scale_images.append(Im.concat_vertical(prompt_images).write_text(f"CFG Scale: {scale:.1f}"))
 
-        ret["cfg_scale"] = Im.concat_horizontal(orig_image.to('cpu').copy.write_text("GT"), *scale_images)
+        ret["cfg_scale"] = Im.concat_horizontal(orig_image.to("cpu").copy.write_text("GT"), *scale_images)
 
     if self.cfg.inference.save_prompt_embeds:
         assert cond.mask_instance_idx.shape[0] == cond.mask_tokens.shape[0]
