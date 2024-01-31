@@ -662,6 +662,7 @@ class BaseMapper(Trainable):
         assert "attn_meta" in cond.unet_kwargs["cross_attention_kwargs"]
 
         batch_size: int = batch["disc_pixel_values"].shape[0]
+        device: torch.device = batch["disc_pixel_values"].device
         gen_seg_ = rearrange(batch["gen_segmentation"], "b h w c -> b c () h w").float()
         learnable_idxs = (batch["formatted_input_ids"] == cond.placeholder_token).nonzero(as_tuple=True)
         h, w = 64, 64
@@ -669,7 +670,7 @@ class BaseMapper(Trainable):
         all_masks = []
         for batch_idx in range(batch_size):
             if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[batch_idx].item():
-                all_masks.append(torch.ones((batch["formatted_input_ids"].shape[-1], h, w)).to(device=learnable_idxs[0].device, dtype=torch.bool))
+                all_masks.append(torch.ones((batch["formatted_input_ids"].shape[-1], h, w)).to(device=device, dtype=torch.bool))
                 continue
 
             cur_batch_mask = learnable_idxs[0] == batch_idx  # Find the masks for this batch
@@ -683,7 +684,7 @@ class BaseMapper(Trainable):
                 tensor_nhw[d] = GT_masks[i]
 
             tensor_nhw[:, (~tensor_nhw.any(dim=0))] = True
-            all_masks.append(tensor_nhw)
+            all_masks.append(tensor_nhw.to(device))
 
         cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attention_mask"] = torch.stack(all_masks, dim=0).to(dtype=torch.bool)
 

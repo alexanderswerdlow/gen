@@ -94,6 +94,7 @@ class XFormersAttnProcessor:
             _, query_tokens, _ = hidden_states.shape
             attention_mask = attention_mask.expand(-1, query_tokens, -1)
 
+        # START MODIFICATION
         if encoder_hidden_states is not None and attn_meta is not None and "attention_mask" in attn_meta:
             attention_mask = attn_meta["attention_mask"]
             resized_attention_masks = []
@@ -106,6 +107,7 @@ class XFormersAttnProcessor:
             attention_mask = (1 - attention_mask.to(torch.bfloat16)) * -10000.0
             attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((*attention_mask.shape[:2], 3))], dim=-1).contiguous()
             attention_mask = attention_mask[..., :77] # See: https://github.com/facebookresearch/xformers/issues/683
+        # END MODIFICATION
 
         if attn.group_norm is not None:
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
