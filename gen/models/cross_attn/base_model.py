@@ -616,6 +616,9 @@ class BaseMapper(Trainable):
 
             cond = self.update_hidden_state_with_mask_tokens(batch, cond)
 
+            if self.cfg.model.attention_masking:
+                self.attention_masking(batch, cond)
+
         return cond
 
     def get_controlnet_conditioning(self, batch):
@@ -645,6 +648,10 @@ class BaseMapper(Trainable):
             cond.encoder_hidden_states[dropout_idx] = uncond_encoder_hidden_states
             cond.batch_cond_dropout = dropout_idx
 
+            if self.cfg.model.attention_masking:
+                attn_mask = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attention_mask"]
+                attn_mask[dropout_idx] = torch.ones((77, 64, 64)).to(device=cond.encoder_hidden_states.device, dtype=torch.bool)
+
         # We also might dropout only specific pairs of layers. In this case, we use the same uncond embeddings.
         # Note that there is a rare chance that we could dropout all layers but still compute loss.
         if self.cfg.model.layer_specialization and self.cfg.model.training_layer_dropout is not None:
@@ -665,14 +672,10 @@ class BaseMapper(Trainable):
         device: torch.device = batch["disc_pixel_values"].device
         gen_seg_ = rearrange(batch["gen_segmentation"], "b h w c -> b c () h w").float()
         learnable_idxs = (batch["formatted_input_ids"] == cond.placeholder_token).nonzero(as_tuple=True)
-        h, w = 64, 64
+        h, w = 64, 64 # Max latent size in U-Net
 
         all_masks = []
         for batch_idx in range(batch_size):
-            if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[batch_idx].item():
-                all_masks.append(torch.ones((batch["formatted_input_ids"].shape[-1], h, w)).to(device=device, dtype=torch.bool))
-                continue
-
             cur_batch_mask = learnable_idxs[0] == batch_idx  # Find the masks for this batch
             token_indices = learnable_idxs[1][cur_batch_mask]
             segmentation_indices = cond.mask_instance_idx[cur_batch_mask] 
@@ -714,9 +717,6 @@ class BaseMapper(Trainable):
         cond = self.get_hidden_state(batch, add_conditioning=True)
         if self.training:
             self.dropout_cfg(cond)
-
-        if self.cfg.model.attention_masking:
-            self.attention_masking(batch, cond)
 
         encoder_hidden_states = cond.encoder_hidden_states
 

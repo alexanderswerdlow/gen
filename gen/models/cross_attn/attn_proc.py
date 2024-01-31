@@ -117,10 +117,15 @@ class XFormersAttnProcessor:
             attention_mask = attn_meta["attention_mask"]
             resized_attention_masks = []
             latent_dim = round(math.sqrt(hidden_states.shape[1]))
-            for b in range(batch_size):
+            for b in range(attention_mask.shape[0]):
                 resized_attention_masks.append(find_true_indices_batched(original=attention_mask[b], dh=latent_dim, dw=latent_dim))
             resized_attention_masks = torch.stack(resized_attention_masks).to(hidden_states.device)
             resized_attention_masks = rearrange(resized_attention_masks, 'b tokens h w -> b (h w) tokens')
+            if resized_attention_masks.shape[0] != batch_size:
+                # For CFG, we batch [uncond, cond]. To make it simpler, we correct the attention mask here [instead of in the pipeline code]
+                assert resized_attention_masks.shape[0] * 2 == batch_size, "Batch size of the attention mask is incorrect"
+                resized_attention_masks = torch.cat([resized_attention_masks.new_full(resized_attention_masks.shape, True), resized_attention_masks], dim=0)
+
             attention_mask = resized_attention_masks.repeat_interleave(attn.heads, dim=0)
             attention_mask = (1 - attention_mask.to(query)) * -10000.0
             attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((*attention_mask.shape[:2], 3))], dim=-1).contiguous()
