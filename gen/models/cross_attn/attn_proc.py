@@ -94,21 +94,6 @@ class XFormersAttnProcessor:
             _, query_tokens, _ = hidden_states.shape
             attention_mask = attention_mask.expand(-1, query_tokens, -1)
 
-        # START MODIFICATION
-        if encoder_hidden_states is not None and attn_meta is not None and "attention_mask" in attn_meta:
-            attention_mask = attn_meta["attention_mask"]
-            resized_attention_masks = []
-            latent_dim = round(math.sqrt(hidden_states.shape[1]))
-            for b in range(batch_size):
-                resized_attention_masks.append(find_true_indices_batched(original=attention_mask[b], dh=latent_dim, dw=latent_dim))
-            resized_attention_masks = torch.stack(resized_attention_masks).to(hidden_states.device)
-            resized_attention_masks = rearrange(resized_attention_masks, 'b tokens h w -> b (h w) tokens')
-            attention_mask = resized_attention_masks.repeat_interleave(attn.heads, dim=0)
-            attention_mask = (1 - attention_mask.to(torch.bfloat16)) * -10000.0
-            attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((*attention_mask.shape[:2], 3))], dim=-1).contiguous()
-            attention_mask = attention_mask[..., :77] # See: https://github.com/facebookresearch/xformers/issues/683
-        # END MODIFICATION
-
         if attn.group_norm is not None:
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
@@ -125,6 +110,21 @@ class XFormersAttnProcessor:
         query = attn.head_to_batch_dim(query).contiguous()
         key = attn.head_to_batch_dim(key).contiguous()
         value = attn.head_to_batch_dim(value).contiguous()
+
+        # START MODIFICATION
+        if encoder_hidden_states is not None and attn_meta is not None and "attention_mask" in attn_meta:
+            attention_mask = attn_meta["attention_mask"]
+            resized_attention_masks = []
+            latent_dim = round(math.sqrt(hidden_states.shape[1]))
+            for b in range(batch_size):
+                resized_attention_masks.append(find_true_indices_batched(original=attention_mask[b], dh=latent_dim, dw=latent_dim))
+            resized_attention_masks = torch.stack(resized_attention_masks).to(hidden_states.device)
+            resized_attention_masks = rearrange(resized_attention_masks, 'b tokens h w -> b (h w) tokens')
+            attention_mask = resized_attention_masks.repeat_interleave(attn.heads, dim=0)
+            attention_mask = (1 - attention_mask.to(query)) * -10000.0
+            attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((*attention_mask.shape[:2], 3))], dim=-1).contiguous()
+            attention_mask = attention_mask[..., :77] # See: https://github.com/facebookresearch/xformers/issues/683
+        # END MODIFICATION
 
         hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale)
         hidden_states = hidden_states.to(query.dtype)
