@@ -88,8 +88,8 @@ class Trainer:
                     summary(model, col_names=("trainable", "num_params"), depth=3)
 
                 if (param_groups_ := self.model.get_param_groups()) is not None:
-                    assert len([d['params'] for d in param_groups_]) == len(get_named_params(self.models).values())
-
+                    assert len([p for d_ in param_groups_ for p in list(d_['params'])]) == len(get_named_params(self.models).values())
+                    
         validate_params(self.models, self.dtype)
 
     def init_dataloader(self):
@@ -300,7 +300,7 @@ class Trainer:
                         self.checkpoint(state)
 
                     if (
-                        check_every_n_steps(state, self.cfg.trainer.eval_every_n_steps, run_first=self.cfg.trainer.eval_on_start, all_processes=True)
+                        check_every_n_steps(state, self.cfg.trainer.eval_every_n_steps, run_first=self.cfg.trainer.eval_on_start, all_processes=True, decay_steps=True)
                         or (self.cfg.trainer.eval_on_start and global_step == initial_global_step)
                         or check_every_n_epochs(state, self.cfg.trainer.eval_every_n_epochs, all_processes=True)
                     ):

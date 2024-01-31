@@ -57,7 +57,8 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module) 
         first_epoch = 0
         log_info(f"Continuing from epoch {first_epoch} and global step {global_step}")
         return global_step
-        
+
+
 def handle_checkpointing_dirs(cfg: BaseConfig, prefix: str):
     # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
     if cfg.trainer.checkpoints_total_limit is not None:
@@ -86,6 +87,7 @@ class TrainingState:
     true_step: int
     epoch: int
 
+
 class Trainable(nn.Module, ABC):
     @abstractmethod
     def forward(self, batch: dict):
@@ -99,7 +101,8 @@ class Trainable(nn.Module, ABC):
     def set_inference_mode(self):
         ...
 
-    def get_param_groups(self) -> Optional[dict[str, Any]]: return None
+    def get_param_groups(self) -> Optional[dict[str, Any]]:
+        return None
 
     @abstractmethod
     def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):
@@ -107,9 +110,21 @@ class Trainable(nn.Module, ABC):
 
     def run_inference(self, batch: dict, state: TrainingState) -> dict[str, Im]:
         ...
-    
 
-def check_every_n_steps(state: TrainingState, n: int, run_first: bool = False, all_processes: bool = False):
+
+def check_every_n_steps(
+    state: TrainingState,
+    n: int,
+    run_first: bool = False,
+    all_processes: bool = False,
+    decay_steps: bool = False,
+    max_eval_interval: Optional[int] = None,
+    decrease_n_runs: Optional[int] = None,
+):
+    if decay_steps:
+        max_eval_interval = max_eval_interval or n * 5
+        decrease_n_runs = decrease_n_runs or 5
+        n = min(n * ((state.global_step // (decrease_n_runs * n)) + 1), max_eval_interval)
     return (state.global_step % n == 0 and (run_first or state.global_step > 0)) and (is_main_process() or all_processes)
 
 
@@ -151,6 +166,7 @@ def unwrap(model):
         return extract_model_from_parallel(model)
     else:
         from torch.nn.parallel import DistributedDataParallel
+
         if isinstance(model, DistributedDataParallel):
             return model.module
         else:
@@ -158,10 +174,14 @@ def unwrap(model):
 
 
 if __name__ == "__main__":
-    assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10)
-    assert not check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10, run_first=True)
-    assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=10, epoch=0), 10)
+    # assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10)
+    # assert not check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10, run_first=True)
+    # assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=10, epoch=0), 10)
 
-    assert check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=0), 1)
-    assert not check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=0), 1, run_first=True)
-    assert check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=5), 5)
+    # assert check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=0), 1)
+    # assert not check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=0), 1, run_first=True)
+    # assert check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=5), 5)
+
+    for i in range(50000):
+        if check_every_n_steps(TrainingState(epoch_step=i, num_epoch_steps=10, global_step=i, epoch=0, true_step=i), 500, decay_steps=True):
+            print(i)

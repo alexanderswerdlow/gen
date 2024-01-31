@@ -70,7 +70,7 @@ class ModelConfig:
     num_conditioning_pairs: int = 8 # Number of cross-attentions between U-Net latents and text-tokens
 
     clip_shift_scale_conditioning: bool = False # Whether to use the CLIP shift and scale embeddings as conditioning
-    add_pos_emb_after_clip: bool = False
+    add_pos_emb: bool = False
     use_dummy_mask: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
     weighted_object_loss: bool = False
     unfreeze_resnet: bool = False

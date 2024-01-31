@@ -1,4 +1,5 @@
 from typing import Callable, Optional, Union
+from einops import rearrange
 
 import torch
 import xformers
@@ -7,6 +8,8 @@ from diffusers.models.attention_processor import Attention
 from diffusers.utils import USE_PEFT_BACKEND
 
 from gen.models.cross_attn.base_model import AttentionMetadata
+from gen.models.utils import positionalencoding2d
+import math
 
 
 def register_layerwise_attention(unet):
@@ -15,8 +18,8 @@ def register_layerwise_attention(unet):
     for name in unet.attn_processors.keys():
         if not (name.startswith("mid_block") or name.startswith("up_blocks") or name.startswith("down_blocks")):
             continue
-        
-        if '.attn2.' in name: # Cross-attn layers are named 'attn2'
+
+        if ".attn2." in name:  # Cross-attn layers are named 'attn2'
             cross_att_count += 1
 
         attn_procs[name] = XFormersAttnProcessor()
@@ -71,11 +74,14 @@ class XFormersAttnProcessor:
             cond_idx = min(cur_idx, (attn_meta["num_layers"] - 1) - cur_idx)
             encoder_hidden_states = encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[cond_idx]
             attn_meta["layer_idx"] = attn_meta["layer_idx"] + 1
-        # END MODIFICATION
             
-        batch_size, key_tokens, _ = (
-            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
-        )
+            if attn_meta["add_pos_emb"]:
+                h, w = round(math.sqrt(hidden_states.shape[1])), round(math.sqrt(hidden_states.shape[1]))
+                pos_emb = positionalencoding2d(hidden_states.shape[-1], h, w).to(hidden_states)
+                hidden_states = hidden_states + rearrange(pos_emb, "d h w -> () (h w) d")
+        # END MODIFICATION
+
+        batch_size, key_tokens, _ = hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
 
         attention_mask = attn.prepare_attention_mask(attention_mask, key_tokens, batch_size)
         if attention_mask is not None:
@@ -105,9 +111,7 @@ class XFormersAttnProcessor:
         key = attn.head_to_batch_dim(key).contiguous()
         value = attn.head_to_batch_dim(value).contiguous()
 
-        hidden_states = xformers.ops.memory_efficient_attention(
-            query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale
-        )
+        hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale)
         hidden_states = hidden_states.to(query.dtype)
         hidden_states = attn.batch_to_head_dim(hidden_states)
 

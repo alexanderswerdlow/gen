@@ -27,6 +27,7 @@ class Mapper(nn.Module):
                 nn.Linear(cfg.model.token_embedding_dim // self.cfg.model.num_conditioning_pairs, cfg.model.token_embedding_dim), 
                 nn.LayerNorm(cfg.model.token_embedding_dim)
             )
+
         self.apply(_init_weights)
 
 
