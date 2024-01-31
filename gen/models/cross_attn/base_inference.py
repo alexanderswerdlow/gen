@@ -83,6 +83,7 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     if self.cfg.inference.vary_cfg_plot:
         scale_images = []
         for scale in [1.0, 3.0, 5.0, 7.5, 10.0]:
+            if self.cfg.model.attention_masking and scale <= 1.1: continue # CFG must be enabled when masking
             prompt_images, cond = self.infer_batch(
                 batch=batch, cond=cond, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, guidance_scale=0
             )

@@ -15,7 +15,10 @@ conda activate gen
 pip install 'torch==2.2.*' 'torchvision==0.17.*' --index-url https://download.pytorch.org/whl/cu118
 pip install pip install ninja wheel packaging
 pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
+
 pip install flash-attn --no-build-isolation
+cd csrc/fused_dense_lib && pip install .
+
 pip install -r requirements.txt
 ```
 

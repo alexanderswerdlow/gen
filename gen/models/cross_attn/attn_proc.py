@@ -123,7 +123,11 @@ class XFormersAttnProcessor:
             resized_attention_masks = rearrange(resized_attention_masks, 'b tokens h w -> b (h w) tokens')
             if resized_attention_masks.shape[0] != batch_size:
                 # For CFG, we batch [uncond, cond]. To make it simpler, we correct the attention mask here [instead of in the pipeline code]
-                assert resized_attention_masks.shape[0] * 2 == batch_size, "Batch size of the attention mask is incorrect"
+                assert batch_size % 2 == 0, "Batch size of the attention mask is incorrect"
+                # TODO: This is very risky. We assume that the first half is always uncond and we may need to repeat the cond at the end
+                # Essentially, CFG must always be enabled.
+                if (cond_batch_size := batch_size // 2) > 1:
+                    resized_attention_masks = resized_attention_masks.repeat_interleave(cond_batch_size, dim=0)
                 resized_attention_masks = torch.cat([resized_attention_masks.new_full(resized_attention_masks.shape, True), resized_attention_masks], dim=0)
 
             attention_mask = resized_attention_masks.repeat_interleave(attn.heads, dim=0)
