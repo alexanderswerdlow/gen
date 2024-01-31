@@ -87,9 +87,9 @@ class Trainer:
                 if is_main_process():
                     summary(model, col_names=("trainable", "num_params"), depth=3)
 
-                if (param_groups_ := self.model.get_param_groups()) is not None:
+                if (param_groups_ := unwrap(self.model).get_param_groups()) is not None:
                     assert len([p for d_ in param_groups_ for p in list(d_['params'])]) == len(get_named_params(self.models).values())
-                    
+
         validate_params(self.models, self.dtype)
 
     def init_dataloader(self):
@@ -113,7 +113,7 @@ class Trainer:
     def init_optimizer(self):
         optimizer_class = torch.optim.AdamW
         self.optimizer = optimizer_class(
-            get_named_params(self.models).values() if self.model.get_param_groups() is None else self.model.get_param_groups(),
+            get_named_params(self.models).values() if (params_ := unwrap(self.model).get_param_groups()) is None else params_,
             lr=self.cfg.trainer.learning_rate,
             betas=(self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2),
             weight_decay=self.cfg.trainer.adam_weight_decay,
