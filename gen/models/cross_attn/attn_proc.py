@@ -67,6 +67,7 @@ class XFormersAttnProcessor:
             hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
 
         # START MODIFICATION
+        is_cross_attn = encoder_hidden_states is not None
         if encoder_hidden_states is not None and attn_meta is not None:
             # TODO: We assume that we *always* call all cross-attn layers in order, and that we never skip any.
             # This makes it easier for e.g., inference so we don't need to reset the counter, but is pretty hacky.
@@ -112,7 +113,7 @@ class XFormersAttnProcessor:
         value = attn.head_to_batch_dim(value).contiguous()
 
         # START MODIFICATION
-        if encoder_hidden_states is not None and attn_meta is not None and "attention_mask" in attn_meta:
+        if is_cross_attn and attn_meta is not None and "attention_mask" in attn_meta:
             attention_mask = attn_meta["attention_mask"]
             resized_attention_masks = []
             latent_dim = round(math.sqrt(hidden_states.shape[1]))
