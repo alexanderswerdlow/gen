@@ -541,8 +541,6 @@ class BaseMapper(Trainable):
         cond.mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
 
         if self.cfg.model.layer_specialization:
-            cond.encoder_hidden_states = einx.rearrange("b t d -> b t (n d)", cond.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
-
             # Break e.g., 1024 -> 16 x 64
             layerwise_mask_tokens = einx.rearrange("b (l c) -> b l c", cond.mask_tokens, l=self.cfg.model.num_conditioning_pairs)  
             layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens)  # Batched 64 -> 1024
@@ -556,6 +554,9 @@ class BaseMapper(Trainable):
         cond: ConditioningData,
     ):
         bs = batch["input_ids"].shape[0]
+
+        if self.cfg.model.layer_specialization:
+            cond.encoder_hidden_states = einx.rearrange("b t d -> b t (n d)", cond.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
 
         batch["formatted_input_ids"] = batch["input_ids"].clone()
         for b in range(bs):

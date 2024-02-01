@@ -5,7 +5,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from gen.configs.utils import auto_store, store_child_config
 from gen.utils.trainer_utils import Trainable
-from gen.models.cross_attn.base_inference import run_inference, run_custom_inference
+from gen.models.cross_attn.base_inference import run_inference, compose_two_images, interpolate_latents
 from functools import partial
 
 @dataclass
@@ -39,6 +39,13 @@ store_child_config(
     cls=InferenceConfig,
     group="inference",
     parent="basemapper",
-    child="composable",
-    inference_func = partial(run_custom_inference)
+    child="compose_two_images",
+    inference_func = partial(compose_two_images)
+)
+store_child_config(
+    cls=InferenceConfig,
+    group="inference",
+    parent="basemapper",
+    child="interpolate_latents",
+    inference_func = partial(interpolate_latents)
 )

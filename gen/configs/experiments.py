@@ -25,7 +25,8 @@ shared_movi_args = dict(
     augmentation=dict(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
 )
 
-def get_datasets(): # TODO: These do not need to be global configs
+
+def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi",
         dataset=dict(
@@ -52,7 +53,7 @@ def get_datasets(): # TODO: These do not need to be global configs
         dataset=dict(
             train_dataset=dict(batch_size=10, subset_size=None, **shared_overfit_movi_args),
             validation_dataset=dict(subset_size=4, **shared_overfit_movi_args),
-            overfit=True
+            overfit=True,
         ),
         hydra_defaults=["movi"],
     )
@@ -78,6 +79,16 @@ def get_datasets(): # TODO: These do not need to be global configs
     )
 
     mode_store(
+        name="movi_validate_single_scene",
+        dataset=dict(
+            validation_dataset=dict(
+                subset_size=4, subset=("video_0018",), fake_return_n=8, random_subset=False, augmentation=dict(enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True)
+            ),
+        ),
+        hydra_defaults=["movi_single_scene"],
+    )
+
+    mode_store(
         name="imagenet",
         dataset=dict(
             train_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=False, enable_horizontal_flip=False)),
@@ -100,8 +111,8 @@ def get_experiments():
         dataset=dict(train_dataset=dict(batch_size=1, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
         model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False)),
         trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False),
-        inference=dict(visualize_attention_map=False, infer_new_prompts=False, max_batch_size=1, num_masks_to_remove=1, num_images_per_prompt=1),
-        debug=True
+        inference=dict(visualize_attention_map=False, infer_new_prompts=False, max_batch_size=1, num_masks_to_remove=None, num_images_per_prompt=1, vary_cfg_plot=False),
+        debug=True,
     )
 
     mode_store(
@@ -176,14 +187,11 @@ def get_experiments():
             break_a_scene_masked_loss=False,
             break_a_scene_cross_attn_loss=False,
         ),
-        inference=dict(use_ddim=False)
+        inference=dict(use_ddim=False),
     )
 
     mode_store(
         name="add_pos_emb",
-        model=dict(
-            add_pos_emb=True,
-            finetune_variable_learning_rate=True
-        ),
+        model=dict(add_pos_emb=True, finetune_variable_learning_rate=True),
         hydra_defaults=["unet_finetune"],
     )

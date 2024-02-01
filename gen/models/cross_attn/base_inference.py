@@ -9,6 +9,7 @@ import torch
 from einops import repeat
 from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
+from torchvision import utils
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
 from gen.utils.decoupled_utils import load_tensor_dict
@@ -86,7 +87,8 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     if self.cfg.inference.vary_cfg_plot:
         scale_images = []
         for scale in [0.0, 3.0, 5.0, 7.5, 10.0]:
-            if self.cfg.model.attention_masking and scale <= 1.0: continue 
+            if self.cfg.model.attention_masking and scale <= 1.0:
+                continue
             prompt_images, cond = self.infer_batch(
                 batch=batch, cond=cond, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, guidance_scale=scale
             )
@@ -232,11 +234,11 @@ def take_from(slices: tuple[int, slice], data: tuple[dict]):
 
 
 @torch.no_grad()
-def run_custom_inference(self: BaseMapper, batch: dict, state: TrainingState, embed_path: Path):
+def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embed_path_1: Path, embed_path_2: Path):
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
 
-    image_0_dict = load_tensor_dict("/home/aswerdlow/research/gen/outputs/debug/debug_debug_2024-01-28_14_53_30/cond_0_1.npz")
-    image_1_dict = load_tensor_dict("/home/aswerdlow/research/gen/outputs/debug/debug_debug_2024-01-28_14_53_30/cond_0_2.npz")
+    image_0_dict = load_tensor_dict(embed_path_1)
+    image_1_dict = load_tensor_dict(embed_path_2)
 
     image_0_tokens = image_0_dict["mask_tokens"]
     image_1_tokens = image_1_dict["mask_tokens"]
@@ -252,7 +254,7 @@ def run_custom_inference(self: BaseMapper, batch: dict, state: TrainingState, em
 
     final_tokens, final_rgb = take_from(
         slices=(
-            # (1, slice(0, 1)),
+            (1, slice(0, 1)),
             (0, slice(1, 2)),
             (1, slice(1, 2)),
         ),
@@ -264,7 +266,62 @@ def run_custom_inference(self: BaseMapper, batch: dict, state: TrainingState, em
         batch=batch, cond=ConditioningData(mask_tokens=final_tokens, mask_batch_idx=mask_batch_idx), num_images_per_prompt=4
     )
 
-    from torchvision import utils
+    Im.concat_vertical(
+        Im.concat_horizontal(
+            Im(prompt_image_).write_text(text=f"Gen {i}", relative_font_scale=0.004) for i, prompt_image_ in enumerate(prompt_image)
+        ),
+        Im(utils.make_grid(Im(final_rgb).torch)).write_text("Combined Conditioned masks [GT]"),
+        Im.concat_horizontal(
+            Im(image_0_dict["orig_image"]).write_text("First Image GT", relative_font_scale=0.001),
+            Im(prompt_image_0[0]).write_text("First Image Autoencoded", relative_font_scale=0.001),
+        ),
+        Im.concat_horizontal(
+            Im(image_1_dict["orig_image"]).write_text("Second Image GT", relative_font_scale=0.001),
+            Im(prompt_image_1[0]).write_text("Second Image Autoencoded", relative_font_scale=0.001),
+        ),
+    ).save("test_00.png")
+
+    breakpoint()
+
+
+def lerp(a, b, ts):
+    return a + (b - a) * ts
+
+@torch.no_grad()
+def interpolate_latents(self: BaseMapper, batch: dict, state: TrainingState, embed_path_1: Path, embed_path_2: Path):
+    from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
+
+    image_0_dict = load_tensor_dict(embed_path_1)
+    image_1_dict = load_tensor_dict(embed_path_2)
+
+    image_0_tokens = image_0_dict["mask_tokens"]
+    image_1_tokens = image_1_dict["mask_tokens"]
+
+    prompt_image_0, cond_0 = self.infer_batch(
+        batch=batch,
+        cond=ConditioningData(mask_tokens=image_0_tokens, mask_batch_idx=torch.zeros((image_0_tokens.shape[0],), dtype=torch.int64)),
+    )
+    prompt_image_1, cond_1 = self.infer_batch(
+        batch=batch,
+        cond=ConditioningData(mask_tokens=image_1_tokens, mask_batch_idx=torch.zeros((image_1_tokens.shape[0],), dtype=torch.int64)),
+    )
+
+    interp_token = lerp(image_0_dict['mask_tokens'][1], image_1_dict['mask_tokens'][1], 0.5)[None]
+
+    final_tokens, final_rgb = take_from(
+        slices=(
+            (0, slice(0, 1)),
+        ),
+        data=(image_0_dict, image_1_dict),
+    )
+
+    # final_tokens = torch.cat([final_tokens, interp_token], dim=0)
+    final_tokens = interp_token
+
+    mask_batch_idx = torch.zeros((final_tokens.shape[0],), dtype=torch.int64)
+    prompt_image, cond = self.infer_batch(
+        batch=batch, cond=ConditioningData(mask_tokens=final_tokens, mask_batch_idx=mask_batch_idx), num_images_per_prompt=2
+    )
 
     Im.concat_vertical(
         Im.concat_horizontal(
