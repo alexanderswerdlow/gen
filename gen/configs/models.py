@@ -91,6 +91,12 @@ auto_store(
     name="basemapper",
     encoder=builds(ClipFeatureExtractor, return_only="ln_post", populate_full_signature=False),
 )
+auto_store(
+    ModelConfig,
+    model_type=ModelType.BASE_MAPPER,
+    name="basemapper_clip_multiscale",
+    encoder=builds(ClipFeatureExtractor, return_only=None, populate_full_signature=False),
+)
 store_child_config(
     cls=ModelConfig,
     group="model",

@@ -9,6 +9,7 @@ from diffusers.utils import USE_PEFT_BACKEND
 from einops import rearrange
 
 from gen.models.cross_attn.base_model import AttentionMetadata
+from gen.models.cross_attn.deprecated_configs import handle_attn_proc_masking
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
 
 def register_layerwise_attention(unet):
@@ -113,26 +114,7 @@ class XFormersAttnProcessor:
 
         # START MODIFICATION
         if is_cross_attn and attn_meta is not None and "attention_mask" in attn_meta:
-            attention_mask = attn_meta["attention_mask"]
-            resized_attention_masks = []
-            latent_dim = round(math.sqrt(hidden_states.shape[1]))
-            for b in range(attention_mask.shape[0]):
-                resized_attention_masks.append(find_true_indices_batched(original=attention_mask[b], dh=latent_dim, dw=latent_dim))
-            resized_attention_masks = torch.stack(resized_attention_masks).to(hidden_states.device)
-            resized_attention_masks = rearrange(resized_attention_masks, 'b tokens h w -> b (h w) tokens')
-            if resized_attention_masks.shape[0] != batch_size:
-                # For CFG, we batch [uncond, cond]. To make it simpler, we correct the attention mask here [instead of in the pipeline code]
-                assert batch_size % 2 == 0, "Batch size of the attention mask is incorrect"
-                # TODO: This is very risky. We assume that the first half is always uncond and we may need to repeat the cond at the end
-                # Essentially, CFG must always be enabled.
-                if (cond_batch_size := (batch_size // resized_attention_masks.shape[0]) // 2) > 1:
-                    resized_attention_masks = resized_attention_masks.repeat_interleave(cond_batch_size, dim=0)
-                resized_attention_masks = torch.cat([resized_attention_masks.new_full(resized_attention_masks.shape, True), resized_attention_masks], dim=0)
-
-            attention_mask = resized_attention_masks.repeat_interleave(attn.heads, dim=0)
-            attention_mask = (1 - attention_mask.to(query)) * -10000.0
-            attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((*attention_mask.shape[:2], 3))], dim=-1).contiguous()
-            attention_mask = attention_mask[..., :77] # See: https://github.com/facebookresearch/xformers/issues/683
+            attention_mask = handle_attn_proc_masking(attn_meta, hidden_states, attn, query, batch_size)
         # END MODIFICATION
 
         hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale)

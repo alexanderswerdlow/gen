@@ -8,7 +8,6 @@ import einx
 import hydra
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate import Accelerator
@@ -23,6 +22,7 @@ from transformers.models.clip.modeling_clip import CLIPTextModel
 
 from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
+from gen.models.cross_attn.deprecated_configs import attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale
 from gen.models.cross_attn.losses import break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss
 from gen.models.cross_attn.modules import Mapper
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
@@ -95,23 +95,7 @@ class BaseMapper(Trainable):
             self.hqsam = HQSam(model_type="vit_b")
 
         if self.cfg.model.clip_shift_scale_conditioning:
-
-            def zero_module(module):
-                for p in module.parameters():
-                    nn.init.zeros_(p)
-                return module
-
-            clip_proj_layers = []
-            all_layer_data = [(k, v.shape[0]) for k, v in dict(self.unet.named_parameters()).items() if "resnets.0" in k and "conv1.weight" in k]
-            dims = []
-            dims.extend([v for k, v in all_layer_data if "down_blocks" in k])
-            dims.extend([v for k, v in all_layer_data if "mid_block" in k])
-            dims.extend([v for k, v in all_layer_data if "up_blocks" in k])
-
-            for idx, dim in enumerate(dims):
-                clip_proj_layers.append(nn.Conv2d(self.cfg.model.encoder_dim, dim * 2, kernel_size=1))
-            self.clip_proj_layers = nn.ModuleList(clip_proj_layers)
-            self.clip_proj_layers = zero_module(self.clip_proj_layers)
+            init_shift_scale(self)
 
     def initialize_diffusers_models(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
         # Load the tokenizer
@@ -380,31 +364,27 @@ class BaseMapper(Trainable):
 
         # SAM requires NumPy [0, 255]
         sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c")
-        gen_segmentations = []
+        sam_seg = []
         bs: int = batch["disc_pixel_values"].shape[0]
+        max_masks = 4
 
         for i in range(bs):
             masks = self.hqsam.forward(sam_input[i])
             masks = sorted(masks, key=lambda d: d["area"], reverse=True)
-            max_masks = 4
             masks = masks[:max_masks]  # We only have 77 tokens
             original = torch.from_numpy(np.array([masks[i]["segmentation"] for i in range(len(masks))]))
 
             if original.shape[0] == 0:  # Make dummy mask with all ones
-                original = (
-                    batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1])).cpu()
-                )
+                original = batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1])).cpu()
             else:  # Add additional mask to capture any pixels that are not part of any mask
                 original = torch.cat(((~original.any(dim=0))[None], original), dim=0)
 
             if original.shape[0] != 0 and not self.training:  # During inference, we update batch with the SAM masks for later visualization
-                gen_segmentation_ = original.permute(1, 2, 0).long().clone()
-                gen_segmentations.append(
-                    torch.nn.functional.pad(gen_segmentation_, (0, (max_masks + 1) - gen_segmentation_.shape[-1]), "constant", 0)
-                )
+                seg_ = original.permute(1, 2, 0).long().clone()
+                sam_seg.append(torch.nn.functional.pad(seg_, (0, (max_masks + 1) - seg_.shape[-1]), "constant", 0))
 
-        if len(gen_segmentations) > 0:
-            batch["gen_segmentation"] = torch.stack(gen_segmentations, dim=0)
+        if len(sam_seg) > 0:
+            batch["gen_segmentation"] = torch.stack(sam_seg, dim=0)
 
         return batch
 
@@ -425,6 +405,14 @@ class BaseMapper(Trainable):
     @cached_property
     def pad_token_id(self):
         return self.tokenizer.convert_tokens_to_ids(self.tokenizer.pad_token)
+    
+    @cached_property
+    def uncond_hidden_states(self):
+        uncond_input_ids = get_uncond_tokens(self.tokenizer).to(self.device)
+        uncond_encoder_hidden_states = self.text_encoder(input_ids=uncond_input_ids[None]).last_hidden_state.to(dtype=self.dtype).squeeze(0)
+        return uncond_encoder_hidden_states
+
+
 
     def add_cross_attn_params(self, batch, cond: ConditioningData):
         """
@@ -520,12 +508,7 @@ class BaseMapper(Trainable):
         cond.mask_batch_idx = mask_batch_idx
         cond.mask_instance_idx = mask_instance_idx
         if self.cfg.model.clip_shift_scale_conditioning:
-            clip_feature_maps = []
-            for _, layer in enumerate(self.clip_proj_layers):
-                proj_feature_map = layer(rearrange(clip_feature_map, "b (h w) d -> b d h w", h=latent_dim, w=latent_dim))
-                clip_feature_maps.append(proj_feature_map)
-
-            cond.unet_kwargs["femb"] = clip_feature_maps
+            forward_shift_scale(self, cond, clip_feature_map, latent_dim)
 
         return cond
 
@@ -595,7 +578,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.clip_shift_scale_conditioning:
             assert not self.cfg.model.layer_specialization
-            cond.encoder_hidden_states[:] = self.shift_scale_uncond_hidden_states
+            cond.encoder_hidden_states[:] = shift_scale_uncond_hidden_states(self)
 
         return cond
 
@@ -618,24 +601,12 @@ class BaseMapper(Trainable):
             cond = self.update_hidden_state_with_mask_tokens(batch, cond)
 
             if self.cfg.model.attention_masking:
-                self.attention_masking(batch, cond)
+                attention_masking(batch, cond)
 
         return cond
 
     def get_controlnet_conditioning(self, batch):
         return batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=self.dtype)
-
-    @cached_property
-    def uncond_hidden_states(self):
-        uncond_input_ids = get_uncond_tokens(self.tokenizer).to(self.device)
-        uncond_encoder_hidden_states = self.text_encoder(input_ids=uncond_input_ids[None]).last_hidden_state.to(dtype=self.dtype).squeeze(0)
-        return uncond_encoder_hidden_states
-
-    @cached_property
-    def shift_scale_uncond_hidden_states(self):
-        uncond_input_ids = get_uncond_tokens(self.tokenizer, "A photo of").to(self.device)
-        uncond_encoder_hidden_states = self.text_encoder(input_ids=uncond_input_ids[None]).last_hidden_state.to(dtype=self.dtype).squeeze(0)
-        return uncond_encoder_hidden_states
 
     def dropout_cfg(self, cond: ConditioningData):
         # We dropout the entire conditioning [all-layers] for a subset of batches.
@@ -650,8 +621,7 @@ class BaseMapper(Trainable):
             cond.batch_cond_dropout = dropout_idx
 
             if self.cfg.model.attention_masking:
-                attn_mask = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attention_mask"]
-                attn_mask[dropout_idx] = torch.ones((77, 64, 64)).to(device=cond.encoder_hidden_states.device, dtype=torch.bool)
+                handle_attention_masking_dropout(cond, dropout_idx)
 
         # We also might dropout only specific pairs of layers. In this case, we use the same uncond embeddings.
         # Note that there is a rare chance that we could dropout all layers but still compute loss.
@@ -663,34 +633,6 @@ class BaseMapper(Trainable):
             cond.encoder_hidden_states = einx.rearrange("b t (n d) -> b n t d", cond.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
             cond.encoder_hidden_states[:, dropout_idx] = self.uncond_hidden_states
             cond.encoder_hidden_states = einx.rearrange("b n t d -> b t (n d)", cond.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
-
-
-    def attention_masking(self, batch: InputData, cond: Optional[ConditioningData]):
-        assert "cross_attention_kwargs" in cond.unet_kwargs
-        assert "attn_meta" in cond.unet_kwargs["cross_attention_kwargs"]
-
-        batch_size: int = batch["disc_pixel_values"].shape[0]
-        device: torch.device = batch["disc_pixel_values"].device
-        gen_seg_ = rearrange(batch["gen_segmentation"], "b h w c -> b c () h w").float()
-        learnable_idxs = (batch["formatted_input_ids"] == cond.placeholder_token).nonzero(as_tuple=True)
-        h, w = 64, 64 # Max latent size in U-Net
-
-        all_masks = []
-        for batch_idx in range(batch_size):
-            cur_batch_mask = learnable_idxs[0] == batch_idx  # Find the masks for this batch
-            token_indices = learnable_idxs[1][cur_batch_mask]
-            segmentation_indices = cond.mask_instance_idx[cur_batch_mask] 
-
-            GT_masks = F.interpolate(input=gen_seg_[batch_idx][segmentation_indices], size=(h, w)).squeeze(1) > 0.5
-            tensor_nhw = torch.zeros(batch["formatted_input_ids"].shape[-1], h, w, dtype=torch.bool)
-
-            for i, d in enumerate(token_indices):
-                tensor_nhw[d] = GT_masks[i]
-
-            tensor_nhw[:, (~tensor_nhw.any(dim=0))] = True
-            all_masks.append(tensor_nhw.to(device))
-
-        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attention_mask"] = torch.stack(all_masks, dim=0).to(dtype=torch.bool)
 
     @beartype
     def forward(self, batch: InputData):

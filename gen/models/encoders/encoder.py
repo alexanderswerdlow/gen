@@ -315,7 +315,6 @@ class ClipFeatureExtractor(FeatureExtractorModel):
     @functools.cached_property
     def transform(self):
         from gen.datasets.utils import get_open_clip_transforms_v2
-
         return get_open_clip_transforms_v2()
 
 
@@ -365,32 +364,7 @@ class ResNetFeatureExtractor(FeatureExtractorModel, ResNet):
         if self.tensor_input:
             transform_.transforms = [x for x in transform_.transforms if not isinstance(x, torchvision.transforms.Resize)]
         return transform_
-
-# class ResNetFeatureExtractor(ResNet):
-#     def __init__(
-#         self,
-#         model_name = "resnet18",
-#         pretrained: bool = True,
-#         return_nodes=None,
-#         return_only=None,
-#         **kwargs,
-#     ):
-#         self.pretrained = pretrained
-#         super().__init__(model_name=model_name, **kwargs)
-
-#     def create_model(self):
-#         return super().create_model(pretrained=self.pretrained, features_only=True)
     
-#     def forward(self, image: ImArr, **kwargs):
-#         output = self.model(image)[2]
-#         return rearrange(output, "b d h w -> b (h w) d")
-    
-#     @functools.cached_property
-#     def transform(self):
-#         transform_ = super().transform
-#         if self.tensor_input:
-#             transform_.transforms = [x for x in transform_.transforms if not isinstance(x, torchvision.transforms.Resize)]
-#         return transform_
 
 def get_pil_img():
     return Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").scale(0.5).resize(224, 224).pil
