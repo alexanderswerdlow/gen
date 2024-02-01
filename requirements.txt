@@ -39,6 +39,6 @@ rich
 peft
 einx
 beartype
-diffusers==0.25.*
 git+https://github.com/alexanderswerdlow/image_utils.git
 git+https://github.com/alexanderswerdlow/kornia.git@keypoint_visibility
+git+https://github.com/alexanderswerdlow/diffusers.git@gen

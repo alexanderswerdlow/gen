@@ -84,18 +84,6 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     )
     ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
 
-    if self.cfg.inference.vary_cfg_plot:
-        scale_images = []
-        for scale in [0.0, 3.0, 5.0, 7.5, 10.0]:
-            if self.cfg.model.attention_masking and scale <= 1.0:
-                continue
-            prompt_images, cond = self.infer_batch(
-                batch=batch, cond=cond, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, guidance_scale=scale
-            )
-            scale_images.append(Im.concat_vertical(prompt_images).write_text(f"CFG Scale: {scale:.1f}"))
-
-        ret["cfg_scale"] = Im.concat_horizontal(orig_image.to("cpu").copy.write_text("GT"), *scale_images)
-
     if self.cfg.inference.save_prompt_embeds:
         assert cond.mask_instance_idx.shape[0] == cond.mask_tokens.shape[0]
 
@@ -112,6 +100,18 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
 
         ret["individual_masks"] = Im.concat_horizontal(*all_masks, spacing=10)
         ret["cond"] = {"mask_tokens": cond.mask_tokens, "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}
+
+    if self.cfg.inference.vary_cfg_plot:
+        scale_images = []
+        for scale in [0.0, 3.0, 5.0, 7.5, 10.0]:
+            if self.cfg.model.attention_masking and scale <= 1.0:
+                continue
+            prompt_images, cond = self.infer_batch(
+                batch=batch, cond=cond, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, guidance_scale=scale
+            )
+            scale_images.append(Im.concat_vertical(prompt_images).write_text(f"CFG Scale: {scale:.1f}"))
+
+        ret["cfg_scale"] = Im.concat_horizontal(orig_image.to("cpu").copy.write_text("GT"), *scale_images)
 
     if self.cfg.model.break_a_scene_cross_attn_loss:
         batch_size = (2 if self.cfg.inference.guidance_scale > 1.0 else 1) * self.cfg.inference.num_images_per_prompt
@@ -288,7 +288,7 @@ def lerp(a, b, ts):
     return a + (b - a) * ts
 
 @torch.no_grad()
-def interpolate_latents(self: BaseMapper, batch: dict, state: TrainingState, embed_path_1: Path, embed_path_2: Path):
+def interpolate_latents(self: BaseMapper, batch: dict, state: TrainingState, embed_path_1: Path, embed_path_2: Path, remove_background_token: bool = False, batch_interp: bool = True, steps: int = 10):
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
 
     image_0_dict = load_tensor_dict(embed_path_1)
@@ -297,45 +297,62 @@ def interpolate_latents(self: BaseMapper, batch: dict, state: TrainingState, emb
     image_0_tokens = image_0_dict["mask_tokens"]
     image_1_tokens = image_1_dict["mask_tokens"]
 
-    prompt_image_0, cond_0 = self.infer_batch(
-        batch=batch,
-        cond=ConditioningData(mask_tokens=image_0_tokens, mask_batch_idx=torch.zeros((image_0_tokens.shape[0],), dtype=torch.int64)),
-    )
-    prompt_image_1, cond_1 = self.infer_batch(
-        batch=batch,
-        cond=ConditioningData(mask_tokens=image_1_tokens, mask_batch_idx=torch.zeros((image_1_tokens.shape[0],), dtype=torch.int64)),
-    )
+    # prompt_image_0, cond_0 = self.infer_batch(
+    #     batch=batch,
+    #     cond=ConditioningData(mask_tokens=image_0_tokens, mask_batch_idx=torch.zeros((image_0_tokens.shape[0],), dtype=torch.int64)),
+    # )
+    # prompt_image_1, cond_1 = self.infer_batch(
+    #     batch=batch,
+    #     cond=ConditioningData(mask_tokens=image_1_tokens, mask_batch_idx=torch.zeros((image_1_tokens.shape[0],), dtype=torch.int64)),
+    # )
 
-    interp_token = lerp(image_0_dict['mask_tokens'][1], image_1_dict['mask_tokens'][1], 0.5)[None]
+    interp_values = torch.linspace(0, 1, steps=steps)
 
-    final_tokens, final_rgb = take_from(
-        slices=(
-            (0, slice(0, 1)),
-        ),
-        data=(image_0_dict, image_1_dict),
-    )
+    prompt_images = []
+    if batch_interp:
+        final_tokens = []
+        mask_batch_idx = []
+        for i, interp_value in enumerate(interp_values):
+            interp_token = lerp(image_0_tokens, image_1_tokens, interp_value)
+            final_tokens.append(interp_token)
+            mask_batch_idx.append(i * torch.ones((interp_token.shape[0],), dtype=torch.int64))
 
-    # final_tokens = torch.cat([final_tokens, interp_token], dim=0)
-    final_tokens = interp_token
+        final_tokens = torch.cat(final_tokens, dim=0)
+        mask_batch_idx = torch.cat(mask_batch_idx, dim=0)
+        if "formatted_input_ids" in batch:
+            del batch["formatted_input_ids"]
 
-    mask_batch_idx = torch.zeros((final_tokens.shape[0],), dtype=torch.int64)
-    prompt_image, cond = self.infer_batch(
-        batch=batch, cond=ConditioningData(mask_tokens=final_tokens, mask_batch_idx=mask_batch_idx), num_images_per_prompt=2
-    )
+        batch_ = {}
+        batch_["input_ids"] = batch["input_ids"].repeat(steps, 1)
+
+        for k, v in batch.items():
+            if isinstance(v, torch.Tensor) and k not in batch_:
+                assert v.shape[0] == 1
+                batch_[k] = repeat(v[0], "... -> h ...", h=batch_["input_ids"].shape[0])
+
+        prompt_images, cond = self.infer_batch(
+            batch=batch_, cond=ConditioningData(mask_tokens=final_tokens, mask_batch_idx=mask_batch_idx), num_images_per_prompt=1
+        )
+    else:
+        for i, interp_value in enumerate(interp_values):
+            interp_token = lerp(image_0_tokens, image_1_tokens, interp_value)
+            if remove_background_token:
+                interp_token = interp_token[1:]
+            prompt_image, cond = self.infer_batch(
+                batch=batch, cond=ConditioningData(mask_tokens=interp_token, mask_batch_idx=torch.zeros((interp_token.shape[0],), dtype=torch.int64)), num_images_per_prompt=2
+            )
+            prompt_image = Im.concat_vertical(prompt_image)
+            prompt_images.append(prompt_image)
 
     Im.concat_vertical(
         Im.concat_horizontal(
-            Im(prompt_image_).write_text(text=f"Gen {i}", relative_font_scale=0.004) for i, prompt_image_ in enumerate(prompt_image)
-        ),
-        Im(utils.make_grid(Im(final_rgb).torch)).write_text("Combined Conditioned masks [GT]"),
-        Im.concat_horizontal(
-            Im(image_0_dict["orig_image"]).write_text("First Image GT", relative_font_scale=0.001),
-            Im(prompt_image_0[0]).write_text("First Image Autoencoded", relative_font_scale=0.001),
+            Im(prompt_image_).write_text(text=f"Weight {interp_values[i].item():.2f}", relative_font_scale=0.004) for i, prompt_image_ in enumerate(prompt_images)
         ),
         Im.concat_horizontal(
-            Im(image_1_dict["orig_image"]).write_text("Second Image GT", relative_font_scale=0.001),
-            Im(prompt_image_1[0]).write_text("Second Image Autoencoded", relative_font_scale=0.001),
+            Im(image_0_dict["orig_image"]).write_text("Left (0) GT", relative_font_scale=0.003),
+            Im(image_1_dict["orig_image"]).write_text("Right (1) GT", relative_font_scale=0.003),
         ),
-    ).save("test_00.png")
+        spacing=50,
+    ).save("test_01.png")
 
     breakpoint()
