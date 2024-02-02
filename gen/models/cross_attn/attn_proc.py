@@ -52,6 +52,7 @@ class XFormersAttnProcessor:
         temb: Optional[torch.FloatTensor] = None,
         scale: float = 1.0,
         attn_meta: Optional[AttentionMetadata] = None,
+        can_override_encoder_hidden_states: bool = True, # With gated cross-attn, sometimes we want original conditioning from text-encoder
     ) -> torch.FloatTensor:
         residual = hidden_states
 
@@ -69,17 +70,20 @@ class XFormersAttnProcessor:
         # START MODIFICATION
         is_cross_attn = encoder_hidden_states is not None
         if encoder_hidden_states is not None and attn_meta is not None:
-            # TODO: We assume that we *always* call all cross-attn layers in order, and that we never skip any.
-            # This makes it easier for e.g., inference so we don't need to reset the counter, but is pretty hacky.
-            cur_idx = attn_meta["layer_idx"] % attn_meta["num_layers"]
-            cond_idx = min(cur_idx, (attn_meta["num_layers"] - 1) - cur_idx)
-            encoder_hidden_states = encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[cond_idx]
-            attn_meta["layer_idx"] = attn_meta["layer_idx"] + 1
-            
-            if attn_meta["add_pos_emb"]:
-                h, w = round(math.sqrt(hidden_states.shape[1])), round(math.sqrt(hidden_states.shape[1]))
-                pos_emb = positionalencoding2d(hidden_states.shape[-1], h, w, device=hidden_states.device, dtype=hidden_states.dtype)
-                hidden_states = hidden_states + rearrange(pos_emb, "d h w -> () (h w) d")
+            if attn_meta.get("frozen_encoder_hidden_states", None) is not None and can_override_encoder_hidden_states:
+                encoder_hidden_states = attn_meta["frozen_encoder_hidden_states"]
+            else:
+                # TODO: We assume that we *always* call all cross-attn layers in order, and that we never skip any.
+                # This makes it easier for e.g., inference so we don't need to reset the counter, but is pretty hacky.
+                cur_idx = attn_meta["layer_idx"] % attn_meta["num_layers"]
+                cond_idx = min(cur_idx, (attn_meta["num_layers"] - 1) - cur_idx)
+                encoder_hidden_states = encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[cond_idx]
+                attn_meta["layer_idx"] = attn_meta["layer_idx"] + 1
+                
+                if attn_meta["add_pos_emb"]:
+                    h, w = round(math.sqrt(hidden_states.shape[1])), round(math.sqrt(hidden_states.shape[1]))
+                    pos_emb = positionalencoding2d(hidden_states.shape[-1], h, w, device=hidden_states.device, dtype=hidden_states.dtype)
+                    hidden_states = hidden_states + rearrange(pos_emb, "d h w -> () (h w) d")
         # END MODIFICATION
 
         batch_size, key_tokens, _ = hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape

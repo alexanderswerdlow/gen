@@ -65,6 +65,7 @@ class AttentionMetadata(TypedDict):
     add_pos_emb: bool
     attention_mask: Optional[Float[Tensor, "b d h w"]]
     scale: Optional[float]
+    frozen_encoder_hidden_states: Optional[Float[Tensor, "b d"]] # When using gated cross-attn, we feed the frozen layers this
 
 
 class BaseMapper(Trainable):
@@ -617,20 +618,18 @@ class BaseMapper(Trainable):
         cond.encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
 
         if self.cfg.model.layer_specialization:
-            cond.unet_kwargs["cross_attention_kwargs"] = dict(
-                attn_meta=dict(
-                    layer_idx=0,
-                    num_layers=self.cfg.model.num_conditioning_pairs * 2,
-                    num_cond_vectors=self.cfg.model.num_conditioning_pairs,
-                    add_pos_emb=self.cfg.model.add_pos_emb,
-                )
-            )
+            cond.unet_kwargs["cross_attention_kwargs"]['attn_meta'].update(dict(
+                layer_idx=0,
+                num_layers=self.cfg.model.num_conditioning_pairs * 2,
+                num_cond_vectors=self.cfg.model.num_conditioning_pairs,
+                add_pos_emb=self.cfg.model.add_pos_emb,
+            ))
 
             if self.cfg.model.gated_cross_attn and self.training:
                 assert self.cfg.model.gated_cross_attn_warmup_steps is not None
                 def interpolate(step: int, max_steps: int) -> float:
                     return min(max(step, 0) / max_steps, 1.0)
-                cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["scale"] = interpolate(batch["state"].global_step, self.cfg.model.gated_cross_attn_warmup_steps)
+                cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["gate_scale"] = interpolate(batch["state"].global_step, self.cfg.model.gated_cross_attn_warmup_steps)
                 
 
         if self.cfg.model.clip_shift_scale_conditioning:
@@ -647,9 +646,13 @@ class BaseMapper(Trainable):
     ) -> ConditioningData:
         if cond is None:
             cond = ConditioningData()
+            cond.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=AttentionMetadata())
 
         cond.placeholder_token = self.placeholder_token_id
         cond.encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype)
+
+        if self.cfg.model.gated_cross_attn:
+            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["frozen_encoder_hidden_states"] = cond.encoder_hidden_states.clone()
 
         if add_conditioning:
             if cond.mask_tokens is None or cond.mask_batch_idx is None:
