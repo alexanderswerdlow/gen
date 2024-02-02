@@ -183,6 +183,7 @@ class Trainer:
         )
 
         unwrap(self.model).set_training_mode()
+        validate_params(self.models, self.dtype)
         
         log_info(
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.get('wandb_url', None)}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"

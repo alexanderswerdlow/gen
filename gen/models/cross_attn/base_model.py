@@ -240,8 +240,8 @@ class BaseMapper(Trainable):
                 if set_grad: # TODO: Initialize weights somewhere else
                     # We copy the cross-attn weights from the frozen module to this
                     m.fuser.attn.load_state_dict(m.attn2.state_dict())
-                    m.fuser.to(dtype=torch.float32)
                     m.fuser.requires_grad_(True)
+                m.fuser.to(dtype=torch.float32)
                 m.fuser.train()
 
         if self.cfg.model.freeze_text_encoder:
@@ -303,6 +303,12 @@ class BaseMapper(Trainable):
             model=self,
             torch_dtype=self.dtype,
         )
+
+        # TODO: Avoid casting this back and forth to BF16/FP32
+        if self.cfg.model.unfreeze_gated_cross_attn:
+            from diffusers.models.attention import GatedCrossAttentionDense
+            for m in get_modules(self.unet, GatedCrossAttentionDense):
+                m.to(dtype=self.dtype)
 
         self.eval()
         if self.cfg.model.break_a_scene_cross_attn_loss:
