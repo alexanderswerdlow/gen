@@ -130,12 +130,24 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi_medium",
         dataset=dict(
-            path=MOVI_MEDIUM_PATH,
-            num_objects=23,
-            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=True, minimal_source_augmentation=True)),
+            train_dataset=dict(
+                custom_split="train", 
+                augmentation=dict(enable_horizontal_flip=False, enable_crop=True, minimal_source_augmentation=True),
+                path=MOVI_MEDIUM_PATH,
+                num_objects=23,
+                num_frames=8,
+                num_cameras=2,
+                multi_camera_format=True
+            ),
             validation_dataset=dict(
+                custom_split="train",
                 subset_size=8,
                 random_subset=True,
+                path=MOVI_MEDIUM_PATH,
+                num_objects=23,
+                num_frames=8,
+                num_cameras=2,
+                multi_camera_format=True,
                 augmentation=dict(enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True),
             ),
         ),
@@ -216,7 +228,20 @@ def get_experiments():
     )
 
     mode_store(
+        name="low_res",
+        dataset=dict(
+            train_dataset=dict(
+                augmentation=dict(target_resolution=256),
+            ),
+            validation_dataset=dict(
+                augmentation=dict(target_resolution=256),
+            ),
+        ),
+        model=dict(resolution=256, latent_dim=32),
+    )
+
+    mode_store(
         name="gated_cross_attn",
         model=dict(add_pos_emb=True, gated_cross_attn=True, unfreeze_gated_cross_attn=True, gated_cross_attn_warmup_steps=500, lora_rank=4),
-        hydra_defaults=["unet_lora", "multiscale"],
+        hydra_defaults=["unet_lora", "multiscale", "low_res"],
     )

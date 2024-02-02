@@ -110,13 +110,13 @@ def break_a_scene_masked_loss(
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
         object_masks = batch["gen_segmentation"][b, ..., mask_idxs_for_batch]
         if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item(): # We do not have conditioning for this entire sample so put loss on everything
-            max_masks.append(object_masks.new_ones((512, 512)))
+            max_masks.append(object_masks.new_ones((cfg.model.resolution, cfg.model.resolution)))
         elif object_masks.shape[-1] == 0:
-            max_masks.append(object_masks.new_zeros((512, 512))) # Zero out loss if there are no masks
+            max_masks.append(object_masks.new_zeros((cfg.model.resolution, cfg.model.resolution))) # Zero out loss if there are no masks
         else:
             max_masks.append(torch.max(object_masks, axis=-1).values)
 
     max_masks = torch.stack(max_masks, dim=0)[:, None]
-    downsampled_mask = F.interpolate(input=max_masks.float(), size=(64, 64))
+    downsampled_mask = F.interpolate(input=max_masks.float(), size=(cfg.model.latent_dim, cfg.model.latent_dim))
 
     return downsampled_mask

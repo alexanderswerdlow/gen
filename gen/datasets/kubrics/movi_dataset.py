@@ -13,7 +13,7 @@ from einops import rearrange
 from ipdb import set_trace as st
 from torch.utils.data import Dataset
 
-from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_OVERFIT_DATASET_PATH
+from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
@@ -35,7 +35,6 @@ class MoviDataset(AbstractDataset, Dataset):
         override_text: bool = True,
         dataset: str = "movi_e",
         num_frames: int = 24,
-        num_dataset_frames: int = 24,
         num_objects: int = 23,
         augmentation: Optional[Augmentation] = Augmentation(),
         custom_split: Optional[str] = None,
@@ -43,7 +42,8 @@ class MoviDataset(AbstractDataset, Dataset):
         return_video: bool = False,
         fake_return_n: Optional[int] = None,
         use_single_mask: bool = False, # Force using a single mask with all 1s
-        new_format: bool = False,
+        num_cameras: int = 1,
+        multi_camera_format: bool = False,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -54,7 +54,11 @@ class MoviDataset(AbstractDataset, Dataset):
         self.return_video = return_video
         self.fake_return_n = fake_return_n
         self.use_single_mask = use_single_mask
-        self.new_format = new_format
+        self.new_format = multi_camera_format
+        self.num_cameras = num_cameras
+
+        if num_cameras > 1: assert multi_camera_format
+
         local_split = ("train" if self.split == Split.TRAIN else "validation")
         local_split = local_split if custom_split is None else custom_split
         self.root_dir = self.root / self.dataset / local_split
@@ -65,7 +69,6 @@ class MoviDataset(AbstractDataset, Dataset):
             self.files = os.listdir(self.root_dir)
             self.files.sort()
 
-        self.num_dataset_frames = num_dataset_frames
         self.num_frames = num_frames
         self.num_classes = num_objects
 
@@ -82,28 +85,30 @@ class MoviDataset(AbstractDataset, Dataset):
 
     def collate_fn(self, batch):
         return torch.utils.data.default_collate(batch)
+    
+    def map_idx(self, idx):
+        file_idx = idx // (self.num_cameras * self.num_frames)
+        camera_idx = (idx % (self.num_cameras * self.num_frames)) // self.num_frames
+        frame_idx = idx % self.num_frames
+        return file_idx, camera_idx, frame_idx
 
     def __getitem__(self, index):
+        file_idx, camera_idx, frame_idx = self.map_idx(index)
         if self.fake_return_n:
-            video_idx = 0
-            frame_idx = index % self.num_dataset_frames
-        else:
-            video_idx = index // self.num_dataset_frames
-            frame_idx = index % self.num_dataset_frames
+            file_idx = 0
 
         try:
-            path = self.files[video_idx]
+            path = self.files[file_idx]
         except IndexError:
-            print(f"Index {video_idx} is out of bounds for dataset of size {len(self.files)} for dir: {self.root_dir}")
+            print(f"Index {file_idx} is out of bounds for dataset of size {len(self.files)} for dir: {self.root_dir}")
             raise
-
-        # if self.num_dataset_frames == 1 and rgb.shape[0] > 1:
-        #     # Get middle frame
-        #     frame_idx = rgb.shape[0] // 2
         
         if self.new_format:
-            breakpoint()
+            data = np.load(self.root_dir / path / "data.npz")
+            rgb = data["rgb"][camera_idx, frame_idx]
+            instance = data["segment"][camera_idx, frame_idx]
         else:
+            assert self.num_cameras == 1 and camera_idx == 0
             rgb = os.path.join(self.root_dir, os.path.join(path, "rgb.npy"))
             instance = os.path.join(self.root_dir, os.path.join(path, "segment.npy"))
             bbx = os.path.join(self.root_dir, os.path.join(path, "bbox.npy"))
@@ -111,6 +116,10 @@ class MoviDataset(AbstractDataset, Dataset):
             rgb = np.load(rgb)
             bbx = np.load(bbx)
             instance = np.load(instance)
+
+            if self.num_frames == 1 and rgb.shape[0] > 1:
+                # Get middle frame
+                frame_idx = rgb.shape[0] // 2
 
             rgb = rgb[frame_idx]
             instance = instance[frame_idx]
@@ -158,9 +167,8 @@ class MoviDataset(AbstractDataset, Dataset):
         return ret
 
     def __len__(self):
-        if self.fake_return_n is not None:
-            return len(self.files) * self.num_dataset_frames * self.fake_return_n
-        return len(self.files) * self.num_dataset_frames
+        init_size = len(self.files) * self.num_frames * self.num_cameras
+        return init_size * self.fake_return_n if self.fake_return_n else init_size
 
 
 if __name__ == "__main__":
@@ -182,7 +190,24 @@ if __name__ == "__main__":
         augmentation=Augmentation(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
         return_video=True
     )
-    dataloader = dataset.get_dataloader()
+    new_dataset = MoviDataset(
+        cfg=None,
+        split=Split.TRAIN,
+        num_workers=0,
+        batch_size=1,
+        shuffle=True,
+        subset_size=None,
+        dataset="movi_e",
+        tokenizer=tokenizer,
+        path=MOVI_MEDIUM_PATH,
+        num_objects=23,
+        num_frames=8,
+        num_cameras=2, 
+        augmentation=Augmentation(target_resolution=256, minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
+        return_video=True,
+        multi_camera_format=True,
+    )
+    dataloader = new_dataset.get_dataloader()
     for batch in dataloader:
         from image_utils import Im, get_layered_image_from_binary_mask
         gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'].squeeze(0))))

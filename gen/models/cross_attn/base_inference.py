@@ -46,7 +46,7 @@ def infer_batch(
     if self.cfg.model.attention_masking:
         assert kwargs["guidance_scale"] > 1
 
-    desired_context = nullcontext() if self.cfg.model.freeze_unet else torch.cuda.amp.autocast()
+    desired_context =  torch.cuda.amp.autocast() if not self.cfg.model.freeze_unet or self.cfg.model.unfreeze_gated_cross_attn else nullcontext() 
     with desired_context:
         images = self.pipeline(**cond.unet_kwargs, **kwargs).images
 
