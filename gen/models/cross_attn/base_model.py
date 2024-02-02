@@ -439,18 +439,12 @@ class BaseMapper(Trainable):
             if "dino" in self.clip.model_name and "reg" in self.clip.model_name:
                 clip_feature_map = clip_feature_map[:, :, 4:, :]
 
-        print(clip_feature_map)
-
         if self.cfg.model.add_pos_emb:
             h, w = round(math.sqrt(clip_feature_map.shape[-2])), round(math.sqrt(clip_feature_map.shape[-2]))
             pos_emb = positionalencoding2d(clip_feature_map.shape[-1], h, w).to(clip_feature_map)
             clip_feature_map = add("... (h w) d, d h w -> ... (h w) d", clip_feature_map, pos_emb)
 
-        print(clip_feature_map)
-
         if self.cfg.model.feature_map_keys is not None:
-            print(self.mapper.position_embedding)
-            # clip_feature_map = clip_feature_map + self.mapper.position_embedding[None, :, None]
             clip_feature_map = add("b n (h w) d, n d -> b n (h w) d", clip_feature_map, self.mapper.position_embedding)
 
         latent_dim = round(math.sqrt(clip_feature_map.shape[2]))
