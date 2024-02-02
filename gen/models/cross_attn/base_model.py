@@ -174,7 +174,7 @@ class BaseMapper(Trainable):
             from gen.models.cross_attn.attn_proc import register_layerwise_attention
 
             num_cross_attn_layers = register_layerwise_attention(self.unet)
-            assert num_cross_attn_layers == 2 * self.cfg.model.num_conditioning_pairs
+            assert num_cross_attn_layers == (2 * self.cfg.model.num_conditioning_pairs * (2 if self.cfg.model.gated_cross_attn else 1))
 
     def set_training_mode(self, set_grad: bool = False):
         """

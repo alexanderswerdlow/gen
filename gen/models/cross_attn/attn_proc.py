@@ -19,7 +19,7 @@ def register_layerwise_attention(unet):
         if not (name.startswith("mid_block") or name.startswith("up_blocks") or name.startswith("down_blocks")):
             continue
 
-        if ".attn2." in name:  # Cross-attn layers are named 'attn2'
+        if ".attn2." in name or '.fuser.' in name:  # Cross-attn layers are named 'attn2' or 'fuser' for gated cross-attn
             cross_att_count += 1
 
         attn_procs[name] = XFormersAttnProcessor()
