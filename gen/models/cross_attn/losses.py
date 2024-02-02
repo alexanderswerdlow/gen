@@ -63,6 +63,7 @@ def remove_element(tensor, row_index):
 
 
 def evenly_weighted_mask_loss(
+    cfg: BaseConfig,
     batch: InputData,
     cond: ConditioningData,
     pred: torch.Tensor,
@@ -82,7 +83,7 @@ def evenly_weighted_mask_loss(
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
         object_masks = batch["gen_segmentation"][b, ..., mask_idxs_for_batch]
 
-        gt_masks = F.interpolate(rearrange(object_masks, 'h w c -> c () h w').float(), size=(64, 64)).squeeze(1)
+        gt_masks = F.interpolate(rearrange(object_masks, 'h w c -> c () h w').float(), size=(cfg.model.latent_dim, cfg.model.latent_dim)).squeeze(1)
         gt_masks = rearrange(gt_masks, 'c h w -> c (h w)') > 0.5
         
         batch_losses = []

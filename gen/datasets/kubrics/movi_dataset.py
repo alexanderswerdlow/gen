@@ -43,6 +43,7 @@ class MoviDataset(AbstractDataset, Dataset):
         return_video: bool = False,
         fake_return_n: Optional[int] = None,
         use_single_mask: bool = False, # Force using a single mask with all 1s
+        new_format: bool = False,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -53,6 +54,7 @@ class MoviDataset(AbstractDataset, Dataset):
         self.return_video = return_video
         self.fake_return_n = fake_return_n
         self.use_single_mask = use_single_mask
+        self.new_format = new_format
         local_split = ("train" if self.split == Split.TRAIN else "validation")
         local_split = local_split if custom_split is None else custom_split
         self.root_dir = self.root / self.dataset / local_split
@@ -95,33 +97,31 @@ class MoviDataset(AbstractDataset, Dataset):
             print(f"Index {video_idx} is out of bounds for dataset of size {len(self.files)} for dir: {self.root_dir}")
             raise
 
-        rgb = os.path.join(self.root_dir, os.path.join(path, "rgb.npy"))
-        instance = os.path.join(self.root_dir, os.path.join(path, "segment.npy"))
-        bbx = os.path.join(self.root_dir, os.path.join(path, "bbox.npy"))
+        # if self.num_dataset_frames == 1 and rgb.shape[0] > 1:
+        #     # Get middle frame
+        #     frame_idx = rgb.shape[0] // 2
+        
+        if self.new_format:
+            breakpoint()
+        else:
+            rgb = os.path.join(self.root_dir, os.path.join(path, "rgb.npy"))
+            instance = os.path.join(self.root_dir, os.path.join(path, "segment.npy"))
+            bbx = os.path.join(self.root_dir, os.path.join(path, "bbox.npy"))
 
-        rgb = np.load(rgb)
-        bbx = np.load(bbx)
-        instance = np.load(instance)
+            rgb = np.load(rgb)
+            bbx = np.load(bbx)
+            instance = np.load(instance)
 
-        # For returning videos
-        # rand_id = random.randint(0, 24 - self.num_frames)
-        # real_idx = [rand_id + j for j in range(self.num_frames)]
+            rgb = rgb[frame_idx]
+            instance = instance[frame_idx]
 
-        if self.num_dataset_frames == 1 and rgb.shape[0] > 1:
-            # Get middle frame
-            frame_idx = rgb.shape[0] // 2
+            bbx = bbx[frame_idx]
+            bbx[..., [0, 1]] = bbx[..., [1, 0]]
+            bbx[..., [2, 3]] = bbx[..., [3, 2]]
 
-        rgb = rgb[frame_idx]
-        bbx = bbx[frame_idx]
-        instance = instance[frame_idx]
-
-        bbx[..., [0, 1]] = bbx[..., [1, 0]]
-        bbx[..., [2, 3]] = bbx[..., [3, 2]]
-
-        bbx[..., [0, 2]] *= rgb.shape[1]
-        bbx[..., [1, 3]] *= rgb.shape[0]
-
-        bbx = torch.from_numpy(bbx)
+            bbx[..., [0, 2]] *= rgb.shape[1]
+            bbx[..., [1, 3]] *= rgb.shape[0]
+            bbx = torch.from_numpy(bbx)
 
         assert rgb.shape[0] == rgb.shape[1]
 

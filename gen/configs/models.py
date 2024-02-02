@@ -22,7 +22,7 @@ class ModelConfig:
 
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     token_embedding_dim: int = 768
-
+    latent_dim: int = 64 # Resolution after VAE [input to U-Net]. For SD at 512x512, this is 64 x 64
     resolution: int = 512
 
     revision: Optional[str] = None
@@ -34,15 +34,18 @@ class ModelConfig:
     controlnet: bool = False # Add a controlnet on top of the main U-Net
     freeze_unet: bool = True
     unet_lora: bool = False # Perform low-rank adaptation on the main U-Net
+    lora_rank: int = 4
     freeze_mapper: bool = False # Freezes the cross-attention mapper itself. Useful for debugging.
     freeze_text_encoder: bool = True # We freeze the CLIP Text encoder by default
     freeze_text_encoder_except_token_embeddings: bool = False # We can choose to only train the token embeddings like in break-a-scene
     freeze_clip: bool = True # We freeze the CLIP Vision encoder by default
     unfreeze_last_n_clip_layers: Optional[int] = None # Unfreeze specific clip layers
     unfreeze_unet_after_n_steps: Optional[int] = None
+    unfreeze_gated_cross_attn: bool = False
 
-    dropout_masks: Optional[float] = None # We can randomly dropout object masks during training. The background is always preserved.
-    per_timestep_conditioning: bool = True # Switches to the NeTI-style conditioning scheme where we get an embedding per T+L
+    training_mask_dropout: Optional[float] = None # Randomly dropout object masks during training.
+    training_layer_dropout: Optional[float] = None # Randomly dropout layer conditioning during training.
+    training_cfg_dropout: Optional[float] = None # Randomly dropout all conditioning during training.
 
     use_dataset_segmentation: bool = True # Determines if we use the dataset GT or SAM
     cross_attn_dim: int = 1024
@@ -51,33 +54,31 @@ class ModelConfig:
     encoder: Builds[type[BaseModel]] = builds(BaseModel, populate_full_signature=False)
     encoder_dim: int = 1024 # Dim of each token from encoder [E.g., CLIP]
 
-    lora_rank: int = 4
-    break_a_scene_cross_attn_loss: bool = False
-    break_a_scene_cross_attn_loss_weight: float = 1e-2
     break_a_scene_masked_loss: bool = False
     background_mask_idx: int = 0 # Used for the break-a-scene mask loss to not count loss for the background mask
     placeholder_token: str = "masks"
 
-    training_cfg_dropout: Optional[float] = None # Whether to use dropout in the training cfg
-    training_layer_dropout: Optional[float] = None # Whether to use dropout in the training cfg
-
+    finetune_unet_with_different_lrs: bool = False
+    layer_specialization: bool = False # Give each layer has its own embedding
+    per_layer_queries: bool = False # Give each layer has its own queries instead of splitting a single token
+    num_conditioning_pairs: int = 8 # Number of paired cross-attentions between U-Net latents and text-tokens [e.g., half the true number]
+    add_pos_emb: bool = False # Adds positional embeddings to encoder feature maps and U-Net queries
+    feature_map_keys: Optional[tuple[str]] = None # Use multiple feature maps for attention pooling
+    
     # Quick experiment configs
+    break_a_scene_cross_attn_loss: bool = False
+    break_a_scene_cross_attn_loss_weight: float = 1e-2
     break_a_scene_cross_attn_loss_second_stage: bool = False
-    finetune_variable_learning_rate: bool = False
     dropout_foreground_only: bool = False
     dropout_background_only: bool = False
-    layer_specialization: bool = False # Give each layer has its own embedding
-    num_conditioning_pairs: int = 8 # Number of cross-attentions between U-Net latents and text-tokens
 
-    clip_shift_scale_conditioning: bool = False # Whether to use the CLIP shift and scale embeddings as conditioning
-    add_pos_emb: bool = False
-    use_dummy_mask: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
     weighted_object_loss: bool = False
-    unfreeze_resnet: bool = False
-    attention_masking: bool = False
-    feature_map_keys: Optional[tuple[str]] = None
-    per_layer_queries: bool = False
-
+    clip_shift_scale_conditioning: bool = False # Whether to use the CLIP shift and scale embeddings as conditioning
+    use_dummy_mask: bool = False # Maps single token to (2 * token_embedding_dim) instead of T+L mapping
+    unfreeze_resnet: bool = False # Unfreeze a resnet encoder instead of CLIP during training
+    attention_masking: bool = False # Mode which only allows U-Net Queries to attend to their own mask [e.g., instead of pos embs]
+    gated_cross_attn: bool = False
+    gated_cross_attn_warmup_steps: Optional[int] = None
 
 @dataclass
 class ControlNetConfig(ModelConfig):

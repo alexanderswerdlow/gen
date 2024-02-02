@@ -8,7 +8,7 @@ from collections import defaultdict
 from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 import ipdb
@@ -412,3 +412,12 @@ def all_gather(data):
         data_list.append(pickle.loads(buffer))
 
     return data_list
+
+def get_modules(model: torch.nn.Module, cls: Any):
+    children = list(model.children())
+    if isinstance(model, cls):
+        return [model]
+    elif len(children) == 0:
+        return []
+    else:
+        return [ci for c in children for ci in get_modules(model=c, cls=cls)]

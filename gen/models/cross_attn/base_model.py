@@ -30,6 +30,7 @@ from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.tokenization_utils import get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
+from gen.utils.decoupled_utils import get_modules
 
 
 class InputData(TypedDict):
@@ -62,15 +63,16 @@ class AttentionMetadata(TypedDict):
     num_cond_vectors: int
     add_pos_emb: bool
     attention_mask: Optional[Float[Tensor, "b d h w"]]
+    scale: Optional[float]
 
 
 class BaseMapper(Trainable):
     def __init__(self, cfg: BaseConfig):
         super().__init__()
         self.cfg: BaseConfig = cfg
-        self.dtype = getattr(
-            torch, cfg.trainer.dtype.split(".")[-1]
-        )  # dtype of most intermediate tensors and frozen weights. Notably, we always use FP32 for trainable params.
+
+        # dtype of most intermediate tensors and frozen weights. Notably, we always use FP32 for trainable params.
+        self.dtype = getattr(torch, cfg.trainer.dtype.split(".")[-1])
 
         self.initialize_diffusers_models()
         self.initialize_custom_models()
@@ -110,14 +112,21 @@ class BaseMapper(Trainable):
         self.vae: AutoencoderKL = AutoencoderKL.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path, subfolder="vae", revision=self.cfg.model.revision, variant=self.cfg.model.variant
         )
+
+        unet_kwargs = dict()
+        if self.cfg.model.gated_cross_attn:
+            unet_kwargs["attention_type"] = "gated-cross-attn"
+            unet_kwargs["low_cpu_mem_usage"] = False
+
         self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
-            self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant
+            self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
         )
 
         if self.cfg.model.controlnet:
             self.controlnet: ControlNetModel = ControlNetModel.from_unet(self.unet, conditioning_channels=2)
 
     def add_adapters(self):
+        # Important, this must be called before we set LoRA
         self.set_training_mode(set_grad=True)
 
         assert not (self.cfg.model.freeze_unet is False and (self.cfg.model.unfreeze_unet_after_n_steps is not None or self.cfg.model.unet_lora))
@@ -175,7 +184,9 @@ class BaseMapper(Trainable):
 
         We set the weights to weight_dtype only if they are frozen. Otherwise, they are left in FP32.
 
-        We have the set_grad param as it appears that setting requires_grad after training has started can cause:
+        We have the set_grad param as changing requires_grad after can cause issues. 
+        
+        For example, we want to first freeze the U-Net then add the LoRA adapter. We also see this error:
         `element 0 of tensors does not require grad and does not have a grad_fn`
         """
         if set_grad:
@@ -220,6 +231,18 @@ class BaseMapper(Trainable):
             if set_grad:
                 self.unet.requires_grad_(True)
             self.unet.train()
+
+        if self.cfg.model.unfreeze_gated_cross_attn:
+            from diffusers.models.attention import BasicTransformerBlock
+            for m in get_modules(self.unet, BasicTransformerBlock):
+                assert hasattr(m, "fuser")
+                assert hasattr(m, "attn2")
+                if set_grad: # TODO: Initialize weights somewhere else
+                    # We copy the cross-attn weights from the frozen module to this
+                    m.fuser.attn.load_state_dict(m.attn2.state_dict())
+                    m.fuser.to(dtype=torch.float32)
+                    m.fuser.requires_grad_(True)
+                m.fuser.train()
 
         if self.cfg.model.freeze_text_encoder:
             if set_grad:
@@ -286,22 +309,22 @@ class BaseMapper(Trainable):
             self.controller.reset()
 
     def get_param_groups(self):
-        if not self.cfg.model.finetune_variable_learning_rate:
+        if self.cfg.model.finetune_unet_with_different_lrs:
+            unet_params = dict(self.unet.named_parameters())
+
+            def get_params(params, keys):
+                group = {k: v for k, v in params.items() if all([key in k for key in keys])}
+                for k, p in group.items():
+                    del params[k]
+                return group
+
+            return [  # Order matters here
+                {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate},
+                {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
+                {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate * 2},
+            ]
+        else:
             return None
-
-        unet_params = dict(self.unet.named_parameters())
-
-        def get_params(params, keys):
-            group = {k: v for k, v in params.items() if all([key in k for key in keys])}
-            for k, p in group.items():
-                del params[k]
-            return group
-
-        return [  # Order matters here
-            {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate},
-            {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
-            {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate * 2},
-        ]
 
     def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):
         # TODO: save_state/load_state saves everything from prepare() regardless of whether it's frozen
@@ -423,31 +446,33 @@ class BaseMapper(Trainable):
         device = batch["gen_pixel_values"].device
         dtype = self.dtype
 
-        # isinstance fails with torch dynamo
-        clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))  # b n l d
+        clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))  # b n (h w) d
 
-        if isinstance(clip_feature_map, dict) and 'ln_post' in clip_feature_map:
-            clip_feature_map['ln_post'] = rearrange("b l d -> l b d", clip_feature_map['ln_post'])
+        if isinstance(clip_feature_map, dict):
+            for k in clip_feature_map.keys():
+                if k != 'ln_post' and clip_feature_map[k].ndim == 3:
+                    clip_feature_map[k] = rearrange("l b d -> b l d", clip_feature_map[k])
 
         if self.cfg.model.feature_map_keys is not None:
-            clip_feature_map = rearrange("n (h w) b d -> b n (h w) d", torch.stack([clip_feature_map[k] for k in self.cfg.model.feature_map_keys], dim=0))  # (b, n, l, d)
+            clip_feature_map = torch.stack([clip_feature_map[k] for k in self.cfg.model.feature_map_keys], dim=0)
+            clip_feature_map = rearrange("n b (h w) d -> b n (h w) d", clip_feature_map)  # (b, n, (h w), d)
         else:
-            clip_feature_map = clip_feature_map.unsqueeze(1)  # (b, 1, l, d)
+            clip_feature_map = rearrange("b (h w) d -> b () (h w) d", clip_feature_map)  # (b, 1, (h w), d)
 
         if "resnet" not in self.clip.model_name:
             clip_feature_map = clip_feature_map[:, :, 1:, :]
             if "dino" in self.clip.model_name and "reg" in self.clip.model_name:
                 clip_feature_map = clip_feature_map[:, :, 4:, :]
 
+        latent_dim = round(math.sqrt(clip_feature_map.shape[-2]))
+
         if self.cfg.model.add_pos_emb:
-            h, w = round(math.sqrt(clip_feature_map.shape[-2])), round(math.sqrt(clip_feature_map.shape[-2]))
-            pos_emb = positionalencoding2d(clip_feature_map.shape[-1], h, w).to(clip_feature_map)
+            pos_emb = positionalencoding2d(clip_feature_map.shape[-1], latent_dim, latent_dim).to(clip_feature_map)
             clip_feature_map = add("... (h w) d, d h w -> ... (h w) d", clip_feature_map, pos_emb)
 
         if self.cfg.model.feature_map_keys is not None:
             clip_feature_map = add("b n (h w) d, n d -> b n (h w) d", clip_feature_map, self.mapper.position_embedding)
 
-        latent_dim = round(math.sqrt(clip_feature_map.shape[2]))
         feature_map_masks = []
         mask_batch_idx = []
         mask_instance_idx = []
@@ -461,8 +486,8 @@ class BaseMapper(Trainable):
                 log_warn("No masks found for this image")
                 continue
 
-            if self.cfg.model.dropout_masks is not None and self.training:
-                dropout_mask = torch.rand(one_hot_mask.size(0)).to(device) > self.cfg.model.dropout_masks
+            if self.cfg.model.training_mask_dropout is not None and self.training:
+                dropout_mask = torch.rand(one_hot_mask.size(0)).to(device) > self.cfg.model.training_mask_dropout
                 if self.cfg.model.dropout_foreground_only:
                     dropout_mask[self.cfg.model.background_mask_idx] = True  # We always keep the background mask
                 elif self.cfg.model.dropout_background_only:
@@ -598,6 +623,13 @@ class BaseMapper(Trainable):
                 )
             )
 
+            if self.cfg.model.gated_cross_attn and self.training:
+                assert self.cfg.model.gated_cross_attn_warmup_steps is not None
+                def interpolate(step: int, max_steps: int) -> float:
+                    return min(max(step, 0) / max_steps, 1.0)
+                cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["scale"] = interpolate(batch["state"].global_step, self.cfg.model.gated_cross_attn_warmup_steps)
+                
+
         if self.cfg.model.clip_shift_scale_conditioning:
             assert not self.cfg.model.layer_specialization
             cond.encoder_hidden_states[:] = shift_scale_uncond_hidden_states(self)
@@ -721,7 +753,7 @@ class BaseMapper(Trainable):
 
         losses = dict()
         if self.cfg.model.weighted_object_loss:
-            losses["diffusion_loss"] = evenly_weighted_mask_loss(batch=batch, cond=cond, pred=model_pred.float(), target=target.float())
+            losses["diffusion_loss"] = evenly_weighted_mask_loss(cfg=self.cfg, batch=batch, cond=cond, pred=model_pred.float(), target=target.float())
         else:
             losses["diffusion_loss"] = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 

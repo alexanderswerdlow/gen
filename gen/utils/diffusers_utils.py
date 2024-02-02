@@ -49,13 +49,6 @@ def load_stable_diffusion_model(
             subfolder="text_encoder",
             torch_dtype=torch_dtype,
         )
-        if cfg.model.per_timestep_conditioning:
-            text_encoder.text_model.set_mapper(mapper=model, cfg=cfg)
-
-    if cfg.model.per_timestep_conditioning:
-        unwrap(text_encoder).eval()
-        if not cfg.model.freeze_unet:
-            unwrap(pipeline.unet).eval()
 
     pipeline = cls.from_pretrained(**kwargs)
     pipeline = pipeline.to(device)

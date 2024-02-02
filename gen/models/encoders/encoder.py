@@ -23,7 +23,6 @@ from gen.models.encoders.extracted_encoder_utils import interpolate_embeddings, 
 ImArr: TypeAlias = Union[Image.Image, Tensor]
 import open_clip
 
-
 def reshape_vit_output(num_to_truncate: int, x: torch.Tensor):
     x = x[:, num_to_truncate:]
     assert np.isclose(int(math.sqrt(x.shape[1])), math.sqrt(x.shape[1]))
@@ -276,6 +275,7 @@ class FeatureExtractorModel(BaseModel):
 
     def forward(self, image: ImArr, **kwargs):
         output = self.model(image)
+
         if self.return_only is not None:
             output = output[self.return_only]
         return output
