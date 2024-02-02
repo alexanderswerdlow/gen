@@ -22,7 +22,7 @@ shared_overfit_movi_args = dict(
 shared_movi_args = dict(
     path=MOVI_DATASET_PATH,
     num_objects=23,
-    augmentation=dict(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
+    augmentation=dict(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=False),
 )
 
 
@@ -73,8 +73,8 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi_augmentation",
         dataset=dict(
-            train_dataset=dict(augmentation=dict(enable_horizontal_flip=True, enable_crop=True)),
-            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=True, enable_crop=True)),
+            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=True)),
+            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=True)),
         ),
     )
 
@@ -198,5 +198,5 @@ def get_experiments():
 
     mode_store(
         name="multiscale",
-        model=dict(per_layer_queries=True, encoder=dict(return_only=None), feature_map_keys=("stage1", "stage6", "stage12", "stage18", "stage24")),
+        model=dict(per_layer_queries=True, encoder=dict(return_only=None), feature_map_keys=("stage1", "stage6", "stage12", "stage18", "stage24",)) # 
     )

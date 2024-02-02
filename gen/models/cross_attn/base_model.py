@@ -15,7 +15,7 @@ from beartype import beartype
 from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
 from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
-from torch import Tensor
+from torch import Tensor, isnan
 from transformers import AutoTokenizer, CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
 
@@ -300,7 +300,7 @@ class BaseMapper(Trainable):
         return [  # Order matters here
             {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate},
             {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
-            {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate},
+            {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate * 2},
         ]
 
     def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):
@@ -426,6 +426,9 @@ class BaseMapper(Trainable):
         # isinstance fails with torch dynamo
         clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))  # b n l d
 
+        if isinstance(clip_feature_map, dict) and 'ln_post' in clip_feature_map:
+            clip_feature_map['ln_post'] = rearrange("b l d -> l b d", clip_feature_map['ln_post'])
+
         if self.cfg.model.feature_map_keys is not None:
             clip_feature_map = rearrange("n (h w) b d -> b n (h w) d", torch.stack([clip_feature_map[k] for k in self.cfg.model.feature_map_keys], dim=0))  # (b, n, l, d)
         else:
@@ -436,12 +439,18 @@ class BaseMapper(Trainable):
             if "dino" in self.clip.model_name and "reg" in self.clip.model_name:
                 clip_feature_map = clip_feature_map[:, :, 4:, :]
 
+        print(clip_feature_map)
+
         if self.cfg.model.add_pos_emb:
-            h, w = round(math.sqrt(clip_feature_map.shape[-3])), round(math.sqrt(clip_feature_map.shape[-2]))
+            h, w = round(math.sqrt(clip_feature_map.shape[-2])), round(math.sqrt(clip_feature_map.shape[-2]))
             pos_emb = positionalencoding2d(clip_feature_map.shape[-1], h, w).to(clip_feature_map)
             clip_feature_map = add("... (h w) d, d h w -> ... (h w) d", clip_feature_map, pos_emb)
 
+        print(clip_feature_map)
+
         if self.cfg.model.feature_map_keys is not None:
+            print(self.mapper.position_embedding)
+            # clip_feature_map = clip_feature_map + self.mapper.position_embedding[None, :, None]
             clip_feature_map = add("b n (h w) d, n d -> b n (h w) d", clip_feature_map, self.mapper.position_embedding)
 
         latent_dim = round(math.sqrt(clip_feature_map.shape[2]))
@@ -497,16 +506,22 @@ class BaseMapper(Trainable):
         mask_batch_idx = torch.cat(mask_batch_idx, dim=0).to(device)
         mask_instance_idx = torch.cat(mask_instance_idx, dim=0).to(device)
 
-        # We sum the number of valid "pixels" in each mask
-        seqlens_k = feature_map_masks.sum(dim=-1)  # (total,)
+        # In the simplest case, we have one query per mask, and a single feature map. However, we support multiple queries per mask 
+        # [to generate tokens for different layers] and also support each query to have K/Vs  from different feature maps, as long as all feature maps 
+        # have the same dimension allowing us to assume that each mask has the same number of pixels (KVs) for each feature map.
+        num_queries_per_mask = self.cfg.model.num_conditioning_pairs if self.cfg.model.per_layer_queries else 1
+        num_feature_maps = clip_feature_map.shape[1]
+        seqlens_k = feature_map_masks.sum(dim=-1) * num_feature_maps  # We sum the number of valid "pixels" in each mask
+        seqlens_k = rearrange('b -> (b layers)', seqlens_k, layers = num_queries_per_mask)
+
         max_seqlen_k = seqlens_k.max().item()
         cu_seqlens_k = F.pad(torch.cumsum(seqlens_k, dim=0, dtype=torch.torch.int32), (1, 0))
 
-        flat_features = rearrange("total n (h w) d -> (total n h w) d", clip_feature_map[mask_batch_idx])
-        flat_mask = rearrange("total (h w) -> (total n h w)", feature_map_masks, n=clip_feature_map.shape[1])
+        flat_features = rearrange("masks n (h w) d -> (masks layers n h w) d", clip_feature_map[mask_batch_idx], layers=num_queries_per_mask)
+        flat_mask = rearrange("masks (h w) -> (masks layers n h w)", feature_map_masks, layers=num_queries_per_mask, n=num_feature_maps) # Repeat mask over layers
         k_features = flat_features[flat_mask]
 
-        # The actual query is obtained from the timestep + layer encoding later
+        # The actual query is obtained from the mapper class (a learnable tokens)        
         cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(device)
         max_seqlen_q = 1  # We are doing attention pooling so we have one query per mask
 
@@ -526,14 +541,14 @@ class BaseMapper(Trainable):
         batch = self.check_add_segmentation(batch)
         cond = self.add_cross_attn_params(batch, cond)
 
-        queries = rearrange("layers d -> (layers masks) d", self.mapper.learnable_token, masks=cond.mask_batch_idx.shape[0])
+        queries = rearrange("layers d -> (masks layers) d", self.mapper.learnable_token, masks=cond.mask_batch_idx.shape[0])
 
         cond.attn_dict["x"] = queries.to(self.dtype)
         cond.mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
 
         if self.cfg.model.per_layer_queries:
             # Break e.g., 1024 -> 16 x 64
-            cond.mask_tokens = rearrange("(layers masks) d -> masks (layers d)", cond.mask_tokens, masks=cond.mask_batch_idx.shape[0])
+            cond.mask_tokens = rearrange("(masks layers) d -> masks (layers d)", cond.mask_tokens, masks=cond.mask_batch_idx.shape[0])
 
         elif self.cfg.model.layer_specialization:
             # Break e.g., 1024 -> 16 x 64
@@ -715,6 +730,9 @@ class BaseMapper(Trainable):
             losses["diffusion_loss"] = evenly_weighted_mask_loss(batch=batch, cond=cond, pred=model_pred.float(), target=target.float())
         else:
             losses["diffusion_loss"] = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+        if losses["diffusion_loss"].isnan().any():
+            breakpoint()
 
         if self.cfg.model.break_a_scene_cross_attn_loss:
             losses["cross_attn_loss"] = break_a_scene_cross_attn_loss(cfg=self.cfg, batch=batch, controller=self.controller, cond=cond)
