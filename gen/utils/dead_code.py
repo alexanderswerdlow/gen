@@ -322,3 +322,7 @@ def viz():
                 #     self.layer_dropout_func = set_at("[b] tokens ([n] d), masked [2], tokens d -> b tokens ([n] d)", cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states, graph=True)
 
                 # set_at("[b] tokens ([n] d), masked [2], tokens d -> b tokens ([n] d)", cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states)
+    
+                        # for name, param in self.model.named_parameters():
+                        # if param.requires_grad and param.grad is None:
+                        #     print(name)

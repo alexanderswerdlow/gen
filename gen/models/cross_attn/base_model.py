@@ -628,7 +628,7 @@ class BaseMapper(Trainable):
             if self.cfg.model.gated_cross_attn and self.training:
                 assert self.cfg.model.gated_cross_attn_warmup_steps is not None
                 def interpolate(step: int, max_steps: int) -> float:
-                    return min(max(step, 0) / max_steps, 1.0)
+                    return min(min(max(step, 0) / max_steps, 1.0), 1e-6) # We need to start out >0 so the params are used in the first step
                 cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["gate_scale"] = interpolate(batch["state"].global_step, self.cfg.model.gated_cross_attn_warmup_steps)
                 
 
@@ -765,9 +765,6 @@ class BaseMapper(Trainable):
             losses["diffusion_loss"] = evenly_weighted_mask_loss(cfg=self.cfg, batch=batch, cond=cond, pred=model_pred.float(), target=target.float())
         else:
             losses["diffusion_loss"] = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-
-        if losses["diffusion_loss"].isnan().any():
-            breakpoint()
 
         if self.cfg.model.break_a_scene_cross_attn_loss:
             losses["cross_attn_loss"] = break_a_scene_cross_attn_loss(cfg=self.cfg, batch=batch, controller=self.controller, cond=cond)
