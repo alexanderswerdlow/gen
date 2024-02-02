@@ -250,7 +250,7 @@ def load_checkpoint_from_url(url: str, file_path: Optional[str] = None) -> Path:
 
 
 # Copied from torch.profiler.profiler
-def tensorboard_trace_handler(dir_name: str, worker_name: Optional[str] = None, use_gzip: bool = True):
+def tensorboard_trace_handler(dir_name: str, record_memory: bool = False, worker_name: Optional[str] = None, use_gzip: bool = True):
     """
     Outputs tracing files to directory of ``dir_name``, then that directory can be
     directly delivered to tensorboard as logdir.
@@ -275,27 +275,30 @@ def tensorboard_trace_handler(dir_name: str, worker_name: Optional[str] = None, 
         if use_gzip:
             file_name = file_name + ".gz"
 
+        print(f"Exporting to {os.path.join(dir_name, file_name)}")
         prof.export_chrome_trace(os.path.join(dir_name, file_name))
-        prof.export_memory_timeline(os.path.join(dir_name, "memory_timeline.html"))
+        if record_memory:
+            prof.export_memory_timeline(os.path.join(dir_name, "memory_timeline.html"))
         prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=100)
 
     return handler_fn
 
 
 class Profiler:
-    def __init__(self, output_dir, active_steps: int = 2, record_separate_memory=True):
+    def __init__(self, output_dir, active_steps: int = 2, record_memory: bool = False):
+        self.record_memory = record_memory
         self.profile_dir = Path(output_dir) / "profile"
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        wait, warmup, active, repeat = 0, 0, active_steps, 0
+        wait, warmup, active, repeat = 0, 1, active_steps, 0
         self.total_steps = (wait + warmup + active) * (1 + repeat)
         schedule = torch.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat)
         self.profiler = torch.profiler.profile(
             schedule=schedule,
-            on_trace_ready=tensorboard_trace_handler(self.profile_dir),
+            on_trace_ready=tensorboard_trace_handler(self.profile_dir, record_memory=record_memory),
             record_shapes=True,
             with_modules=True,
             with_flops=True,
-            profile_memory=True,
+            profile_memory=record_memory,
             with_stack=True,
         )
         self.profiler.start()
@@ -306,18 +309,20 @@ class Profiler:
 
     def finish(self):
         self.profiler.stop()
-
-        torch.cuda.memory._dump_snapshot(f"{self.profile_dir}/memory_snapshot.pickle")
-        torch.cuda.memory._record_memory_history(enabled=None)
-        os.system(f"python -m torch.cuda._memory_viz trace_plot {self.profile_dir}/memory_snapshot.pickle -o {self.profile_dir}/memory_snapshot.html")
-
-        log_func(f"Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle")
-        log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008")
-
         traces = glob.glob(f"{self.profile_dir}/*.pt.trace.json*")
         for trace in traces:
             log_func(f"Adding {trace}")
             wandb.save(trace, base_path=self.profile_dir, policy="now")
+
+        if self.record_memory:
+            torch.cuda.memory._dump_snapshot(f"{self.profile_dir}/memory_snapshot.pickle")
+            torch.cuda.memory._record_memory_history(enabled=None)
+            os.system(
+                f"python -m torch.cuda._memory_viz trace_plot {self.profile_dir}/memory_snapshot.pickle -o {self.profile_dir}/memory_snapshot.html"
+            )
+
+            log_func(f"Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle")
+            log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008")
 
 
 def use_dist():
@@ -371,6 +376,7 @@ def write_to_file(path: Path, text: str):
     except:
         log_func(f"Could not write to {path}")
 
+
 def all_gather(data):
     """
     Run all_gather on arbitrary picklable data (not necessarily tensors)
@@ -412,6 +418,7 @@ def all_gather(data):
         data_list.append(pickle.loads(buffer))
 
     return data_list
+
 
 def get_modules(model: torch.nn.Module, cls: Any):
     children = list(model.children())

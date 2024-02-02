@@ -31,7 +31,8 @@ from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.tokenization_utils import get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
 from gen.utils.decoupled_utils import get_modules
-
+from peft import LoraConfig
+from diffusers.training_utils import cast_training_params
 
 class InputData(TypedDict):
     gen_pixel_values: Float[Tensor, "b c h w"]
@@ -131,8 +132,6 @@ class BaseMapper(Trainable):
 
         assert not (self.cfg.model.freeze_unet is False and (self.cfg.model.unfreeze_unet_after_n_steps is not None or self.cfg.model.unet_lora))
         if self.cfg.model.unet_lora:
-            from peft import LoraConfig
-
             unet_lora_config = LoraConfig(
                 r=self.cfg.model.lora_rank,
                 lora_alpha=self.cfg.model.lora_rank,
@@ -140,8 +139,6 @@ class BaseMapper(Trainable):
                 target_modules=["to_k", "to_q", "to_v", "to_out.0"],
             )
             self.unet.add_adapter(unet_lora_config)
-            from diffusers.training_utils import cast_training_params
-
             cast_training_params(self.unet, dtype=torch.float32)
 
         if self.cfg.trainer.enable_xformers_memory_efficient_attention:
@@ -473,7 +470,7 @@ class BaseMapper(Trainable):
         latent_dim = round(math.sqrt(clip_feature_map.shape[-2]))
 
         if self.cfg.model.add_pos_emb:
-            pos_emb = positionalencoding2d(clip_feature_map.shape[-1], latent_dim, latent_dim).to(clip_feature_map)
+            pos_emb = positionalencoding2d(clip_feature_map.shape[-1], latent_dim, latent_dim, device=clip_feature_map.device, dtype=clip_feature_map.dtype).to(clip_feature_map)
             clip_feature_map = add("... (h w) d, d h w -> ... (h w) d", clip_feature_map, pos_emb)
 
         if self.cfg.model.feature_map_keys is not None:
@@ -688,7 +685,10 @@ class BaseMapper(Trainable):
         if self.cfg.model.layer_specialization and self.cfg.model.training_layer_dropout is not None:
             dropout_idx = torch.rand(cond.encoder_hidden_states.shape[0], self.cfg.model.num_conditioning_pairs) < self.cfg.model.training_layer_dropout
             if dropout_idx.sum() > 0:
-                set_at("[b] tokens ([n] d), masked [2], tokens d -> b tokens ([n] d)", cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states)
+                if hasattr(self, "layer_dropout_func"):
+                    self.layer_dropout_func(cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states)
+                else:
+                    self.layer_dropout_func = set_at("[b] tokens ([n] d), masked [2], tokens d -> b tokens ([n] d)", cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states, graph=True)
 
     @beartype
     def forward(self, batch: InputData):

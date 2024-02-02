@@ -121,6 +121,11 @@ def main(cfg: BaseConfig):
         torch.autograd.set_detect_anomaly(True)
         log_warn("Setting anomaly detection to True. This will slow down training.")
 
+    if cfg.profile:
+        cfg.trainer.gradient_accumulation_steps = 1
+        cfg.trainer.enable_dynamic_grad_accum = False
+        log_warn("Disabling all gradient accumulation for profiling!")
+
     num_gpus = get_num_gpus()
     if cfg.trainer.enable_dynamic_grad_accum:
         if num_gpus > cfg.trainer.dynamic_grad_accum_default_gpus:

@@ -10,7 +10,7 @@ from einops import rearrange
 
 from gen.models.cross_attn.base_model import AttentionMetadata
 from gen.models.cross_attn.deprecated_configs import handle_attn_proc_masking
-from gen.models.utils import find_true_indices_batched, positionalencoding2d
+from gen.models.utils import positionalencoding2d
 
 def register_layerwise_attention(unet):
     attn_procs = {}
@@ -78,7 +78,7 @@ class XFormersAttnProcessor:
             
             if attn_meta["add_pos_emb"]:
                 h, w = round(math.sqrt(hidden_states.shape[1])), round(math.sqrt(hidden_states.shape[1]))
-                pos_emb = positionalencoding2d(hidden_states.shape[-1], h, w).to(hidden_states)
+                pos_emb = positionalencoding2d(hidden_states.shape[-1], h, w, device=hidden_states.device, dtype=hidden_states.dtype)
                 hidden_states = hidden_states + rearrange(pos_emb, "d h w -> () (h w) d")
         # END MODIFICATION
 

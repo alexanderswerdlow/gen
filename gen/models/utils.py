@@ -31,8 +31,7 @@ def _init_weights(m):
     elif isinstance(m, nn.Embedding):
         nn.init.normal_(m.weight, std=initializer_range)
 
-
-def positionalencoding2d(d_model, height, width):
+def positionalencoding2d(d_model, height, width, device, dtype):
     """
     :param d_model: dimension of the model
     :param height: height of the positions
@@ -42,13 +41,14 @@ def positionalencoding2d(d_model, height, width):
     if d_model % 4 != 0:
         raise ValueError("Cannot use sin/cos positional encoding with "
                          "odd dimension (got dim={:d})".format(d_model))
-    pe = torch.zeros(d_model, height, width)
+    pe = torch.empty(d_model, height, width, device=device, dtype=dtype)
     # Each dimension use half of d_model
     d_model = int(d_model / 2)
-    div_term = torch.exp(torch.arange(0., d_model, 2) *
-                         -(math.log(10000.0) / d_model))
-    pos_w = torch.arange(0., width).unsqueeze(1)
-    pos_h = torch.arange(0., height).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0., d_model, 2, device=device, dtype=dtype) * -(math.log(10000.0) / d_model))
+    pos_w = torch.arange(0., width, device=device, dtype=dtype).unsqueeze(1)
+    pos_h = torch.arange(0., height, device=device, dtype=dtype).unsqueeze(1)
+
+    # alternates between sin and cos up to halfway for w and the second half for h (half of the dimension is for each)
     pe[0:d_model:2, :, :] = torch.sin(pos_w * div_term).transpose(0, 1).unsqueeze(1).repeat(1, height, 1)
     pe[1:d_model:2, :, :] = torch.cos(pos_w * div_term).transpose(0, 1).unsqueeze(1).repeat(1, height, 1)
     pe[d_model::2, :, :] = torch.sin(pos_h * div_term).transpose(0, 1).unsqueeze(2).repeat(1, 1, width)
@@ -141,7 +141,42 @@ def find_true_indices_batched(original, dh, dw):
 
 
 if __name__ == "__main__":
-    x = torch.rand(100)
-    pos_emb = SinusoidalPosEmb(512)
-    y = pos_emb(x)
-    print(y.shape)
+    # x = torch.rand(100)
+    # pos_emb = SinusoidalPosEmb(512)
+    # y = pos_emb(x)
+    # print(y.shape)
+
+    import torch.utils.benchmark as benchmark
+    globals_dict = {
+        'd_model': 1024,
+        'height': 64,
+        'width': 64,
+        'device': 'cuda:0',
+        'dtype': torch.bfloat16
+    }
+
+
+
+    t1 = benchmark.Timer(
+        stmt='positionalencoding2d_slow(d_model, height, width, device, dtype)',
+        setup='from __main__ import positionalencoding2d_slow',
+        globals=globals_dict)
+    
+    t0 = benchmark.Timer(
+        stmt='positionalencoding2d(d_model, height, width, device, dtype)',
+        setup='from __main__ import positionalencoding2d',
+        globals=globals_dict)
+
+    t2 = benchmark.Timer(
+        stmt='positionalencoding2d_(d_model, height, width, device, dtype)',
+        setup='from __main__ import positionalencoding2d_',
+        globals=globals_dict)
+
+    print(t0.timeit(100))
+    print(t1.timeit(100))
+    print(t2.timeit(100))
+
+    assert positionalencoding2d(**globals_dict).allclose(positionalencoding2d_(**globals_dict))
+    assert positionalencoding2d(**globals_dict).allclose(positionalencoding2d_slow(**globals_dict))
+
+    breakpoint()

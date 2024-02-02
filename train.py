@@ -327,6 +327,7 @@ class Trainer:
                     break
 
                 elif self.cfg.profile and profiler.step(global_step):
+                    assert self.cfg.trainer.gradient_accumulation_steps == 1
                     log_info(f"Profiling finished at step: {global_step}")
                     break
 

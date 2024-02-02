@@ -312,3 +312,13 @@ def viz():
             #     global idx_
             #     Im.concat_horizontal(*imgs_).save(f'{idx_}_attn.png')
             #     idx_ += 1
+
+                            # if hasattr(self, "layer_dropout_func"):
+                #     input_ = cond.encoder_hidden_states.clone()
+                #     self.layer_dropout_func(input_, dropout_idx.nonzero(), self.uncond_hidden_states)
+                #     set_at("[b] tokens ([n] d), masked [2], tokens d -> b tokens ([n] d)", cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states)
+                #     assert torch.allclose(input_, cond.encoder_hidden_states)
+                # else:
+                #     self.layer_dropout_func = set_at("[b] tokens ([n] d), masked [2], tokens d -> b tokens ([n] d)", cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states, graph=True)
+
+                # set_at("[b] tokens ([n] d), masked [2], tokens d -> b tokens ([n] d)", cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states)

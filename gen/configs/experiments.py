@@ -207,6 +207,13 @@ def get_experiments():
     )
 
     mode_store(
+        name="unet_no_lora",
+        model=dict(unet_lora=False),
+        trainer=dict(learning_rate=1e-5),
+        dataset=dict(train_dataset=dict(batch_size=20)),
+    )
+
+    mode_store(
         name="multiscale",
         model=dict(
             per_layer_queries=True,
@@ -243,5 +250,5 @@ def get_experiments():
     mode_store(
         name="gated_cross_attn",
         model=dict(add_pos_emb=True, gated_cross_attn=True, unfreeze_gated_cross_attn=True, gated_cross_attn_warmup_steps=500, lora_rank=4),
-        hydra_defaults=["unet_lora", "multiscale", "low_res"],
+        hydra_defaults=["unet_no_lora", "multiscale", "low_res"],
     )
