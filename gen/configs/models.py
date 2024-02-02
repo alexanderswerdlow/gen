@@ -75,6 +75,8 @@ class ModelConfig:
     weighted_object_loss: bool = False
     unfreeze_resnet: bool = False
     attention_masking: bool = False
+    feature_map_keys: Optional[tuple[str]] = None
+    per_layer_queries: bool = False
 
 
 @dataclass

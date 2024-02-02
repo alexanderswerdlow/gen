@@ -195,3 +195,8 @@ def get_experiments():
         model=dict(add_pos_emb=True, finetune_variable_learning_rate=True),
         hydra_defaults=["unet_finetune"],
     )
+
+    mode_store(
+        name="multiscale",
+        model=dict(per_layer_queries=True, encoder=dict(return_only=None), feature_map_keys=("stage1", "stage6", "stage12", "stage18", "stage24")),
+    )

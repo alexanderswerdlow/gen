@@ -20,13 +20,22 @@ class Mapper(nn.Module):
     ):
         super().__init__()
         self.cfg = cfg
-        self.learnable_token = nn.Parameter(torch.randn(cfg.model.cross_attn_dim))
+
+        
+
         self.cross_attn = CrossAttn(cfg=cfg, input_dim=self.cfg.model.encoder_dim, cross_attn_dim=self.cfg.model.cross_attn_dim, output_dim=cfg.model.token_embedding_dim)
-        if self.cfg.model.layer_specialization:
+
+        self.learnable_token = nn.Parameter(torch.randn(cfg.model.num_conditioning_pairs if self.cfg.model.per_layer_queries else 1, cfg.model.cross_attn_dim))
+
+        # If we have per layer queries, we don't need to chop up the mask vector
+        if self.cfg.model.layer_specialization and not self.cfg.model.per_layer_queries:
             self.layer_specialization = nn.Sequential(
                 nn.Linear(cfg.model.token_embedding_dim // self.cfg.model.num_conditioning_pairs, cfg.model.token_embedding_dim), 
                 nn.LayerNorm(cfg.model.token_embedding_dim)
             )
+
+        if self.cfg.model.feature_map_keys is not None:
+            self.position_embedding = nn.Parameter(torch.randn(len(self.cfg.model.feature_map_keys), self.cfg.model.encoder_dim) * .02)
 
         self.apply(_init_weights)
 
