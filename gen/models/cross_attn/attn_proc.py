@@ -72,9 +72,8 @@ class XFormersAttnProcessor:
         if encoder_hidden_states is not None and attn_meta is not None:
             if attn_meta.get("frozen_encoder_hidden_states", None) is not None and can_override_encoder_hidden_states:
                 if attn_meta["frozen_encoder_hidden_states"].shape[0] != encoder_hidden_states.shape[0]:
-                    # TODO: This is very very hacky might be broken.
+                    # TODO: This is very very hacky and probably broken.
                     rep_ = (encoder_hidden_states.shape[0] // attn_meta["frozen_encoder_hidden_states"].shape[0])
-                    orig_ = encoder_hidden_states.clone()
                     if rep_ == 2:
                         encoder_hidden_states = torch.cat([encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[0][:attn_meta["frozen_encoder_hidden_states"].shape[0]], attn_meta["frozen_encoder_hidden_states"]])
                     else:

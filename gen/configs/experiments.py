@@ -231,7 +231,7 @@ def get_experiments():
     mode_store(
         name="unet_finetune_with_pos_emb",
         model=dict(add_pos_emb=True, finetune_unet_with_different_lrs=True),
-        hydra_defaults=["multiscale", "unet_finetune"],
+        hydra_defaults=["multiscale", "unet_finetune", "low_res", "movi_medium"],
     )
 
     mode_store(
