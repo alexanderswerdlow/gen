@@ -132,7 +132,7 @@ def get_datasets():  # TODO: These do not need to be global configs
         dataset=dict(
             train_dataset=dict(
                 custom_split="train", 
-                augmentation=dict(enable_horizontal_flip=False, enable_crop=True, minimal_source_augmentation=True),
+                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_crop=True, minimal_source_augmentation=True),
                 path=MOVI_MEDIUM_PATH,
                 num_objects=23,
                 num_frames=8,
@@ -148,7 +148,7 @@ def get_datasets():  # TODO: These do not need to be global configs
                 num_frames=8,
                 num_cameras=2,
                 multi_camera_format=True,
-                augmentation=dict(enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True),
+                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True),
             ),
         ),
         hydra_defaults=[
@@ -230,7 +230,7 @@ def get_experiments():
 
     mode_store(
         name="unet_finetune_with_pos_emb",
-        model=dict(add_pos_emb=True, finetune_unet_with_different_lrs=True),
+        model=dict(add_pos_emb=True, finetune_unet_with_different_lrs=True, decoder_transformer=dict(depth=4)),
         hydra_defaults=["multiscale", "unet_finetune", "low_res", "movi_medium"],
     )
 
