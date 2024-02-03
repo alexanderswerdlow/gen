@@ -5,7 +5,6 @@ jaxtyping
 hickle
 numpy
 scipy
-numpy
 matplotlib
 tqdm
 opencv-python

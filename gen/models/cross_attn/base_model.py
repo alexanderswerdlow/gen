@@ -4,7 +4,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Optional, TypedDict, Union
 
-from einx import rearrange, add, set_at
+from einx import rearrange, add, set_at, where
 import hydra
 import numpy as np
 import torch
@@ -15,7 +15,7 @@ from beartype import beartype
 from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
 from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
-from torch import Tensor, isnan
+from torch import Tensor
 from transformers import AutoTokenizer, CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
 
@@ -669,6 +669,8 @@ class BaseMapper(Trainable):
         return batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=self.dtype)
 
     def dropout_cfg(self, cond: ConditioningData):
+        device: torch.device = cond.encoder_hidden_states.device
+
         # We dropout the entire conditioning [all-layers] for a subset of batches.
         if self.cfg.model.training_cfg_dropout is not None:
             uncond_encoder_hidden_states = self.uncond_hidden_states
@@ -676,22 +678,18 @@ class BaseMapper(Trainable):
             if self.cfg.model.layer_specialization:  # If we have different embeddings per-layer, we need to repeat the uncond embeddings
                 uncond_encoder_hidden_states = rearrange("tokens d -> tokens (n d)", uncond_encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
 
-            dropout_idx = torch.rand(cond.encoder_hidden_states.shape[0]) < self.cfg.model.training_cfg_dropout
-            cond.encoder_hidden_states[dropout_idx] = uncond_encoder_hidden_states
-            cond.batch_cond_dropout = dropout_idx
+            dropout_mask = torch.rand(cond.encoder_hidden_states.shape[0], device=device) < self.cfg.model.training_cfg_dropout
+            cond.encoder_hidden_states[dropout_mask] = uncond_encoder_hidden_states
+            cond.batch_cond_dropout = dropout_mask
 
             if self.cfg.model.attention_masking:
-                handle_attention_masking_dropout(cond, dropout_idx)
+                handle_attention_masking_dropout(cond, dropout_mask)
 
         # We also might dropout only specific pairs of layers. In this case, we use the same uncond embeddings.
         # Note that there is a very rare chance that we could dropout all layers but still compute loss.
         if self.cfg.model.layer_specialization and self.cfg.model.training_layer_dropout is not None:
-            dropout_idx = torch.rand(cond.encoder_hidden_states.shape[0], self.cfg.model.num_conditioning_pairs) < self.cfg.model.training_layer_dropout
-            if dropout_idx.sum() > 0:
-                if hasattr(self, "layer_dropout_func"):
-                    self.layer_dropout_func(cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states)
-                else:
-                    self.layer_dropout_func = set_at("[b] tokens ([n] d), masked [2], tokens d -> b tokens ([n] d)", cond.encoder_hidden_states, dropout_idx.nonzero(), self.uncond_hidden_states, graph=True)
+            dropout_mask = torch.rand(cond.encoder_hidden_states.shape[0], self.cfg.model.num_conditioning_pairs, device=device) < self.cfg.model.training_layer_dropout
+            cond.encoder_hidden_states = where("b n, tokens d, b tokens (n d) -> b tokens (n d)", dropout_mask, self.uncond_hidden_states, cond.encoder_hidden_states)
 
     @beartype
     def forward(self, batch: InputData):
