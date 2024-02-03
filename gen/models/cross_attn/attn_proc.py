@@ -71,7 +71,17 @@ class XFormersAttnProcessor:
         is_cross_attn = encoder_hidden_states is not None
         if encoder_hidden_states is not None and attn_meta is not None:
             if attn_meta.get("frozen_encoder_hidden_states", None) is not None and can_override_encoder_hidden_states:
-                encoder_hidden_states = attn_meta["frozen_encoder_hidden_states"]
+                if attn_meta["frozen_encoder_hidden_states"].shape[0] != encoder_hidden_states.shape[0]:
+                    # TODO: This is very very hacky might be broken.
+                    rep_ = (encoder_hidden_states.shape[0] // attn_meta["frozen_encoder_hidden_states"].shape[0])
+                    orig_ = encoder_hidden_states.clone()
+                    if rep_ == 2:
+                        encoder_hidden_states = torch.cat([encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[0][:attn_meta["frozen_encoder_hidden_states"].shape[0]], attn_meta["frozen_encoder_hidden_states"]])
+                    else:
+                        rep_ = rep_ // 2
+                        encoder_hidden_states = torch.cat([encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[0][:rep_], attn_meta["frozen_encoder_hidden_states"].repeat(rep_, 1, 1)])
+                else:
+                    encoder_hidden_states = attn_meta["frozen_encoder_hidden_states"]
             else:
                 # TODO: We assume that we *always* call all cross-attn layers in order, and that we never skip any.
                 # This makes it easier for e.g., inference so we don't need to reset the counter, but is pretty hacky.
