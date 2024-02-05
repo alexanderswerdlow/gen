@@ -108,9 +108,9 @@ class MoviDataset(AbstractDataset, Dataset):
             rgb = data["rgb"][camera_idx, frame_idx]
             instance = data["segment"][camera_idx, frame_idx]
 
-            quaternions = data["quaternions"]
-            positions = data["positions"]
-            valid = data["valid"]
+            # quaternions = data["quaternions"]
+            # positions = data["positions"]
+            # valid = data["valid"]
         else:
             assert self.num_cameras == 1 and camera_idx == 0
             rgb = os.path.join(self.root_dir, os.path.join(path, "rgb.npy"))

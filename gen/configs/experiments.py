@@ -249,6 +249,6 @@ def get_experiments():
 
     mode_store(
         name="gated_cross_attn",
-        model=dict(add_pos_emb=True, gated_cross_attn=True, unfreeze_gated_cross_attn=True, gated_cross_attn_warmup_steps=500, lora_rank=4),
+        model=dict(add_pos_emb=True, gated_cross_attn=True, unfreeze_gated_cross_attn=True, lora_rank=4),
         hydra_defaults=["unet_no_lora", "multiscale", "low_res", "movi_medium"],
     )

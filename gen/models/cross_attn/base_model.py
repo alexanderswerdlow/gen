@@ -222,12 +222,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.freeze_unet:
             if set_grad:
-                if self.cfg.model.unfreeze_gated_cross_attn:
-                    for n, p in self.unet.named_parameters():
-                        if "fuser" not in n:
-                            p.to(device=self.device, dtype=self.dtype)
-                else:
-                    self.unet.to(device=self.device, dtype=self.dtype)
+                self.unet.to(device=self.device, dtype=self.dtype)
                 self.unet.requires_grad_(False)
             self.unet.eval()
         else:
@@ -307,7 +302,10 @@ class BaseMapper(Trainable):
             torch_dtype=self.dtype,
         )
 
-        self.eval()
+        if self.cfg.model.unfreeze_gated_cross_attn:
+            self.eval()
+            log_warn("Not setting eval mode for gated cross-attn")
+            
         if self.cfg.model.break_a_scene_cross_attn_loss:
             self.controller.reset()
 
@@ -606,11 +604,9 @@ class BaseMapper(Trainable):
             assert placeholder_locs.shape[0] == 1  # We should only have one placeholder token
             start_of_prompt = cur_ids[: placeholder_locs[0]]
             end_of_prompt = cur_ids[placeholder_locs[0] + 1 :]
-            additional_eos_token = torch.tensor([self.eos_token_id]).to(self.device)
+            eos_token = torch.tensor([self.eos_token_id]).to(self.device)
 
-            batch["formatted_input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, additional_eos_token), dim=0)[
-                : cur_ids.shape[0]
-            ]
+            batch["formatted_input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, eos_token), dim=0)[:cur_ids.shape[0]]
 
         # Overwrite mask locations
         learnable_idxs = (batch["formatted_input_ids"] == self.placeholder_token_id).nonzero(as_tuple=True)
@@ -624,10 +620,7 @@ class BaseMapper(Trainable):
                 add_pos_emb=self.cfg.model.add_pos_emb,
             ))
 
-            if self.cfg.model.gated_cross_attn and self.training:
-                assert self.cfg.model.gated_cross_attn_warmup_steps is not None
-                def interpolate(step: int, max_steps: int) -> float:
-                    return min(min(max(step, 0) / max_steps, 1.0), 1e-6) # We need to start out >0 so the params are used in the first step
+            if self.cfg.model.gated_cross_attn:
                 cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["gate_scale"] = 1
 
         if self.cfg.model.clip_shift_scale_conditioning:

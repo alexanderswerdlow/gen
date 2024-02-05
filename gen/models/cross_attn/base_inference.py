@@ -101,7 +101,6 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             composited_image = composited_image.convert("RGB")
             all_masks.append(Im(composited_image).write_text(f"token_{j}").resize(256, 256).np.squeeze(0))
 
-        ret["individual_masks"] = Im.concat_horizontal(*all_masks, spacing=10)
         ret["cond"] = {"mask_tokens": cond.mask_tokens, "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}
 
     if self.cfg.inference.vary_cfg_plot:
