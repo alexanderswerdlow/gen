@@ -109,8 +109,6 @@ def break_a_scene_masked_loss(
     for b in range(batch['gen_pixel_values'].shape[0]):
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
         object_masks = batch["gen_segmentation"][b, ..., mask_idxs_for_batch]
-        print(object_masks)
-        # Im(object_masks.permute(2, 0, 1)[..., None]).save()
         if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item(): # We do not have conditioning for this entire sample so put loss on everything
             max_masks.append(object_masks.new_ones((cfg.model.resolution, cfg.model.resolution)))
         elif object_masks.shape[-1] == 0:

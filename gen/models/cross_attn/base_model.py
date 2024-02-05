@@ -336,8 +336,8 @@ class BaseMapper(Trainable):
                 return group
 
             return [  # Order matters here
-                {"params": get_params(unet_params, ("fuser",)).values(), "lr": self.cfg.trainer.learning_rate / 5},
-                {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate},
+                {"params": get_params(unet_params, ("fuser",)).values(), "lr": self.cfg.trainer.learning_rate},
+                {"params": self.mapper.parameters(), "lr": 2 * self.cfg.trainer.learning_rate},
             ]
         else:
             return None
