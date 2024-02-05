@@ -1,0 +1,4 @@
+[submodule "diffusers"]
+	path = diffusers
+	url = https://github.com/alexanderswerdlow/diffusers
+	branch = gen

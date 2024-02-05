@@ -2,17 +2,19 @@
 
 ## Install Instructions
 
+Clone with `--recurse-submodules`. If you forgot, run `git submodule update --init`.
+
+
 ```
 export TORCH_CUDA_ARCH_LIST="8.0;8.6" # only works on Ampere or newer [A100, A6000 ADA, A500, etc.]
 
 conda config --set solver libmamba
-
 conda env remove -n gen
 conda create -n gen python=3.10
-
 conda activate gen
 
 pip install 'torch==2.2.*' 'torchvision==0.17.*' --index-url https://download.pytorch.org/whl/cu118
+pip install -e diffusers
 pip install pip install ninja wheel packaging
 pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
 
