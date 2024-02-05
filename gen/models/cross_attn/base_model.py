@@ -245,7 +245,6 @@ class BaseMapper(Trainable):
                     m.fuser.requires_grad_(True)
                     m.fuser.to(dtype=torch.float32)
                 m.fuser.train()
-                # break
 
         if self.cfg.model.freeze_text_encoder:
             if set_grad:
@@ -312,9 +311,7 @@ class BaseMapper(Trainable):
             torch_dtype=self.dtype,
         )
 
-        if not self.cfg.model.unfreeze_gated_cross_attn:
-            self.eval()
-            log_warn("Not setting eval mode for gated cross-attn")
+        self.eval()
             
         if self.cfg.model.break_a_scene_cross_attn_loss:
             self.controller.reset()
@@ -335,7 +332,6 @@ class BaseMapper(Trainable):
                 {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate * 2},
             ]
         elif self.cfg.model.unfreeze_gated_cross_attn:
-            # return None
             unet_params = dict(self.unet.named_parameters())
 
             def get_params(params, keys):
