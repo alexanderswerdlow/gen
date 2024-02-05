@@ -61,3 +61,7 @@ To perform accumulation without gradient synchronization (until the actual backw
 Ideally, since we are using Hydra, we would use the submitit hydra plugin to launch jobs and support hyperparam sweeps with multirun. However, this plugin pickles the python code and calls it directly, making it difficult to call with wrappers (e.g., torchrun or accelerate launch).
 
 Instead, we have `multirun.py` which generates a sequence of calls (through `os.system()`), each of which are a single training run. `launch_slurm.py` then runs a SLURM job.
+
+# Known issues
+
+Segmentation maps when cropping sometime have false where it should be true

@@ -2,6 +2,7 @@
     "search.exclude": {
         "**/output": true,
         "**/outputs": true,
+        "diffusers": true,
     },
     "files.exclude": {
         "**/.git/**": true,
@@ -10,5 +11,9 @@
         "**/CVS": true,
         "**/.DS_Store": true,
         "**/Thumbs.db": true,
+        "diffusers": false,
       },
+    "files.watcherExclude": {
+        "diffusers": true
+    }
 }

@@ -329,3 +329,7 @@ def viz():
     
                     # def interpolate(step: int, max_steps: int) -> float:
                     # return min(min(max(step, 0) / max_steps, 1.0), 1e-6) # We need to start out >0 so the params are used in the first step
+    
+            # if "femb" in cond.unet_kwargs:
+            # (metadata_dict, clip_feature_maps) = cond.unet_kwargs["femb"]
+            # metadata_dict["layer_idx"] = 0

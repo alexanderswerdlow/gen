@@ -31,7 +31,7 @@ def _init_weights(m):
     elif isinstance(m, nn.Embedding):
         nn.init.normal_(m.weight, std=initializer_range)
 
-def positionalencoding2d(d_model, height, width, device, dtype):
+def positionalencoding2d(d_model, height, width, device, dtype, scale: Optional[float] = 200, normalize: bool = True):
     """
     :param d_model: dimension of the model
     :param height: height of the positions
@@ -45,8 +45,16 @@ def positionalencoding2d(d_model, height, width, device, dtype):
     # Each dimension use half of d_model
     d_model = int(d_model / 2)
     div_term = torch.exp(torch.arange(0., d_model, 2, device=device, dtype=dtype) * -(math.log(10000.0) / d_model))
+
     pos_w = torch.arange(0., width, device=device, dtype=dtype).unsqueeze(1)
     pos_h = torch.arange(0., height, device=device, dtype=dtype).unsqueeze(1)
+
+    if normalize:
+        pos_w = (pos_w / width) * 2 - 1
+        pos_h = (pos_h / height) * 2 - 1
+
+    if scale is not None:
+        div_term *= 2 * torch.pi * scale
 
     # alternates between sin and cos up to halfway for w and the second half for h (half of the dimension is for each)
     pe[0:d_model:2, :, :] = torch.sin(pos_w * div_term).transpose(0, 1).unsqueeze(1).repeat(1, height, 1)
@@ -149,13 +157,28 @@ if __name__ == "__main__":
     import torch.utils.benchmark as benchmark
     globals_dict = {
         'd_model': 1024,
-        'height': 64,
-        'width': 64,
+        'height': 256,
+        'width': 256,
         'device': 'cuda:0',
         'dtype': torch.bfloat16
     }
-
-
+    for scale in [15, 20, 25, 30, 35, 40, 100, 150, 200, 1000]:
+        output = positionalencoding2d(**globals_dict, normalize=True, scale=scale) # scale=0.0001, 
+        emb_sin = output[output.shape[0] // 2:, :, 0][0::2]
+        emb_cos = output[output.shape[0] // 2:, :, 0][1::2]
+        embs = [emb_sin, emb_cos]
+        # Plotting the positional encodings
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(15, 15))
+        for j in range(2):
+            plt.subplot(1, 2, j + 1)
+            plt.imshow(embs[j].float().cpu().numpy(), cmap='viridis', aspect='auto')
+            plt.colorbar()
+            plt.title(f'Scale: {scale}')
+        plt.tight_layout()
+        plt.savefig(f'test_{scale:.4f}.png')
+        plt.close()
+    breakpoint()
 
     t1 = benchmark.Timer(
         stmt='positionalencoding2d_slow(d_model, height, width, device, dtype)',

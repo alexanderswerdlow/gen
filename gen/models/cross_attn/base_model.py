@@ -4,7 +4,6 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Optional, TypedDict, Union
 
-from einx import rearrange, add, set_at, where
 import hydra
 import numpy as np
 import torch
@@ -12,27 +11,31 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate import Accelerator
 from beartype import beartype
-from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
+from einx import add, rearrange, set_at, where
 from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
+from peft import LoraConfig
 from torch import Tensor
 from transformers import AutoTokenizer, CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
 
+from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
+from diffusers.models.attention import BasicTransformerBlock
+from diffusers.training_utils import cast_training_params
 from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
-from gen.models.cross_attn.deprecated_configs import attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale, shift_scale_uncond_hidden_states
+from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale,
+                                                      shift_scale_uncond_hidden_states)
 from gen.models.cross_attn.losses import break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss
 from gen.models.cross_attn.modules import Mapper
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
+from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.tokenization_utils import get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
-from gen.utils.decoupled_utils import get_modules
-from peft import LoraConfig
-from diffusers.training_utils import cast_training_params
+
 
 class InputData(TypedDict):
     gen_pixel_values: Float[Tensor, "b c h w"]
@@ -231,7 +234,6 @@ class BaseMapper(Trainable):
             self.unet.train()
 
         if self.cfg.model.unfreeze_gated_cross_attn:
-            from diffusers.models.attention import BasicTransformerBlock
             for m in get_modules(self.unet, BasicTransformerBlock):
                 assert hasattr(m, "fuser")
                 assert hasattr(m, "attn2")
@@ -302,7 +304,7 @@ class BaseMapper(Trainable):
             torch_dtype=self.dtype,
         )
 
-        if self.cfg.model.unfreeze_gated_cross_attn:
+        if not self.cfg.model.unfreeze_gated_cross_attn:
             self.eval()
             log_warn("Not setting eval mode for gated cross-attn")
             
@@ -323,6 +325,19 @@ class BaseMapper(Trainable):
                 {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate},
                 {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
                 {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate * 2},
+            ]
+        elif self.cfg.model.unfreeze_gated_cross_attn:
+            unet_params = dict(self.unet.named_parameters())
+
+            def get_params(params, keys):
+                group = {k: v for k, v in params.items() if all([key in k for key in keys])}
+                for k, p in group.items():
+                    del params[k]
+                return group
+
+            return [  # Order matters here
+                {"params": get_params(unet_params, ("fuser",)).values(), "lr": self.cfg.trainer.learning_rate / 5},
+                {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate},
             ]
         else:
             return None
@@ -487,8 +502,17 @@ class BaseMapper(Trainable):
                 log_warn("No masks found for this image")
                 continue
 
+            # Remove empty masks. Because of flash attention bugs, we require a minimum of 32 pixels. 14 is too few.
+            non_empty_mask = torch.sum(one_hot_mask, dim=[1, 2]) > 32
+
             if self.cfg.model.training_mask_dropout is not None and self.training:
-                dropout_mask = torch.rand(one_hot_mask.size(0)).to(device) > self.cfg.model.training_mask_dropout
+                dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), False, dtype=torch.bool)
+
+                non_empty_idx = non_empty_mask.nonzero().squeeze(1)
+                num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
+                selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
+                dropout_mask[selected_masks] = True
+
                 if self.cfg.model.dropout_foreground_only:
                     dropout_mask[self.cfg.model.background_mask_idx] = True  # We always keep the background mask
                 elif self.cfg.model.dropout_background_only:
@@ -500,15 +524,13 @@ class BaseMapper(Trainable):
             else:
                 dropout_mask = one_hot_mask.new_full((one_hot_mask.shape[0],), True, dtype=torch.bool)
 
-            # Remove empty masks. Because of flash attention bugs, we require a minimum of 64 pixels. 14 is too few.
-            empty_mask = torch.sum(one_hot_mask, dim=[1, 2]) > 64
-
-            if (dropout_mask & empty_mask).sum().item() == 0:
+            if (dropout_mask & non_empty_mask).sum().item() == 0:
+                assert False, "We should no longer have this condition"
                 dropout_mask[(~dropout_mask).nonzero(as_tuple=True)[0]] = True
 
-            combinbed_mask = dropout_mask & empty_mask
-            one_hot_mask = one_hot_mask[combinbed_mask]
-            one_hot_idx = one_hot_idx[combinbed_mask]
+            combined_mask = dropout_mask & non_empty_mask
+            one_hot_mask = one_hot_mask[combined_mask]
+            one_hot_idx = one_hot_idx[combined_mask]
 
             if one_hot_mask.shape[0] == 0:
                 log_warn("Dropped out all masks for this image!")
@@ -683,6 +705,9 @@ class BaseMapper(Trainable):
             dropout_mask = torch.rand(cond.encoder_hidden_states.shape[0], self.cfg.model.num_conditioning_pairs, device=device) < self.cfg.model.training_layer_dropout
             cond.encoder_hidden_states = where("b n, tokens d, b tokens (n d) -> b tokens (n d)", dropout_mask, self.uncond_hidden_states, cond.encoder_hidden_states)
 
+    def inverted_cosine(self, timesteps):
+        return torch.arccos(torch.sqrt(timesteps))
+
     @beartype
     def forward(self, batch: InputData):
         batch = InputData(**batch)
@@ -700,6 +725,8 @@ class BaseMapper(Trainable):
         bsz = latents.shape[0]
         # Sample a random timestep for each image
         timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+        if self.cfg.model.use_inverted_timesteps:
+            timesteps = (torch.arccos(timesteps / self.noise_scheduler.config.num_train_timesteps) / (torch.pi / 2)) * self.noise_scheduler.config.num_train_timesteps
         timesteps = timesteps.long()
 
         # Add noise to the latents according to the noise magnitude at each timestep
@@ -741,13 +768,14 @@ class BaseMapper(Trainable):
             target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
         else:
             raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
-
-        if "femb" in cond.unet_kwargs:
-            (metadata_dict, clip_feature_maps) = cond.unet_kwargs["femb"]
-            metadata_dict["layer_idx"] = 0
-
+        
         if self.cfg.model.break_a_scene_masked_loss:
             loss_mask = break_a_scene_masked_loss(cfg=self.cfg, batch=batch, cond=cond)
+            if self.cfg.model.viz and batch["state"].true_step % 1 == 0:
+                from image_utils import Im
+                rgb_ = Im((batch["gen_pixel_values"] + 1) / 2)
+                mask_ = Im(loss_mask).resize(rgb_.height, rgb_.width)
+                Im.concat_horizontal(rgb_.grid(), mask_.grid()).save(f'rgb_{batch["state"].true_step}.png')
             model_pred, target = model_pred * loss_mask, target * loss_mask
 
         losses = dict()

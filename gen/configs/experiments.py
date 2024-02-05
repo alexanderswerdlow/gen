@@ -252,3 +252,9 @@ def get_experiments():
         model=dict(add_pos_emb=True, gated_cross_attn=True, unfreeze_gated_cross_attn=True, lora_rank=4),
         hydra_defaults=["unet_no_lora", "multiscale", "low_res", "movi_medium"],
     )
+
+    mode_store(
+        name="debug",
+        model=dict(lora_rank=4),
+        hydra_defaults=["unet_lora", "multiscale", "low_res", "movi_medium"],
+    )

@@ -78,6 +78,8 @@ class ModelConfig:
     unfreeze_resnet: bool = False # Unfreeze a resnet encoder instead of CLIP during training
     attention_masking: bool = False # Mode which only allows U-Net Queries to attend to their own mask [e.g., instead of pos embs]
     gated_cross_attn: bool = False
+    viz: bool = False
+    use_inverted_timesteps: bool = False
 
 @dataclass
 class ControlNetConfig(ModelConfig):
