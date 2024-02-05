@@ -27,13 +27,13 @@ from gen.models.cross_attn.break_a_scene import register_attention_control
 from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale,
                                                       shift_scale_uncond_hidden_states)
 from gen.models.cross_attn.losses import break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss
-from gen.models.cross_attn.modules import Mapper
+from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
-from gen.utils.tokenization_utils import get_uncond_tokens
+from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
 
 
@@ -67,9 +67,8 @@ class AttentionMetadata(TypedDict):
     num_cond_vectors: int
     add_pos_emb: bool
     attention_mask: Optional[Float[Tensor, "b d h w"]]
-    scale: Optional[float]
-    frozen_encoder_hidden_states: Optional[Float[Tensor, "b d"]] # When using gated cross-attn, we feed the frozen layers this
-
+    gate_scale: Optional[float]
+    frozen_dim: Optional[int]
 
 class BaseMapper(Trainable):
     def __init__(self, cfg: BaseConfig):
@@ -92,7 +91,7 @@ class BaseMapper(Trainable):
         return next(self.parameters()).device
 
     def initialize_custom_models(self):
-        self.mapper = Mapper(cfg=self.cfg).to(self.cfg.trainer.device)
+        self.mapper = FeatureMapper(cfg=self.cfg).to(self.cfg.trainer.device)
         self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder)
 
         if self.cfg.model.use_dataset_segmentation is False:
@@ -102,6 +101,9 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.clip_shift_scale_conditioning:
             init_shift_scale(self)
+
+        if self.cfg.model.token_cls_pred_loss:
+            self.token_mapper = TokenMapper(cfg=self.cfg).to(self.cfg.trainer.device)
 
     def initialize_diffusers_models(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
         # Load the tokenizer
@@ -243,6 +245,7 @@ class BaseMapper(Trainable):
                     m.fuser.requires_grad_(True)
                     m.fuser.to(dtype=torch.float32)
                 m.fuser.train()
+                # break
 
         if self.cfg.model.freeze_text_encoder:
             if set_grad:
@@ -276,6 +279,11 @@ class BaseMapper(Trainable):
             if set_grad:
                 self.clip_proj_layers.requires_grad_(True)
             self.clip_proj_layers.train()
+
+        if self.cfg.model.token_cls_pred_loss:
+            if set_grad:
+                self.token_mapper.requires_grad_(True)
+            self.token_mapper.train()
 
         if hasattr(self, "controller"):
             self.controller.reset()
@@ -327,6 +335,7 @@ class BaseMapper(Trainable):
                 {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate * 2},
             ]
         elif self.cfg.model.unfreeze_gated_cross_attn:
+            # return None
             unet_params = dict(self.unet.named_parameters())
 
             def get_params(params, keys):
@@ -644,6 +653,10 @@ class BaseMapper(Trainable):
 
             if self.cfg.model.gated_cross_attn:
                 cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["gate_scale"] = 1
+                with torch.no_grad():
+                    frozen_enc = self.text_encoder(input_ids=_get_tokens(self.tokenizer, "A photo")[None].to(cond.encoder_hidden_states.device))[0].to(dtype=self.dtype)
+                    cond.encoder_hidden_states = rearrange("b t (layers d), () t d -> b t ((layers + 1) d)", cond.encoder_hidden_states, frozen_enc)
+                    cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["frozen_dim"] = frozen_enc.shape[-1]
 
         if self.cfg.model.clip_shift_scale_conditioning:
             assert not self.cfg.model.layer_specialization
@@ -665,9 +678,6 @@ class BaseMapper(Trainable):
         with torch.no_grad():
             cond.encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype)
 
-        if self.cfg.model.gated_cross_attn:
-            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["frozen_encoder_hidden_states"] = cond.encoder_hidden_states.clone()
-
         if add_conditioning:
             if cond.mask_tokens is None or cond.mask_batch_idx is None:
                 cond = self.compute_mask_tokens(batch, cond)
@@ -684,6 +694,8 @@ class BaseMapper(Trainable):
 
     def dropout_cfg(self, cond: ConditioningData):
         device: torch.device = cond.encoder_hidden_states.device
+        frozen_dim: int = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].get("frozen_dim", None)
+        frozen_dim = -frozen_dim if frozen_dim is not None else None
 
         # We dropout the entire conditioning [all-layers] for a subset of batches.
         if self.cfg.model.training_cfg_dropout is not None:
@@ -693,7 +705,7 @@ class BaseMapper(Trainable):
                 uncond_encoder_hidden_states = rearrange("tokens d -> tokens (n d)", uncond_encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
 
             dropout_mask = torch.rand(cond.encoder_hidden_states.shape[0], device=device) < self.cfg.model.training_cfg_dropout
-            cond.encoder_hidden_states[dropout_mask] = uncond_encoder_hidden_states
+            cond.encoder_hidden_states[dropout_mask, ..., :frozen_dim] = uncond_encoder_hidden_states
             cond.batch_cond_dropout = dropout_mask
 
             if self.cfg.model.attention_masking:
@@ -703,7 +715,7 @@ class BaseMapper(Trainable):
         # Note that there is a very rare chance that we could dropout all layers but still compute loss.
         if self.cfg.model.layer_specialization and self.cfg.model.training_layer_dropout is not None:
             dropout_mask = torch.rand(cond.encoder_hidden_states.shape[0], self.cfg.model.num_conditioning_pairs, device=device) < self.cfg.model.training_layer_dropout
-            cond.encoder_hidden_states = where("b n, tokens d, b tokens (n d) -> b tokens (n d)", dropout_mask, self.uncond_hidden_states, cond.encoder_hidden_states)
+            cond.encoder_hidden_states[..., :frozen_dim] = where("b n, tokens d, b tokens (n d) -> b tokens (n d)", dropout_mask, self.uncond_hidden_states, cond.encoder_hidden_states[..., :frozen_dim])
 
     def inverted_cosine(self, timesteps):
         return torch.arccos(torch.sqrt(timesteps))
@@ -725,7 +737,7 @@ class BaseMapper(Trainable):
         bsz = latents.shape[0]
         # Sample a random timestep for each image
         timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
-        if self.cfg.model.use_inverted_timesteps:
+        if self.cfg.model.use_inverted_noise_schedule:
             timesteps = (torch.arccos(timesteps / self.noise_scheduler.config.num_train_timesteps) / (torch.pi / 2)) * self.noise_scheduler.config.num_train_timesteps
         timesteps = timesteps.long()
 
@@ -786,5 +798,8 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.break_a_scene_cross_attn_loss:
             losses["cross_attn_loss"] = break_a_scene_cross_attn_loss(cfg=self.cfg, batch=batch, controller=self.controller, cond=cond)
+
+        if self.cfg.model.token_cls_pred_loss:
+            losses["token_cls_loss"] = self.token_mapper(cfg=self.cfg, batch=batch, cond=cond)
 
         return losses

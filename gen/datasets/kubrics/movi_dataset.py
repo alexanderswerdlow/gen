@@ -102,15 +102,25 @@ class MoviDataset(AbstractDataset, Dataset):
         except IndexError:
             print(f"Index {file_idx} is out of bounds for dataset of size {len(self.files)} for dir: {self.root_dir}")
             raise
+
+        ret = {}
         
         if self.new_format:
             data = np.load(self.root_dir / path / "data.npz")
             rgb = data["rgb"][camera_idx, frame_idx]
             instance = data["segment"][camera_idx, frame_idx]
 
-            # quaternions = data["quaternions"]
-            # positions = data["positions"]
-            # valid = data["valid"]
+            quaternions = data["quaternions"][camera_idx, frame_idx] # (23, 4)
+            positions = data["positions"][camera_idx, frame_idx] # (23, 3)
+            valid = data["valid"][camera_idx, :].squeeze(0) # (23, )
+            categories = data["categories"][camera_idx, :].squeeze(0) # (23, )
+            
+            ret.update({
+                "quaternions": quaternions,
+                "positions": positions,
+                "valid": valid,
+                "categories": categories,
+            })
         else:
             assert self.num_cameras == 1 and camera_idx == 0
             rgb = os.path.join(self.root_dir, os.path.join(path, "rgb.npy"))
@@ -155,7 +165,7 @@ class MoviDataset(AbstractDataset, Dataset):
             source_data.segmentation = torch.ones_like(source_data.segmentation)[..., [0]]
             target_data.segmentation = torch.ones_like(target_data.segmentation)[..., [0]]
 
-        ret = {
+        ret.update({
             "gen_pixel_values": target_data.image,
             "gen_grid": target_data.grid,
             "gen_segmentation": target_data.segmentation,
@@ -163,7 +173,7 @@ class MoviDataset(AbstractDataset, Dataset):
             "disc_grid": source_data.grid,
             "disc_segmentation": source_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
-        }
+        })
 
         if self.return_video:
             ret["video"] = path

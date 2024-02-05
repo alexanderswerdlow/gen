@@ -79,7 +79,10 @@ class ModelConfig:
     attention_masking: bool = False # Mode which only allows U-Net Queries to attend to their own mask [e.g., instead of pos embs]
     gated_cross_attn: bool = False
     viz: bool = False
-    use_inverted_timesteps: bool = False
+    use_inverted_noise_schedule: bool = False # TODO: Implement properly
+    token_cls_pred_loss: bool = False
+    num_token_cls: int = 17
+
 
 @dataclass
 class ControlNetConfig(ModelConfig):

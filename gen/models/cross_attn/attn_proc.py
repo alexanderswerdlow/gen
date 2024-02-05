@@ -6,7 +6,7 @@ import xformers
 import xformers.ops
 from diffusers.models.attention_processor import Attention
 from diffusers.utils import USE_PEFT_BACKEND
-from einops import rearrange
+from einx import rearrange
 
 from gen.models.cross_attn.base_model import AttentionMetadata
 from gen.models.cross_attn.deprecated_configs import handle_attn_proc_masking
@@ -70,17 +70,13 @@ class XFormersAttnProcessor:
         # START MODIFICATION
         is_cross_attn = encoder_hidden_states is not None
         if encoder_hidden_states is not None and attn_meta is not None:
-            if attn_meta.get("frozen_encoder_hidden_states", None) is not None and can_override_encoder_hidden_states:
-                if attn_meta["frozen_encoder_hidden_states"].shape[0] != encoder_hidden_states.shape[0]:
-                    # TODO: This is very very hacky and probably broken.
-                    rep_ = (encoder_hidden_states.shape[0] // attn_meta["frozen_encoder_hidden_states"].shape[0])
-                    if rep_ == 2:
-                        encoder_hidden_states = torch.cat([encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[0][:attn_meta["frozen_encoder_hidden_states"].shape[0]], attn_meta["frozen_encoder_hidden_states"]])
-                    else:
-                        rep_ = rep_ // 2
-                        encoder_hidden_states = torch.cat([encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[0][:rep_], attn_meta["frozen_encoder_hidden_states"].repeat(rep_, 1, 1)])
-                else:
-                    encoder_hidden_states = attn_meta["frozen_encoder_hidden_states"]
+            is_frozen_after_gate = attn_meta.get("gate_scale", None) is not None
+            if is_frozen_after_gate:
+                frozen_dim = attn_meta.get("frozen_dim", None)
+                encoder_hidden_states, frozen_encoder_hidden_states = rearrange('b t (d + f) -> b t d, b t f', encoder_hidden_states, f=frozen_dim)
+
+            if can_override_encoder_hidden_states and is_frozen_after_gate:
+                encoder_hidden_states = frozen_encoder_hidden_states
             else:
                 # TODO: We assume that we *always* call all cross-attn layers in order, and that we never skip any.
                 # This makes it easier for e.g., inference so we don't need to reset the counter, but is pretty hacky.
@@ -92,7 +88,7 @@ class XFormersAttnProcessor:
                 if attn_meta["add_pos_emb"]:
                     h, w = round(math.sqrt(hidden_states.shape[1])), round(math.sqrt(hidden_states.shape[1]))
                     pos_emb = positionalencoding2d(hidden_states.shape[-1], h, w, device=hidden_states.device, dtype=hidden_states.dtype)
-                    hidden_states = hidden_states + rearrange(pos_emb, "d h w -> () (h w) d")
+                    hidden_states = hidden_states + rearrange("d h w -> () (h w) d", pos_emb)
         # END MODIFICATION
 
         batch_size, key_tokens, _ = hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
