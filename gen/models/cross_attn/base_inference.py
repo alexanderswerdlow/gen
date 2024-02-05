@@ -49,7 +49,7 @@ def infer_batch(
     kwargs["height"] = self.cfg.model.resolution
     kwargs["width"] = self.cfg.model.resolution
 
-    desired_context =  torch.cuda.amp.autocast() if self.cfg.model.freeze_unet is False else nullcontext()
+    desired_context =  torch.cuda.amp.autocast() if self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_gated_cross_attn else nullcontext()
     with desired_context:
         images = self.pipeline(**cond.unet_kwargs, **kwargs).images
 

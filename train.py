@@ -261,7 +261,7 @@ class Trainer:
                 step_start_time = time()
                 accumulate_steps += 1
                 global_step_metrics["dataloading_time"] += step_start_time - last_end_step_time
-                if is_main_process() and global_step == 1:
+                if is_main_process() and global_step == 0:
                     log_info(f"time to complete 1st step: {step_start_time - load_time} seconds")
 
                 with self.accelerator.accumulate(*filter(lambda x: isinstance(x, nn.Module), self.models)):

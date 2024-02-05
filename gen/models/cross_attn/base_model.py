@@ -222,7 +222,12 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.freeze_unet:
             if set_grad:
-                self.unet.to(device=self.device, dtype=self.dtype)
+                if self.cfg.model.unfreeze_gated_cross_attn:
+                    for n, p in self.unet.named_parameters():
+                        if "fuser" not in n:
+                            p.to(device=self.device, dtype=self.dtype)
+                else:
+                    self.unet.to(device=self.device, dtype=self.dtype)
                 self.unet.requires_grad_(False)
             self.unet.eval()
         else:
@@ -239,7 +244,7 @@ class BaseMapper(Trainable):
                     # We copy the cross-attn weights from the frozen module to this
                     m.fuser.attn.load_state_dict(m.attn2.state_dict())
                     m.fuser.requires_grad_(True)
-                m.fuser.to(dtype=torch.float32)
+                    m.fuser.to(dtype=torch.float32)
                 m.fuser.train()
 
         if self.cfg.model.freeze_text_encoder:
@@ -301,12 +306,6 @@ class BaseMapper(Trainable):
             model=self,
             torch_dtype=self.dtype,
         )
-
-        # TODO: Avoid casting this back and forth to BF16/FP32
-        if self.cfg.model.unfreeze_gated_cross_attn:
-            from diffusers.models.attention import GatedCrossAttentionDense
-            for m in get_modules(self.unet, GatedCrossAttentionDense):
-                m.to(dtype=self.dtype)
 
         self.eval()
         if self.cfg.model.break_a_scene_cross_attn_loss:
@@ -629,8 +628,7 @@ class BaseMapper(Trainable):
                 assert self.cfg.model.gated_cross_attn_warmup_steps is not None
                 def interpolate(step: int, max_steps: int) -> float:
                     return min(min(max(step, 0) / max_steps, 1.0), 1e-6) # We need to start out >0 so the params are used in the first step
-                cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["gate_scale"] = interpolate(batch["state"].global_step, self.cfg.model.gated_cross_attn_warmup_steps)
-                
+                cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["gate_scale"] = 1
 
         if self.cfg.model.clip_shift_scale_conditioning:
             assert not self.cfg.model.layer_specialization
@@ -649,7 +647,8 @@ class BaseMapper(Trainable):
             cond.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=AttentionMetadata())
 
         cond.placeholder_token = self.placeholder_token_id
-        cond.encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype)
+        with torch.no_grad():
+            cond.encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype)
 
         if self.cfg.model.gated_cross_attn:
             cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["frozen_encoder_hidden_states"] = cond.encoder_hidden_states.clone()
