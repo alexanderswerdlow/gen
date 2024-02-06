@@ -26,7 +26,7 @@ from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
 from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale,
                                                       shift_scale_uncond_hidden_states)
-from gen.models.cross_attn.losses import break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss
+from gen.models.cross_attn.losses import break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, token_cls_loss, token_rot_loss
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
@@ -764,6 +764,9 @@ class BaseMapper(Trainable):
         if self.training:
             self.dropout_cfg(cond)
 
+        if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
+            token_preds = self.token_mapper(cfg=self.cfg, batch=batch, cond=cond)
+
         encoder_hidden_states = cond.encoder_hidden_states
 
         if self.cfg.model.controlnet:
@@ -815,6 +818,9 @@ class BaseMapper(Trainable):
             losses["cross_attn_loss"] = break_a_scene_cross_attn_loss(cfg=self.cfg, batch=batch, controller=self.controller, cond=cond)
 
         if self.cfg.model.token_cls_pred_loss:
-            losses["token_cls_loss"] = self.token_mapper(cfg=self.cfg, batch=batch, cond=cond)
+            losses.update(token_cls_loss(cfg=self.cfg, batch=batch, cond=cond, token_preds=token_preds))
+
+        if self.cfg.model.token_rot_pred_loss:
+            losses["token_rot_pred_loss"] = token_rot_loss(cfg=self.cfg, batch=batch, cond=cond, token_preds=token_preds)    
 
         return losses

@@ -280,10 +280,13 @@ class Trainer:
                             losses = self.model(batch)
 
                     true_step += 1
+                    for k, v in losses.items():
+                        global_step_metrics[k.removeprefix('metric_')] += v.detach().item()
+                    
+                    # Allow for custom metrics that are not losses
+                    losses = dict(filter(lambda item: not item[0].startswith('metric_'), losses.items()))
                     loss = sum(losses.values())
                     global_step_metrics["loss"] += loss.detach().item()  # Only on the main process to avoid syncing
-                    for k, v in losses.items():
-                        global_step_metrics[k] += v.detach().item()
 
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:

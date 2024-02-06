@@ -65,8 +65,8 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi",
         dataset=dict(
-            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False)),
-            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False)),
+            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False), multi_camera_format=False),
+            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False), multi_camera_format=False),
         ),
         hydra_defaults=[
             "_self_",
@@ -155,6 +155,12 @@ def get_datasets():  # TODO: These do not need to be global configs
             "_self_",
             {"override /dataset": "movi_e"},
         ],
+    )
+
+    mode_store(
+        name="movi_medium_single_scene",
+        dataset=dict(train_dataset=dict(subset=("000001",), fake_return_n=8), validation_dataset=dict(subset=("000001",), fake_return_n=8), overfit=True),
+        hydra_defaults=["movi_medium"],
     )
 
     mode_store(
@@ -254,7 +260,7 @@ def get_experiments():
     )
 
     mode_store(
-        name="debug",
-        model=dict(lora_rank=4),
-        hydra_defaults=["unet_lora", "multiscale", "low_res", "movi_medium"],
+        name="debug_token_pred",
+        model=dict(token_cls_pred_loss=True, token_rot_pred_loss=True),
+        hydra_defaults=["gated_cross_attn", "movi_medium_single_scene"],
     )
