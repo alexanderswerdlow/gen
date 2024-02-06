@@ -808,11 +808,11 @@ class BaseMapper(Trainable):
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             pred_data = TokenPredData()
             if self.cfg.model.token_rot_pred_loss:
-                pred_data.timesteps = timesteps
+                pred_data.timesteps = timesteps[cond.mask_batch_idx]
                 pred_data.gt_rot_6d = get_gt_rot(self.cfg, cond, batch)
                 assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
                 pred_data.rot_6d_noise = torch.randn_like(pred_data.gt_rot_6d)
-                pred_data.noised_rot_6d = self.noise_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, timesteps)
+                pred_data.noised_rot_6d = self.noise_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, pred_data.timesteps)
             
             pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
 
