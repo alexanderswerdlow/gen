@@ -181,6 +181,9 @@ class BaseMapper(Trainable):
             num_cross_attn_layers = register_layerwise_attention(self.unet)
             assert num_cross_attn_layers == (2 * self.cfg.model.num_conditioning_pairs * (2 if self.cfg.model.gated_cross_attn else 1))
 
+        if self.cfg.model.per_layer_queries:
+            assert self.cfg.model.layer_specialization
+
     def set_training_mode(self, set_grad: bool = False):
         """
         Set training mode for the proper models and freeze/unfreeze them.
@@ -651,8 +654,8 @@ class BaseMapper(Trainable):
                 cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["gate_scale"] = 1
                 with torch.no_grad():
                     frozen_enc = self.text_encoder(input_ids=_get_tokens(self.tokenizer, "A photo")[None].to(cond.encoder_hidden_states.device))[0].to(dtype=self.dtype)
-                    cond.encoder_hidden_states = rearrange("b t (layers d), () t d -> b t ((layers + 1) d)", cond.encoder_hidden_states, frozen_enc)
-                    cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["frozen_dim"] = frozen_enc.shape[-1]
+                cond.encoder_hidden_states = rearrange("b t (layers d), () t d -> b t ((layers + 1) d)", cond.encoder_hidden_states, frozen_enc)
+                cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["frozen_dim"] = frozen_enc.shape[-1]
 
         if self.cfg.model.clip_shift_scale_conditioning:
             assert not self.cfg.model.layer_specialization
