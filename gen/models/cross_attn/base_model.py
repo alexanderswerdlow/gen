@@ -69,8 +69,8 @@ class TokenPredData:
     noised_rot_6d: Optional[Float[Tensor, "n 6"]] = None
     rot_6d_noise: Optional[Float[Tensor, "n 6"]] = None
     timesteps: Optional[Integer[Tensor, "b"]] = None
-    cls_pred: Optional[Integer[Tensor, "n classes"]] = None
-    pred_6d_rot: Optional[Integer[Tensor, "n 6"]] = None
+    cls_pred: Optional[Float[Tensor, "n classes"]] = None
+    pred_6d_rot: Optional[Float[Tensor, "n 6"]] = None
 
 class AttentionMetadata(TypedDict):
     layer_idx: int
@@ -432,28 +432,29 @@ class BaseMapper(Trainable):
         pred_data = TokenPredData()
         pred_data.gt_rot_6d = get_gt_rot(self.cfg, cond, batch)
         assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
-
-        pred_data.timesteps = timesteps
-        pred_data.noised_rot_6d = self.noise_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, timesteps)
-        pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
-
-        breakpoint()
-
+        
         scheduler.set_timesteps(num_inference_steps=50, device=self.device)
         timesteps = scheduler.timesteps
-        num_inference_steps = len(timesteps)
 
         latents = randn_tensor(pred_data.gt_rot_6d.shape, device=self.device, dtype=self.dtype)
-        latents = latents * self.scheduler.init_noise_sigma
+        latents = latents * scheduler.init_noise_sigma
         
         for i, t in enumerate(timesteps):
-            latent_model_input = self.scheduler.scale_model_input(latents, t)
+            latent_model_input = scheduler.scale_model_input(latents, t)
+
+            pred_data.noised_rot_6d = latent_model_input
+            pred_data.timesteps = t[None].repeat(latents.shape[0])
 
             # predict the noise residual
-            noise_pred = self.unet(latent_model_input, t)[0]
+            # noise_pred = self.unet(latent_model_input, t)[0]
+            pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
 
             # compute the previous noisy sample x_t -> x_t-1
-            latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            latents = scheduler.step(pred_data.pred_6d_rot, t, latents, return_dict=False)[0]
+
+        final_pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d)
+        log_info(f"Final pred loss: {final_pred_loss.item()}")
+        return final_pred_loss
 
     def check_add_segmentation(self, batch: InputData):
         """
@@ -813,7 +814,7 @@ class BaseMapper(Trainable):
                 pred_data.rot_6d_noise = torch.randn_like(pred_data.gt_rot_6d)
                 pred_data.noised_rot_6d = self.noise_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, timesteps)
             
-            pred_data = self.token_mapper(cfg=self.cfg, batch=batch, cond=cond, pred_data=pred_data)
+            pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
 
         encoder_hidden_states = cond.encoder_hidden_states
 

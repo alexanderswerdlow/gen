@@ -185,7 +185,7 @@ def get_experiments():
     mode_store(
         name="small_gpu",
         dataset=dict(train_dataset=dict(batch_size=1, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
-        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False), single_fuser_layer=True),
+        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False), single_fuser_layer=True, pretrained_model_name_or_path='runwayml/stable-diffusion-v1-5', token_embedding_dim=768),
         trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False),
         inference=dict(
             visualize_attention_map=False,
@@ -257,6 +257,11 @@ def get_experiments():
         name="gated_cross_attn",
         model=dict(add_pos_emb=True, gated_cross_attn=True, unfreeze_gated_cross_attn=True, lora_rank=4),
         hydra_defaults=["unet_no_lora", "multiscale", "low_res", "movi_medium"],
+    )
+
+    mode_store(
+        name="token_pred",
+        model=dict(token_cls_pred_loss=True, token_rot_pred_loss=True),
     )
 
     mode_store(

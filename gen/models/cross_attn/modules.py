@@ -11,6 +11,7 @@ from gen.models.utils import _init_weights
 from gen.utils.logging_utils import log_info
 from gen.models.cross_attn.decoder import create_mlp_cls
 from jaxtyping import Bool, Float, Integer
+import math
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import InputData
@@ -151,10 +152,10 @@ class FilmMlp(nn.Module):
         t_emb = self.t_embedder(t) # TODO: This is weird, out timestep embedding is 6 dims
         cond = cond + t_emb
         y = self.activation(self.norm1(self.fc1(x)))
-        scale, shift = rearrange("b (n 2) -> b n, b n", self.film1(cond))
+        scale, shift = rearrange("b (n a) -> a b n", self.film1(cond), a=2)
         y = y * (1 - scale) + shift
-        y = self.activation(self.norm2(self.fc2(x)))
-        scale, shift = rearrange("b (n 2) -> b n, b n", self.film2(cond))
+        y = self.activation(self.norm2(self.fc2(y)))
+        scale, shift = rearrange("b (n a) -> a b n", self.film2(cond), a=2)
         y = y * (1 - scale) + shift
         y = self.fc3(y)
         return y
@@ -167,12 +168,12 @@ class TokenMapper(nn.Module):
         super().__init__()
         self.cfg = cfg
 
-        dim = self.cfg.model.token_embedding_dim * self.cfg.model.num_conditioning_pairs
+        dim = self.cfg.model.token_embedding_dim * (self.cfg.model.num_conditioning_pairs if self.cfg.model.layer_specialization else 1)
         if self.cfg.model.token_cls_pred_loss:
             self.cls_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
 
         if self.cfg.model.token_rot_pred_loss:
-            self.rot_mlp = FilmMlp(in_features=dim, cond_features=1024, out_features=6, activation=nn.GELU())
+            self.rot_mlp = FilmMlp(in_features=6, cond_features=dim, out_features=6, activation=nn.GELU())
 
         self.apply(_init_weights)
 

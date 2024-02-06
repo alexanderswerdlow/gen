@@ -49,7 +49,7 @@ def infer_batch(
     kwargs["height"] = self.cfg.model.resolution
     kwargs["width"] = self.cfg.model.resolution
 
-    desired_context =  torch.cuda.amp.autocast() if self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_gated_cross_attn else nullcontext()
+    desired_context = torch.cuda.amp.autocast() if self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_gated_cross_attn else nullcontext()
     with desired_context:
         images = self.pipeline(**cond.unet_kwargs, **kwargs).images
 
@@ -81,7 +81,8 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     )
 
     if self.cfg.model.token_rot_pred_loss:
-        self.denoise_rotation(batch=batch, cond=cond, scheduler=self.pipeline.scheduler)
+        with torch.cuda.amp.autocast():
+            mean_pred_loss = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.pipeline.scheduler)
 
     full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
     generated_images = Im.concat_horizontal(

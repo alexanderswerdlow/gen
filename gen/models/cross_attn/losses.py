@@ -186,7 +186,7 @@ def token_cls_loss(
     top5_accuracy = (correct_top5_predictions / total_instances) if total_instances > 0 else 0
 
     return {
-        "token_cls_pred_loss": avg_loss,
+        "token_cls_pred_loss": avg_loss * 0.1,
         "metric_token_cls_pred_acc": torch.tensor(accuracy, device=device),
         "metric_token_cls_pred_top5_acc": torch.tensor(top5_accuracy, device=device)
     }
@@ -221,7 +221,6 @@ def token_rot_loss(
     pred_data: TokenPredData
 ):
 
-    rot_pred = pred_data.pred_6d_rot
     bs = batch["gen_pixel_values"].shape[0]
     device = batch["gen_pixel_values"].device
 
@@ -241,8 +240,8 @@ def token_rot_loss(
 
         pred_idxs_for_batch = pred_idxs_for_batch[remove_background_mask]
 
-        pred_ = rot_pred[pred_idxs_for_batch]
-        gt_rot_6d_ = batch['gt_rot_6d'][pred_idxs_for_batch]
+        pred_ = pred_data.pred_6d_rot[pred_idxs_for_batch]
+        gt_rot_6d_ = pred_data.gt_rot_6d[pred_idxs_for_batch]
 
         if gt_rot_6d_.shape[0] == 0:
             continue  # This can happen if we previously dropout all masks except the background
