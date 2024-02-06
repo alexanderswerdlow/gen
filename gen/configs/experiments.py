@@ -210,7 +210,7 @@ def get_experiments():
         name="unet_no_lora",
         model=dict(unet_lora=False),
         trainer=dict(learning_rate=1e-5),
-        dataset=dict(train_dataset=dict(batch_size=20)),
+        dataset=dict(train_dataset=dict(batch_size=18)),
     )
 
     mode_store(
