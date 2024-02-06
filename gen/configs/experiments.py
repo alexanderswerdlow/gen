@@ -207,7 +207,7 @@ def get_experiments():
 
     mode_store(
         name="unet_lora",
-        model=dict(unet_lora=True, lora_rank=256),
+        model=dict(unet_lora=True, lora_rank=256, gated_cross_attn=False, unfreeze_gated_cross_attn=False),
         trainer=dict(learning_rate=1e-6),
         dataset=dict(train_dataset=dict(batch_size=20)),
     )

@@ -339,3 +339,5 @@ def viz():
             #     assert False, "We should no longer have this condition"
             #     dropout_mask[(~dropout_mask).nonzero(as_tuple=True)[0]] = True
     
+                # self.rot_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=6, activation=nn.GELU())
+# output = self.rot_mlp(cond.mask_tokens)

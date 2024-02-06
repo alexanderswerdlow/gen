@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import InputData
     from gen.configs.base import BaseConfig
     from gen.models.cross_attn.base_model import ConditioningData
+    from gen.models.cross_attn.base_model import TokenPredData
 
 # Copyright (c) 2023, Tri Dao.
 
@@ -125,14 +126,14 @@ class FilmMlp(nn.Module):
         out_features = out_features if out_features is not None else in_features
         hidden_features = hidden_features if hidden_features is not None else in_features * 4
 
-        self.t_embedder = TimestepEmbedder(out_features)
+        self.t_embedder = TimestepEmbedder(cond_features)
 
         self.activation = activation
         self.fc1 = nn.Linear(in_features, hidden_features, **factory_kwargs)
         self.norm1 = nn.LayerNorm(hidden_features, **factory_kwargs)
         self.film1 = nn.Linear(cond_features, 2 * hidden_features, **factory_kwargs)
 
-        self.fc2 = nn.Linear(hidden_features, hidden_features, *C*factory_kwargs)
+        self.fc2 = nn.Linear(hidden_features, hidden_features, **factory_kwargs)
         self.norm2 = nn.LayerNorm(hidden_features, **factory_kwargs)
         self.film2 = nn.Linear(cond_features, 2 * hidden_features, **factory_kwargs)
 
@@ -148,7 +149,7 @@ class FilmMlp(nn.Module):
 
     def forward(self, x, t, cond):
         t_emb = self.t_embedder(t) # TODO: This is weird, out timestep embedding is 6 dims
-        x = x + t_emb
+        cond = cond + t_emb
         y = self.activation(self.norm1(self.fc1(x)))
         scale, shift = rearrange("b (n 2) -> b n, b n", self.film1(cond))
         y = y * (1 - scale) + shift
@@ -175,21 +176,18 @@ class TokenMapper(nn.Module):
 
         self.apply(_init_weights)
 
-    def forward(self, cfg: BaseConfig, batch: InputData, cond: ConditioningData):
-        ret = {}
+    def forward(self, cond: ConditioningData, pred_data: TokenPredData):
         if self.cfg.model.token_cls_pred_loss:
             output = self.cls_mlp(cond.mask_tokens)
             pred = output.softmax(dim=-1)
-            ret["cls_pred"] = pred
+            pred_data.cls_pred = pred
 
         if self.cfg.model.token_rot_pred_loss:
-            latents = batch["noisy_rot_latents"]
-            timesteps = batch["timesteps"]
-            output = self.rot_mlp(latents, timesteps, cond.mask_tokens)
+            output = self.rot_mlp(pred_data.noised_rot_6d, pred_data.timesteps, cond.mask_tokens)
             pred = output.softmax(dim=-1)
-            ret["rot_pred"] = pred
+            pred_data.pred_6d_rot = pred
 
-        return ret
+        return pred_data
 
 
 class FeatureMapper(nn.Module):

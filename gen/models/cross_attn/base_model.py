@@ -26,7 +26,7 @@ from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
 from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale,
                                                       shift_scale_uncond_hidden_states)
-from gen.models.cross_attn.losses import break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, token_cls_loss, token_rot_loss
+from gen.models.cross_attn.losses import break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, token_cls_loss, token_rot_loss, get_gt_rot
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
@@ -35,7 +35,8 @@ from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
-
+from diffusers.utils.torch_utils import randn_tensor
+from diffusers import DDIMScheduler
 
 class InputData(TypedDict):
     gen_pixel_values: Float[Tensor, "b c h w"]
@@ -43,6 +44,8 @@ class InputData(TypedDict):
     disc_pixel_values: Float[Tensor, "b c h w"]
     input_ids: Integer[Tensor, "b l"]
     state: Optional[TrainingState]
+    dtype: Optional[torch.dtype]
+    device: Optional[torch.device]
 
 
 @dataclass
@@ -60,6 +63,14 @@ class ConditioningData:
     encoder_hidden_states: Optional[Float[Tensor, "b d"]] = None
     unet_kwargs: Optional[dict[str, Any]] = field(default_factory=dict)
 
+@dataclass
+class TokenPredData:
+    gt_rot_6d: Optional[Float[Tensor, "n 6"]] = None
+    noised_rot_6d: Optional[Float[Tensor, "n 6"]] = None
+    rot_6d_noise: Optional[Float[Tensor, "n 6"]] = None
+    timesteps: Optional[Integer[Tensor, "b"]] = None
+    cls_pred: Optional[Integer[Tensor, "n classes"]] = None
+    pred_6d_rot: Optional[Integer[Tensor, "n 6"]] = None
 
 class AttentionMetadata(TypedDict):
     layer_idx: int
@@ -417,6 +428,33 @@ class BaseMapper(Trainable):
 
         return cond
 
+    def denoise_rotation(self, batch: InputData, cond: ConditioningData, scheduler: DDIMScheduler):
+        pred_data = TokenPredData()
+        pred_data.gt_rot_6d = get_gt_rot(self.cfg, cond, batch)
+        assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
+
+        pred_data.timesteps = timesteps
+        pred_data.noised_rot_6d = self.noise_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, timesteps)
+        pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
+
+        breakpoint()
+
+        scheduler.set_timesteps(num_inference_steps=50, device=self.device)
+        timesteps = scheduler.timesteps
+        num_inference_steps = len(timesteps)
+
+        latents = randn_tensor(pred_data.gt_rot_6d.shape, device=self.device, dtype=self.dtype)
+        latents = latents * self.scheduler.init_noise_sigma
+        
+        for i, t in enumerate(timesteps):
+            latent_model_input = self.scheduler.scale_model_input(latents, t)
+
+            # predict the noise residual
+            noise_pred = self.unet(latent_model_input, t)[0]
+
+            # compute the previous noisy sample x_t -> x_t-1
+            latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+
     def check_add_segmentation(self, batch: InputData):
         """
         This function checks if we have segmentation for the current batch. If we do not, we add dummy segmentation or use HQSam to get segmentation.
@@ -738,6 +776,8 @@ class BaseMapper(Trainable):
     @beartype
     def forward(self, batch: InputData):
         batch = InputData(**batch)
+        batch["device"] = self.device
+        batch["dtype"] = self.dtype
 
         assert "formatted_input_ids" not in batch
 
@@ -765,18 +805,15 @@ class BaseMapper(Trainable):
             self.dropout_cfg(cond)
 
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
-            rot_latents = None
-            rot_noise = torch.randn_like(rot_latents)
-            noisy_rot_latents = self.noise_scheduler.add_noise(rot_latents, rot_noise, timesteps)
-
-            batch.update({
-                "rot_latents": rot_latents,
-                "rot_noise": rot_noise,
-                "noisy_rot_latents": noisy_rot_latents,
-                "timesteps": timesteps,
-            })
+            pred_data = TokenPredData()
+            if self.cfg.model.token_rot_pred_loss:
+                pred_data.timesteps = timesteps
+                pred_data.gt_rot_6d = get_gt_rot(self.cfg, cond, batch)
+                assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
+                pred_data.rot_6d_noise = torch.randn_like(pred_data.gt_rot_6d)
+                pred_data.noised_rot_6d = self.noise_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, timesteps)
             
-            token_preds = self.token_mapper(cfg=self.cfg, batch=batch, cond=cond)
+            pred_data = self.token_mapper(cfg=self.cfg, batch=batch, cond=cond, pred_data=pred_data)
 
         encoder_hidden_states = cond.encoder_hidden_states
 
@@ -829,9 +866,9 @@ class BaseMapper(Trainable):
             losses["cross_attn_loss"] = break_a_scene_cross_attn_loss(cfg=self.cfg, batch=batch, controller=self.controller, cond=cond)
 
         if self.cfg.model.token_cls_pred_loss:
-            losses.update(token_cls_loss(cfg=self.cfg, batch=batch, cond=cond, token_preds=token_preds))
+            losses.update(token_cls_loss(cfg=self.cfg, batch=batch, cond=cond, pred_data=pred_data))
 
         if self.cfg.model.token_rot_pred_loss:
-            losses["token_rot_pred_loss"] = token_rot_loss(cfg=self.cfg, batch=batch, cond=cond, token_preds=token_preds)    
+            losses["token_rot_pred_loss"] = token_rot_loss(cfg=self.cfg, batch=batch, cond=cond, pred_data=pred_data)    
 
         return losses

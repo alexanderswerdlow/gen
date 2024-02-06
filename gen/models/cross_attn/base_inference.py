@@ -80,6 +80,9 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
         num_images_per_prompt=self.cfg.inference.num_images_per_prompt,
     )
 
+    if self.cfg.model.token_rot_pred_loss:
+        self.denoise_rotation(batch=batch, cond=cond, scheduler=self.pipeline.scheduler)
+
     full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
     generated_images = Im.concat_horizontal(
         Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}", relative_font_scale=0.004)

@@ -7,10 +7,11 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
-from einops import rearrange
+from einx import rearrange
 from image_utils import Im
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
+import math
 
 from gen.models.cross_attn.break_a_scene import AttentionStore, aggregate_attention
 from gen.utils.rotation_utils import get_ortho6d_from_rotation_matrix, compute_rotation_matrix_from_ortho6d
@@ -18,6 +19,7 @@ from gen.utils.rotation_utils import get_ortho6d_from_rotation_matrix, compute_r
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import ConditioningData, InputData
     from gen.configs.base import BaseConfig
+    from gen.models.cross_attn.base_model import TokenPredData
 
 
 def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: InputData, controller: AttentionStore, cond: ConditioningData):
@@ -131,10 +133,10 @@ def token_cls_loss(
     cfg: BaseConfig,
     batch: InputData,
     cond: ConditioningData,
-    token_preds: dict,
+    pred_data: TokenPredData,
 ):
 
-    cls_pred = token_preds["cls_pred"]
+    cls_pred = pred_data.cls_pred
     bs = batch["gen_pixel_values"].shape[0]
     device = batch["gen_pixel_values"].device
 
@@ -190,14 +192,36 @@ def token_cls_loss(
     }
 
 
+def get_gt_rot(
+        cfg: BaseConfig,
+        cond: ConditioningData,
+        batch: InputData,
+    ):
+    bs = batch["gen_pixel_values"].shape[0]
+
+    gt_rot_6d = []
+    for b in range(bs):
+        # We only compute loss on non-dropped out masks
+        gt_rot_mat = R.from_quat(batch["quaternions"][b][batch["valid"][b]].cpu()).as_matrix()
+        gt_rot_6d_ = get_ortho6d_from_rotation_matrix(torch.from_numpy(gt_rot_mat).to(batch['disc_pixel_values']))
+        mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b] - 1
+        remove_background_mask = mask_idxs_for_batch != 0
+        gt_rot_6d_ = gt_rot_6d_[mask_idxs_for_batch[remove_background_mask]]
+        if torch.any(~remove_background_mask):
+            gt_rot_6d_ = rearrange("1 d, masks d -> (1 + masks) d", gt_rot_6d_.new_zeros(1, 6), gt_rot_6d_)
+        gt_rot_6d.append(gt_rot_6d_)
+
+    gt_rot_6d = torch.cat(gt_rot_6d, dim=0)
+    return gt_rot_6d
+
 def token_rot_loss(
     cfg: BaseConfig,
     batch: InputData,
     cond: ConditioningData,
-    token_preds: dict,
+    pred_data: TokenPredData
 ):
 
-    rot_pred = token_preds["rot_pred"]
+    rot_pred = pred_data.pred_6d_rot
     bs = batch["gen_pixel_values"].shape[0]
     device = batch["gen_pixel_values"].device
 
@@ -208,10 +232,6 @@ def token_rot_loss(
         if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item():
             continue
 
-        # We only compute loss on non-dropped out masks
-        gt_rot_mat = R.from_quat(batch["quaternions"][b][batch["valid"][b]].cpu()).as_matrix()
-        gt_rot_6d = get_ortho6d_from_rotation_matrix(torch.from_numpy(gt_rot_mat).to(rot_pred))
-
         # We align the dataset instance indices with the flattened pred indices
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
         pred_idxs_for_batch = torch.arange(cond.mask_instance_idx.shape[0], device=device)[cond.mask_batch_idx == b]
@@ -219,16 +239,15 @@ def token_rot_loss(
         # The background is always 0 so we must remove it if it exists and move everything else down
         remove_background_mask = mask_idxs_for_batch != 0
 
-        mask_idxs_for_batch = mask_idxs_for_batch[remove_background_mask]
         pred_idxs_for_batch = pred_idxs_for_batch[remove_background_mask]
 
         pred_ = rot_pred[pred_idxs_for_batch]
-        gt_rot_6d = gt_rot_6d[mask_idxs_for_batch - 1]
+        gt_rot_6d_ = batch['gt_rot_6d'][pred_idxs_for_batch]
 
-        if gt_rot_6d.shape[0] == 0:
+        if gt_rot_6d_.shape[0] == 0:
             continue  # This can happen if we previously dropout all masks except the background
 
-        loss = F.mse_loss(pred_, gt_rot_6d)
+        loss = F.mse_loss(pred_, gt_rot_6d_)
         losses.append(loss)
 
     return torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=device)
