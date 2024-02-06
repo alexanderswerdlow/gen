@@ -82,6 +82,7 @@ class ModelConfig:
     use_inverted_noise_schedule: bool = False # TODO: Implement properly
     token_cls_pred_loss: bool = False
     num_token_cls: int = 17
+    single_fuser_layer: bool = False
 
 
 @dataclass

@@ -18,7 +18,7 @@ from peft import LoraConfig
 from torch import Tensor
 from transformers import AutoTokenizer, CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
-
+import itertools
 from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.models.attention import BasicTransformerBlock
 from diffusers.training_utils import cast_training_params
@@ -180,6 +180,9 @@ class BaseMapper(Trainable):
 
             num_cross_attn_layers = register_layerwise_attention(self.unet)
             assert num_cross_attn_layers == (2 * self.cfg.model.num_conditioning_pairs * (2 if self.cfg.model.gated_cross_attn else 1))
+   
+        if self.cfg.model.per_layer_queries:
+            assert self.cfg.model.layer_specialization
 
         if self.cfg.model.per_layer_queries:
             assert self.cfg.model.layer_specialization
@@ -248,6 +251,8 @@ class BaseMapper(Trainable):
                     m.fuser.requires_grad_(True)
                     m.fuser.to(dtype=torch.float32)
                 m.fuser.train()
+                if self.cfg.model.single_fuser_layer:
+                    break
 
         if self.cfg.model.freeze_text_encoder:
             if set_grad:
@@ -319,6 +324,21 @@ class BaseMapper(Trainable):
         if self.cfg.model.break_a_scene_cross_attn_loss:
             self.controller.reset()
 
+    def get_custom_params(self):
+        """
+        Returns all params directly managed by the top-level model.
+        Other params may be nested [e.g., in diffusers]
+        """
+        params = []
+        if self.cfg.model.clip_shift_scale_conditioning:
+            params.append(self.clip_proj_layers.parameters())
+        if self.cfg.model.token_cls_pred_loss:
+            params.append(self.token_mapper.parameters())
+        
+        params.append(self.mapper.parameters())
+
+        return itertools.chain(*params)
+    
     def get_param_groups(self):
         if self.cfg.model.finetune_unet_with_different_lrs:
             unet_params = dict(self.unet.named_parameters())
@@ -332,20 +352,20 @@ class BaseMapper(Trainable):
             return [  # Order matters here
                 {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate},
                 {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
-                {"params": self.mapper.parameters(), "lr": self.cfg.trainer.learning_rate * 2},
+                {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate * 2},
             ]
         elif self.cfg.model.unfreeze_gated_cross_attn:
             unet_params = dict(self.unet.named_parameters())
 
             def get_params(params, keys):
-                group = {k: v for k, v in params.items() if all([key in k for key in keys])}
+                group = {k: v for k, v in params.items() if all([key in k for key in keys]) and v.requires_grad}
                 for k, p in group.items():
                     del params[k]
                 return group
 
             return [  # Order matters here
                 {"params": get_params(unet_params, ("fuser",)).values(), "lr": self.cfg.trainer.learning_rate},
-                {"params": self.mapper.parameters(), "lr": 2 * self.cfg.trainer.learning_rate},
+                {"params": self.get_custom_params(), "lr": 2 * self.cfg.trainer.learning_rate},
             ]
         else:
             return None
@@ -531,10 +551,6 @@ class BaseMapper(Trainable):
                     dropout_mask[self.cfg.model.background_mask_idx] = True
             else:
                 dropout_mask = one_hot_mask.new_full((one_hot_mask.shape[0],), True, dtype=torch.bool)
-
-            if (dropout_mask & non_empty_mask).sum().item() == 0:
-                assert False, "We should no longer have this condition"
-                dropout_mask[(~dropout_mask).nonzero(as_tuple=True)[0]] = True
 
             combined_mask = dropout_mask & non_empty_mask
             one_hot_mask = one_hot_mask[combined_mask]

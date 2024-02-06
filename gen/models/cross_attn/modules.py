@@ -80,15 +80,41 @@ class TokenMapper(nn.Module):
 
         dim = self.cfg.model.token_embedding_dim * self.cfg.model.num_conditioning_pairs
         self.mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
+        self.loss_fn = nn.CrossEntropyLoss()
         self.apply(_init_weights)
 
     def forward(self, cfg: BaseConfig, batch: InputData, cond: ConditioningData):
-        breakpoint()
+        bs = batch['gen_pixel_values'].shape[0]
+        device = batch['gen_pixel_values'].device
+
+        assert cfg.model.background_mask_idx == 0
         output = self.mlp(cond.mask_tokens)
         pred = output.softmax(dim=-1)
-        loss_fn = nn.CrossEntropyLoss()
-        batch['categories'][batch['valid']]
-        output = loss_fn(pred.argmax(dim=-1), gt)
+
+        losses = []
+        for b in range(bs):
+            if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item():
+                continue
+
+            # We only compute loss on non-dropped out masks
+            instance_categories = batch['categories'][b][batch['valid'][b]]
+
+            # We align the dataset instance indices with the flattened pred indices
+            mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
+            pred_idxs_for_batch = torch.arange(cond.mask_instance_idx.shape[0], device=device)[cond.mask_batch_idx == b]
+
+            # The background is always 0 so we must remove it if it exists and move everything else down
+            remove_background_mask = mask_idxs_for_batch != 0
+
+            mask_idxs_for_batch = mask_idxs_for_batch[remove_background_mask]
+            pred_idxs_for_batch = pred_idxs_for_batch[remove_background_mask]
+
+            pred_ = pred[pred_idxs_for_batch]
+            instance_categories = instance_categories[mask_idxs_for_batch - 1]
+
+            losses.append(self.loss_fn(pred_, instance_categories.long()))
+
+        return torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=device)
 
 
 class FeatureMapper(nn.Module):

@@ -333,3 +333,9 @@ def viz():
             # if "femb" in cond.unet_kwargs:
             # (metadata_dict, clip_feature_maps) = cond.unet_kwargs["femb"]
             # metadata_dict["layer_idx"] = 0
+
+            # base model after dropoutmask
+            # if (dropout_mask & non_empty_mask).sum().item() == 0:
+            #     assert False, "We should no longer have this condition"
+            #     dropout_mask[(~dropout_mask).nonzero(as_tuple=True)[0]] = True
+    
