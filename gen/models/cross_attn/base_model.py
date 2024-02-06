@@ -765,6 +765,17 @@ class BaseMapper(Trainable):
             self.dropout_cfg(cond)
 
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
+            rot_latents = None
+            rot_noise = torch.randn_like(rot_latents)
+            noisy_rot_latents = self.noise_scheduler.add_noise(rot_latents, rot_noise, timesteps)
+
+            batch.update({
+                "rot_latents": rot_latents,
+                "rot_noise": rot_noise,
+                "noisy_rot_latents": noisy_rot_latents,
+                "timesteps": timesteps,
+            })
+            
             token_preds = self.token_mapper(cfg=self.cfg, batch=batch, cond=cond)
 
         encoder_hidden_states = cond.encoder_hidden_states

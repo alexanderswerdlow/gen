@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import hydra
 import torch
 from torch import Tensor, nn
-
+from einx import rearrange
 
 from gen.models.utils import _init_weights
 from gen.utils.logging_utils import log_info
@@ -69,7 +69,95 @@ class Mlp(nn.Module):
         y = self.fc2(y)
         return y if not self.return_residual else (y, x)
 
+# From DiT
+class TimestepEmbedder(nn.Module):
+    """
+    Embeds scalar timesteps into vector representations.
+    """
+    def __init__(self, hidden_size, frequency_embedding_size=256):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
+            nn.SiLU(),
+            nn.Linear(hidden_size, hidden_size, bias=True),
+        )
+        self.frequency_embedding_size = frequency_embedding_size
 
+    @staticmethod
+    def timestep_embedding(t, dim, max_period=10000):
+        """
+        Create sinusoidal timestep embeddings.
+        :param t: a 1-D Tensor of N indices, one per batch element.
+                          These may be fractional.
+        :param dim: the dimension of the output.
+        :param max_period: controls the minimum frequency of the embeddings.
+        :return: an (N, D) Tensor of positional embeddings.
+        """
+        # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
+        half = dim // 2
+        freqs = torch.exp(
+            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+        ).to(device=t.device)
+        args = t[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        return embedding
+
+    def forward(self, t):
+        t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
+        t_emb = self.mlp(t_freq)
+        return t_emb
+    
+class FilmMlp(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        cond_features,
+        hidden_features=None,
+        out_features=None,
+        activation=F.gelu,
+        device=None,
+        dtype=None,
+    ):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        out_features = out_features if out_features is not None else in_features
+        hidden_features = hidden_features if hidden_features is not None else in_features * 4
+
+        self.t_embedder = TimestepEmbedder(out_features)
+
+        self.activation = activation
+        self.fc1 = nn.Linear(in_features, hidden_features, **factory_kwargs)
+        self.norm1 = nn.LayerNorm(hidden_features, **factory_kwargs)
+        self.film1 = nn.Linear(cond_features, 2 * hidden_features, **factory_kwargs)
+
+        self.fc2 = nn.Linear(hidden_features, hidden_features, *C*factory_kwargs)
+        self.norm2 = nn.LayerNorm(hidden_features, **factory_kwargs)
+        self.film2 = nn.Linear(cond_features, 2 * hidden_features, **factory_kwargs)
+
+        self.fc3 = nn.Linear(hidden_features, out_features, **factory_kwargs)
+
+        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
+        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
+
+        nn.init.constant_(self.film1.weight, 0)
+        nn.init.constant_(self.film1.bias, 0)
+        nn.init.constant_(self.film2.weight, 0)
+        nn.init.constant_(self.film2.bias, 0)
+
+    def forward(self, x, t, cond):
+        t_emb = self.t_embedder(t) # TODO: This is weird, out timestep embedding is 6 dims
+        x = x + t_emb
+        y = self.activation(self.norm1(self.fc1(x)))
+        scale, shift = rearrange("b (n 2) -> b n, b n", self.film1(cond))
+        y = y * (1 - scale) + shift
+        y = self.activation(self.norm2(self.fc2(x)))
+        scale, shift = rearrange("b (n 2) -> b n, b n", self.film2(cond))
+        y = y * (1 - scale) + shift
+        y = self.fc3(y)
+        return y
+    
 class TokenMapper(nn.Module):
     def __init__(
         self,
@@ -83,7 +171,7 @@ class TokenMapper(nn.Module):
             self.cls_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
 
         if self.cfg.model.token_rot_pred_loss:
-            self.rot_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=6, activation=nn.GELU())
+            self.rot_mlp = FilmMlp(in_features=dim, cond_features=1024, out_features=6, activation=nn.GELU())
 
         self.apply(_init_weights)
 
@@ -95,7 +183,9 @@ class TokenMapper(nn.Module):
             ret["cls_pred"] = pred
 
         if self.cfg.model.token_rot_pred_loss:
-            output = self.rot_mlp(cond.mask_tokens)
+            latents = batch["noisy_rot_latents"]
+            timesteps = batch["timesteps"]
+            output = self.rot_mlp(latents, timesteps, cond.mask_tokens)
             pred = output.softmax(dim=-1)
             ret["rot_pred"] = pred
 
