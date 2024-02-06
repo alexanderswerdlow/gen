@@ -112,7 +112,11 @@ class TokenMapper(nn.Module):
             pred_ = pred[pred_idxs_for_batch]
             instance_categories = instance_categories[mask_idxs_for_batch - 1]
 
-            losses.append(self.loss_fn(pred_, instance_categories.long()))
+            if instance_categories.shape[0] == 0:
+                continue # This can happen if we previously dropout all masks except the background
+
+            loss = self.loss_fn(pred_, instance_categories.long())
+            losses.append(loss)
 
         return torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=device)
 
