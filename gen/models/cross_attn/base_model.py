@@ -58,6 +58,7 @@ class ConditioningData:
     mask_instance_idx: Optional[Integer[Tensor, "n"]] = None
     batch_cond_dropout: Optional[Bool[Tensor, "b"]] = None
     input_prompt: Optional[list[str]] = None
+    learnable_idxs: Optional[Any] = None
 
     # These are passed to the U-Net or pipeline
     encoder_hidden_states: Optional[Float[Tensor, "b d"]] = None
@@ -81,6 +82,8 @@ class AttentionMetadata(TypedDict):
     attention_mask: Optional[Float[Tensor, "b d h w"]]
     gate_scale: Optional[float]
     frozen_dim: Optional[int]
+    return_attn_probs: bool
+    attn_probs: Optional[Float[Tensor, "..."]]
 
 class Dummy:
     def __getattr__(self, name):
@@ -718,8 +721,8 @@ class BaseMapper(Trainable):
             batch["formatted_input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, eos_token), dim=0)[:cur_ids.shape[0]]
 
         # Overwrite mask locations
-        learnable_idxs = (batch["formatted_input_ids"] == self.placeholder_token_id).nonzero(as_tuple=True)
-        cond.encoder_hidden_states[learnable_idxs[0], learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
+        cond.learnable_idxs = (batch["formatted_input_ids"] == self.placeholder_token_id).nonzero(as_tuple=True)
+        cond.encoder_hidden_states[cond.learnable_idxs[0], cond.learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
 
         if self.cfg.model.layer_specialization:
             cond.unet_kwargs["cross_attention_kwargs"]['attn_meta'].update(dict(

@@ -18,6 +18,8 @@ from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
+from math import sqrt
+from einx import rearrange, mean, softmax
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
@@ -68,6 +70,10 @@ def infer_batch(
     if "num_images_per_prompt" not in cond.unet_kwargs:
         kwargs["num_images_per_prompt"] = num_images_per_prompt
 
+    if "return_attn_probs" in kwargs:
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["return_attn_probs"] = kwargs["return_attn_probs"]
+        del kwargs["return_attn_probs"]
+
     # CFG must be enabled when masking as we make this assumption in attn_proc
     if self.cfg.model.attention_masking:
         assert kwargs["guidance_scale"] > 1
@@ -115,10 +121,40 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     )
     ret["validation"] = gt_info
 
+    added_kwargs = dict()
+    if self.cfg.inference.visualize_attention_map:
+        added_kwargs["return_attn_probs"] = True
+
     prompt_image, cond = self.infer_batch(
         batch=batch,
         num_images_per_prompt=self.cfg.inference.num_images_per_prompt,
+        **added_kwargs
     )
+
+    if self.cfg.inference.visualize_attention_map:
+        attn = cond.unet_kwargs['cross_attention_kwargs']['attn_meta']['attn_probs']
+        target_size = (self.cfg.model.latent_dim, self.cfg.model.latent_dim)
+        all_attn = []
+        bs = len(prompt_image)
+        for k,v in attn.items():
+            layer_attn = torch.stack(v, dim=0).cpu()[:, -bs:]
+            layer_attn = rearrange("timesteps b (h w) tokens -> timesteps (b tokens) () h w", layer_attn, h=int(sqrt(layer_attn.shape[-2])))
+            layer_attn = torch.mean(layer_attn, dim=0)
+            layer_attn = F.interpolate(layer_attn.to(dtype=torch.float32), size=target_size, mode="bilinear", align_corners=False).squeeze(1)
+            all_attn.append(layer_attn)
+
+        all_attn = mean("[layers] (b tokens) h w -> b tokens h w", torch.stack(all_attn), b=bs)
+        attn_imgs = []
+        for b in range(bs):
+            attn_ = all_attn[b]
+            idx_mask = cond.learnable_idxs[1][cond.learnable_idxs[0] == b]
+            tokens = attn_[idx_mask.to(device=attn_.device)]
+            tokens = rearrange("t (h w) -> t 3 h w", softmax("t [hw]", rearrange("t h w -> t (h w)", tokens)), h=tokens.shape[-1])
+            tokens = (tokens - torch.min(tokens)) / (torch.max(tokens) - torch.min(tokens))
+            masks = Im(rearrange("h w masks -> masks 3 h w", batch['gen_segmentation'][b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
+            attn_imgs.append(Im.concat_vertical(Im.concat_horizontal(*tokens), Im.concat_horizontal(*masks.torch)))
+
+        ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
 
     if self.cfg.model.token_rot_pred_loss:
         with torch.cuda.amp.autocast():

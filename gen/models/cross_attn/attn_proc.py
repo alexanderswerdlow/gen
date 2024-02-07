@@ -1,3 +1,4 @@
+from collections import defaultdict
 import math
 from typing import Callable, Optional, Union
 
@@ -6,7 +7,7 @@ import xformers
 import xformers.ops
 from diffusers.models.attention_processor import Attention
 from diffusers.utils import USE_PEFT_BACKEND
-from einx import rearrange
+from einx import rearrange, mean
 
 from gen.models.cross_attn.base_model import AttentionMetadata
 from gen.models.cross_attn.deprecated_configs import handle_attn_proc_masking
@@ -69,17 +70,20 @@ class XFormersAttnProcessor:
 
         # START MODIFICATION
         is_cross_attn = encoder_hidden_states is not None
+        is_trainable_cross_attn = False
         if encoder_hidden_states is not None and attn_meta is not None:
-            is_frozen_after_gate = attn_meta.get("gate_scale", None) is not None
-            if is_frozen_after_gate:
+            training_gated_attn = attn_meta.get("gate_scale", None) is not None
+            if training_gated_attn:
+                # We split the cond between the gated cross-attn and the frozen cross-attn
                 frozen_dim = attn_meta.get("frozen_dim", None)
                 encoder_hidden_states, frozen_encoder_hidden_states = rearrange('b t (d + f) -> b t d, b t f', encoder_hidden_states, f=frozen_dim)
 
-            if can_override_encoder_hidden_states and is_frozen_after_gate:
+            if can_override_encoder_hidden_states and training_gated_attn:
                 encoder_hidden_states = frozen_encoder_hidden_states
             else:
                 # TODO: We assume that we *always* call all cross-attn layers in order, and that we never skip any.
                 # This makes it easier for e.g., inference so we don't need to reset the counter, but is pretty hacky.
+                is_trainable_cross_attn = True
                 cur_idx = attn_meta["layer_idx"] % attn_meta["num_layers"]
                 cond_idx = min(cur_idx, (attn_meta["num_layers"] - 1) - cur_idx)
                 encoder_hidden_states = encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[cond_idx]
@@ -124,9 +128,19 @@ class XFormersAttnProcessor:
         # START MODIFICATION
         if is_cross_attn and attn_meta is not None and "attention_mask" in attn_meta:
             attention_mask = handle_attn_proc_masking(attn_meta, hidden_states, attn, query, batch_size)
+
+        if is_trainable_cross_attn and attn_meta.get("return_attn_probs", False):
+            attention_probs = attn.get_attention_scores(query, key, attention_mask)
+            hidden_states = torch.bmm(attention_probs, value)
+
+            if "attn_probs" not in attn_meta:
+                attn_meta["attn_probs"] = defaultdict(list)
+                
+            attn_meta["attn_probs"][cur_idx].append(mean("(b [heads]) d tokens -> b d tokens", attention_probs, b=batch_size))
+        else:
+            hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale)
         # END MODIFICATION
 
-        hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale)
         hidden_states = hidden_states.to(query.dtype)
         hidden_states = attn.batch_to_head_dim(hidden_states)
 
