@@ -71,6 +71,7 @@ class TokenPredData:
     timesteps: Optional[Integer[Tensor, "b"]] = None
     cls_pred: Optional[Float[Tensor, "n classes"]] = None
     pred_6d_rot: Optional[Float[Tensor, "n 6"]] = None
+    pred_mask: Optional[Bool[Tensor, "n"]] = None
 
 class AttentionMetadata(TypedDict):
     layer_idx: int
@@ -430,7 +431,7 @@ class BaseMapper(Trainable):
 
     def denoise_rotation(self, batch: InputData, cond: ConditioningData, scheduler: DDIMScheduler):
         pred_data = TokenPredData()
-        pred_data.gt_rot_6d = get_gt_rot(self.cfg, cond, batch)
+        pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
         assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
         
         scheduler.set_timesteps(num_inference_steps=50, device=self.device)
@@ -446,15 +447,16 @@ class BaseMapper(Trainable):
             pred_data.timesteps = t[None].repeat(latents.shape[0])
 
             # predict the noise residual
-            # noise_pred = self.unet(latent_model_input, t)[0]
             pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
 
             # compute the previous noisy sample x_t -> x_t-1
             latents = scheduler.step(pred_data.pred_6d_rot, t, latents, return_dict=False)[0]
 
-        final_pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d)
-        log_info(f"Final pred loss: {final_pred_loss.item()}")
-        return final_pred_loss
+        
+        pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
+        pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
+
+        return pred_data
 
     def check_add_segmentation(self, batch: InputData):
         """
@@ -809,7 +811,7 @@ class BaseMapper(Trainable):
             pred_data = TokenPredData()
             if self.cfg.model.token_rot_pred_loss:
                 pred_data.timesteps = timesteps[cond.mask_batch_idx]
-                pred_data.gt_rot_6d = get_gt_rot(self.cfg, cond, batch)
+                pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
                 assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
                 pred_data.rot_6d_noise = torch.randn_like(pred_data.gt_rot_6d)
                 pred_data.noised_rot_6d = self.noise_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, pred_data.timesteps)

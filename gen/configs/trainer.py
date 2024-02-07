@@ -56,6 +56,7 @@ class TrainerConfig:
     finetune_learning_rate: Optional[float] = None
     detect_anomaly: bool = False
     find_unused_parameters: bool = False
+    base_model_custom_validation: bool = False
 
     # Set in code
     num_gpus: Optional[int] = None

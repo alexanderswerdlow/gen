@@ -5,7 +5,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from gen.configs.utils import auto_store, store_child_config
 from gen.utils.trainer_utils import Trainable
-from gen.models.cross_attn.base_inference import run_inference, compose_two_images, interpolate_latents
+from gen.models.cross_attn.base_inference import run_qualitative_inference, compose_two_images, interpolate_latents
 from functools import partial
 
 @dataclass
@@ -31,7 +31,7 @@ class InferenceConfig:
     use_ddim: bool = False
 
     use_custom_pipeline: bool = True
-    inference_func: Callable[[Trainable], None] = run_inference
+    inference_func: Callable[[Trainable], None] = run_qualitative_inference
 
 
 auto_store(InferenceConfig, name="basemapper")

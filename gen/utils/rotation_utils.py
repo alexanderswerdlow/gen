@@ -1,5 +1,51 @@
 import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import io
+from PIL import Image
+from image_utils import Im
 
+def visualize_rotations(R_ref, R_pred):
+    # Create a 3D figure
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Define the origin
+    origin = np.array([[0, 0, 0]])
+    
+    # Axes vectors
+    axes = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    
+    # Transform axes through the rotation matrices
+    ref_axes = np.dot(R_ref, axes.T).T
+    pred_axes = np.dot(R_pred, axes.T).T
+
+    length = 1.0
+    
+    # Plot reference axes
+    for i in range(3):
+        ax.quiver(*origin.T, *ref_axes[i], length=length, color=['g', 'g', 'g'][i], label='Ref' if i == 0 else "")
+    
+    # Plot prediction axes, slightly offset to differentiate
+    for i in range(3):
+        ax.quiver(*origin.T, *pred_axes[i], length=length, color=['r', 'r', 'r'][i], label='Pred' if i == 0 else "")
+    
+    # Setting the legend and the limits of the plot
+    ax.legend()
+    ax.set_xlim([-1, 1])
+    ax.set_ylim([-1, 1])
+    ax.set_zlim([-1, 1])
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    buf = io.BytesIO()
+    plt.savefig(buf, format='jpeg', bbox_inches='tight')
+    buf.seek(0)
+    im = Image.open(buf)
+    plt.close('all')
+
+    return im
 
 def normalize_vector(v, return_mag=False):
     device = v.device

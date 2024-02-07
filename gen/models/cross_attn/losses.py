@@ -177,7 +177,7 @@ def token_cls_loss(
         correct_predictions += (predicted_labels == instance_categories).sum().item()
 
         _, top5_preds = pred_.topk(5, 1, True, True)
-        correct_top5_predictions += sum(instance_categories.view(-1,1) == top5_preds).sum().item()
+        correct_top5_predictions += sum(instance_categories.view(-1, 1) == top5_preds).sum().item()
 
         total_instances += instance_categories.size(0)
 
@@ -188,65 +188,35 @@ def token_cls_loss(
     return {
         "token_cls_pred_loss": avg_loss * 0.1,
         "metric_token_cls_pred_acc": torch.tensor(accuracy, device=device),
-        "metric_token_cls_pred_top5_acc": torch.tensor(top5_accuracy, device=device)
+        "metric_token_cls_pred_top5_acc": torch.tensor(top5_accuracy, device=device),
     }
 
 
-def get_gt_rot(
-        cfg: BaseConfig,
-        cond: ConditioningData,
-        batch: InputData,
-    ):
+def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_data: TokenPredData):
     bs = batch["gen_pixel_values"].shape[0]
 
     gt_rot_6d = []
     for b in range(bs):
         # We only compute loss on non-dropped out masks
         gt_rot_mat = R.from_quat(batch["quaternions"][b][batch["valid"][b]].cpu()).as_matrix()
-        gt_rot_6d_ = get_ortho6d_from_rotation_matrix(torch.from_numpy(gt_rot_mat).to(batch['disc_pixel_values']))
+        gt_rot_6d_ = get_ortho6d_from_rotation_matrix(torch.from_numpy(gt_rot_mat).to(batch["disc_pixel_values"]))
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b] - 1
         remove_background_mask = mask_idxs_for_batch != 0
         gt_rot_6d_ = gt_rot_6d_[mask_idxs_for_batch[remove_background_mask]]
         if torch.any(~remove_background_mask):
-                gt_rot_6d_ = torch.cat([gt_rot_6d_.new_zeros(1, 6), gt_rot_6d_], dim=0)
+            gt_rot_6d_ = torch.cat([gt_rot_6d_.new_zeros(1, 6), gt_rot_6d_], dim=0)
         gt_rot_6d.append(gt_rot_6d_)
 
-    gt_rot_6d = torch.cat(gt_rot_6d, dim=0)
-    return gt_rot_6d
+    pred_data.gt_rot_6d = torch.cat(gt_rot_6d, dim=0)
+    pred_data.pred_mask = cond.mask_instance_idx != 0
 
-def token_rot_loss(
-    cfg: BaseConfig,
-    batch: InputData,
-    cond: ConditioningData,
-    pred_data: TokenPredData
-):
+    return pred_data
 
-    bs = batch["gen_pixel_values"].shape[0]
-    device = batch["gen_pixel_values"].device
+
+def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pred_data: TokenPredData):
 
     assert cfg.model.background_mask_idx == 0
+    if pred_data.pred_mask.sum() > 0:
+        return torch.tensor(0.0, device=batch["device"])
 
-    losses = []
-    for b in range(bs):
-        if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item():
-            continue
-
-        # We align the dataset instance indices with the flattened pred indices
-        mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
-        pred_idxs_for_batch = torch.arange(cond.mask_instance_idx.shape[0], device=device)[cond.mask_batch_idx == b]
-
-        # The background is always 0 so we must remove it if it exists and move everything else down
-        remove_background_mask = mask_idxs_for_batch != 0
-
-        pred_idxs_for_batch = pred_idxs_for_batch[remove_background_mask]
-
-        pred_ = pred_data.pred_6d_rot[pred_idxs_for_batch]
-        gt_rot_6d_ = pred_data.gt_rot_6d[pred_idxs_for_batch]
-
-        if gt_rot_6d_.shape[0] == 0:
-            continue  # This can happen if we previously dropout all masks except the background
-
-        loss = F.mse_loss(pred_, gt_rot_6d_)
-        losses.append(loss)
-
-    return torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=device)
+    return F.mse_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.gt_rot_6d[pred_data.pred_mask], reduction="mean")

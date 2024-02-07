@@ -341,3 +341,41 @@ def viz():
     
                 # self.rot_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=6, activation=nn.GELU())
 # output = self.rot_mlp(cond.mask_tokens)
+    
+
+#     def token_rot_loss(
+#     cfg: BaseConfig,
+#     batch: InputData,
+#     cond: ConditioningData,
+#     pred_data: TokenPredData
+# ):
+
+#     bs = batch["gen_pixel_values"].shape[0]
+#     device = batch["gen_pixel_values"].device
+
+#     assert cfg.model.background_mask_idx == 0
+
+#     losses = []
+#     for b in range(bs):
+#         if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item():
+#             continue
+
+#         # We align the dataset instance indices with the flattened pred indices
+#         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
+#         pred_idxs_for_batch = torch.arange(cond.mask_instance_idx.shape[0], device=device)[cond.mask_batch_idx == b]
+
+#         # The background is always 0 so we must remove it if it exists and move everything else down
+#         remove_background_mask = mask_idxs_for_batch != 0
+
+#         pred_idxs_for_batch = pred_idxs_for_batch[remove_background_mask]
+
+#         pred_ = pred_data.pred_6d_rot[pred_idxs_for_batch]
+#         gt_rot_6d_ = pred_data.gt_rot_6d[pred_idxs_for_batch]
+
+#         if gt_rot_6d_.shape[0] == 0:
+#             continue  # This can happen if we previously dropout all masks except the background
+
+#         loss = F.mse_loss(pred_, gt_rot_6d_)
+#         losses.append(loss)
+
+#     return torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=device)

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from einops import repeat
 from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
@@ -13,13 +14,38 @@ from torchvision import utils
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
 from gen.utils.decoupled_utils import load_tensor_dict
+from gen.utils.logging_utils import log_info
+from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
 
+def repeat_batch(batch, bs: int):
+    batch_ = {}
+    for k, v in batch.items():
+        if isinstance(v, torch.Tensor):
+            assert v.shape[0] == 1
+            batch_[k] = repeat(v[0], "... -> h ...", h=bs)
 
+new_prompts = [
+            "A photo of a {}",
+            "A photo of {} in the jungle",
+            "A photo of {} on a beach",
+            "A photo of {} in Times Square",
+            "A photo of {} in the moon",
+            "A painting of {} in the style of Monet",
+            "Oil painting of {}",
+            "A Marc Chagall painting of {}",
+            "A manga drawing of {}",
+            "A watercolor painting of {}",
+            "A statue of {}",
+            "App icon of {}",
+            "A sand sculpture of {}",
+            "Colorful graffiti of {}",
+            "A photograph of two {} on a table",
+        ]
 def infer_batch(
     self: BaseMapper,
     batch: InputData,
@@ -60,7 +86,19 @@ def infer_batch(
 
 
 @torch.no_grad()
-def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
+def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingState):
+    ret = {}
+    if self.cfg.model.token_rot_pred_loss:
+        with torch.cuda.amp.autocast():
+            cond = self.get_standard_conditioning_for_inference(batch=batch)
+            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.pipeline.scheduler)
+            pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
+            ret['pred_loss'] = pred_loss
+    return ret
+
+
+@torch.no_grad()
+def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingState):
     """
     TODO: Support batched inference at some point. Right now it is batched under the hood (for CFG and if num_images_per_prompt > 1) but we can likely do much better.
     """
@@ -82,7 +120,15 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
 
     if self.cfg.model.token_rot_pred_loss:
         with torch.cuda.amp.autocast():
-            mean_pred_loss = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.pipeline.scheduler)
+            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.pipeline.scheduler)
+            R_ref = compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).cpu().numpy()
+            R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot).cpu().numpy()
+            assert R_ref.shape == R_pred.shape
+            rot_imgs = []
+            for i in range(R_ref.shape[0]):
+                rot_imgs.append(Im(visualize_rotations(R_ref[i], R_pred[i])).torch)
+            
+            ret["rotations"] = Im(torch.stack(rot_imgs)).grid()
 
     full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
     generated_images = Im.concat_horizontal(
@@ -150,21 +196,16 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
     if self.cfg.inference.num_masks_to_remove is not None:
         orig_gen_segmentation = batch["gen_segmentation"].clone()
 
-        batch_ = {}
-        batch_["gen_segmentation"] = []
+        batched_gen_seg = []
         idxs = list(range(orig_gen_segmentation.shape[-1])[: self.cfg.inference.num_masks_to_remove])
         for j in idxs:
-            mask_ = orig_gen_segmentation[..., torch.arange(orig_gen_segmentation.size(-1)) != j]
-            batch_["gen_segmentation"].append(mask_)
+            batched_gen_seg.append(orig_gen_segmentation[..., torch.arange(orig_gen_segmentation.size(-1)) != j])
 
-        batch_["gen_segmentation"] = torch.cat(batch_["gen_segmentation"], dim=0)
-        batch_["input_ids"] = batch["input_ids"].repeat(batch_["gen_segmentation"].shape[0], 1)
+        batched_gen_seg = torch.cat(batched_gen_seg, dim=-1)
 
-        if batch_["gen_segmentation"].sum().item() != 0:
-            for k, v in batch.items():
-                if isinstance(v, torch.Tensor) and k not in batch_:
-                    assert v.shape[0] == 1
-                    batch_[k] = repeat(v[0], "... -> h ...", h=batch_["gen_segmentation"].shape[0])
+        if batched_gen_seg.sum().item() != 0:
+            batch_ = repeat_batch(batch, bs=len(idxs))
+            batch_["gen_segmentation"] = batched_gen_seg
 
             prompt_images, _ = self.infer_batch(batch=batch_)
             if self.cfg.model.break_a_scene_cross_attn_loss:
@@ -184,35 +225,15 @@ def run_inference(self: BaseMapper, batch: dict, state: TrainingState):
             batch["gen_segmentation"] = orig_gen_segmentation
 
     if self.cfg.inference.infer_new_prompts:
-        prompts = [
-            "A photo of a {}",
-            "A photo of {} in the jungle",
-            "A photo of {} on a beach",
-            "A photo of {} in Times Square",
-            "A photo of {} in the moon",
-            "A painting of {} in the style of Monet",
-            "Oil painting of {}",
-            "A Marc Chagall painting of {}",
-            "A manga drawing of {}",
-            "A watercolor painting of {}",
-            "A statue of {}",
-            "App icon of {}",
-            "A sand sculpture of {}",
-            "Colorful graffiti of {}",
-            "A photograph of two {} on a table",
-        ]
-        prompts = [prompt.format(self.cfg.model.placeholder_token) for prompt in prompts]
-        batch_ = {}
+        prompts = [prompt.format(self.cfg.model.placeholder_token) for prompt in new_prompts]
 
-        batch_["input_ids"] = []
+        input_ids_ = []
         for prompt in prompts[: self.cfg.inference.max_batch_size]:
-            batch_["input_ids"].append(get_tokens(tokenizer=self.tokenizer, prompt=prompt)[None])
-        batch_["input_ids"] = torch.cat(batch_["input_ids"], dim=0).to(self.device)
+            input_ids_.append(get_tokens(tokenizer=self.tokenizer, prompt=prompt)[None])
+        input_ids_ = torch.cat(input_ids_, dim=0).to(self.device)
 
-        for k, v in batch.items():
-            if isinstance(v, torch.Tensor) and k not in batch_:
-                assert v.shape[0] == 1
-                batch_[k] = repeat(v[0], "... -> h ...", h=batch_["input_ids"].shape[0])
+        batch_ = repeat_batch(batch, bs=len(input_ids_))
+        batch_["input_ids"] = input_ids_
 
         prompt_images, _ = self.infer_batch(batch=batch_)
         if self.cfg.model.break_a_scene_cross_attn_loss:

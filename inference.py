@@ -11,15 +11,14 @@ from image_utils import Im
 from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
+import torch
 import wandb
 from gen.configs.base import BaseConfig
 from gen.datasets.base_dataset import Split
 from gen.models.utils import get_model_from_cfg
-from gen.utils.decoupled_utils import all_gather, get_rank, is_main_process, save_tensor_dict
+from gen.utils.decoupled_utils import all_gather, get_rank, is_main_process, sanitize_filename, save_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, unwrap
-
 
 def inference(cfg: BaseConfig, accelerator: Accelerator):
     model = get_model_from_cfg(cfg)
@@ -47,13 +46,22 @@ def run_inference_dataloader(
     model: Trainable,
     output_path: Path,
     state: TrainingState,
+    prefix: Optional[str] = None,
 ):
     output_path.mkdir(exist_ok=True, parents=True)
     unwrap(model).set_inference_mode()
     log_info(f"Running inference. Dataloder size: {len(dataloader)}")
+    
     outputs = []
     for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
-        output = unwrap(model).run_inference(batch=batch, state=state)
+        inference_state = TrainingState(
+            epoch_step=i,
+            num_epoch_steps=len(dataloader),
+            epoch=state.epoch,
+            global_step=state.global_step,
+            true_step=state.true_step,
+        )
+        output = unwrap(model).run_inference(batch=batch, state=inference_state)
         outputs.append(output)
 
     outputs = all_gather(outputs)  # Combine over GPUs.
@@ -64,10 +72,15 @@ def run_inference_dataloader(
         for d in outputs:
             for k, v in d.items():
                 new_dict[k].append(v)
+
+        if prefix: new_dict = {f"{prefix}{k}":v for k,v in new_dict.items()}
         for k, v in sorted(new_dict.items()):
-            if isinstance(v[0], dict):
+            if "pred_" in k:
+                v_ = torch.cat(v, dim=0).mean()
+                accelerator.log({k: v_}, step=state.global_step)
+            elif isinstance(v[0], dict):
                 for i in range(len(v)):
-                    save_tensor_dict(v[i], path=output_path / f"{k}_{state.global_step}_{i}.npz")
+                    save_tensor_dict(v[i], path=output_path / sanitize_filename(f"{k}_{state.global_step}_{i}.npz"))
             else:
                 output_images = [Im(im) for im in v]
                 log_with_accelerator(
@@ -81,19 +94,18 @@ def run_inference_dataloader(
 
     log_info(f"Saved to {output_path}")
 
-
 def log_with_accelerator(
     accelerator: Optional[Accelerator], images: List[Image.Image], global_step: int, name: str, save_folder: Optional[Path] = None, spacing: int = 15
 ):
     save_folder.parent.mkdir(exist_ok=True)
 
     if len(images) == 1:
-        save_path = save_folder / f"{name}_{global_step}.png"
+        save_path = save_folder / sanitize_filename(f"{name}_{global_step}.png")
         Im(images[0]).save(save_path)
     else:
         for i in range(len(images)):
             try:
-                save_path = save_folder / f"{name}_{global_step}_{i}.png"
+                save_path = save_folder / sanitize_filename(f"{name}_{global_step}_{i}.png")
                 Im(images[i]).save(save_path)
             except Exception as e:
                 print(e)

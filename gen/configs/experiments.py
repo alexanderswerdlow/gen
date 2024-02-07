@@ -140,7 +140,7 @@ def get_datasets():  # TODO: These do not need to be global configs
                 multi_camera_format=True
             ),
             validation_dataset=dict(
-                custom_split="train",
+                custom_split="validation",
                 subset_size=8,
                 random_subset=True,
                 path=MOVI_MEDIUM_PATH,
@@ -186,7 +186,7 @@ def get_experiments():
         name="small_gpu",
         dataset=dict(train_dataset=dict(batch_size=1, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
         model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False), single_fuser_layer=True, pretrained_model_name_or_path='runwayml/stable-diffusion-v1-5', token_embedding_dim=768),
-        trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False),
+        trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False, gradient_accumulation_steps=1),
         inference=dict(
             visualize_attention_map=False,
             infer_new_prompts=False,
@@ -267,5 +267,5 @@ def get_experiments():
     mode_store(
         name="debug_token_pred",
         model=dict(token_cls_pred_loss=True, token_rot_pred_loss=True),
-        hydra_defaults=["gated_cross_attn", "movi_medium_single_scene"],
+        hydra_defaults=["gated_cross_attn", "unet_lora", "token_pred", "movi_medium", "small_gpu"],
     )

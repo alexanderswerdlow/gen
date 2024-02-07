@@ -3,33 +3,35 @@ load_time = __import__("time").time()
 import itertools
 import math
 import os
+import types
 from collections import defaultdict
 from pathlib import Path
 from time import time
 from typing import Iterable, Union
 
 import hydra
-from numpy import float32
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
-import wandb
 from accelerate import Accelerator
-from diffusers.optimization import get_scheduler
-from diffusers.utils.import_utils import is_xformers_available
 from torch import nn
 from torch.utils.data import DataLoader
 from torchinfo import summary
 from tqdm.auto import tqdm
 from transformers import CLIPTokenizer
 
+import wandb
+from diffusers.optimization import get_scheduler
+from diffusers.utils.import_utils import is_xformers_available
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import Profiler, get_rank, is_main_process, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn
-from gen.utils.trainer_utils import Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing_dirs, load_from_ckpt, unwrap
+from gen.utils.trainer_utils import (Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing_dirs, load_from_ckpt,
+                                     unwrap)
 from inference import run_inference_dataloader
+
 
 def trainable_parameters(module, requires_grad: bool):
     for name, param in module.named_parameters():
@@ -94,9 +96,10 @@ class Trainer:
 
     def init_dataloader(self):
         log_info("Creating train_dataset + self.train_dataloader")
-        self.train_dataloader: DataLoader = hydra.utils.instantiate(self.cfg.dataset.train_dataset, _recursive_=True)(
+        self.train_dataloader_holder: AbstractDataset = hydra.utils.instantiate(self.cfg.dataset.train_dataset, _recursive_=True)(
             cfg=self.cfg, split=Split.TRAIN, tokenizer=self.tokenizer, accelerator=self.accelerator
-        ).get_dataloader()
+        )
+        self.train_dataloader: DataLoader = self.train_dataloader_holder.get_dataloader()
         assert len(self.train_dataloader) > 0
 
         log_info("Creating validation_dataset + self.validation_dataloader")
@@ -107,7 +110,7 @@ class Trainer:
         if self.cfg.dataset.overfit:
             self.validation_dataset_holder.get_dataset = lambda: self.train_dataloader.dataset
 
-        self.validation_dataloader = self.validation_dataset_holder.get_dataloader()
+        self.validation_dataloader: DataLoader = self.validation_dataset_holder.get_dataloader()
         assert len(self.validation_dataloader) > 0
 
     def init_optimizer(self):
@@ -160,7 +163,10 @@ class Trainer:
 
     def validate(self, state: TrainingState):
         validation_start_time = time()
-        if self.cfg.dataset.reset_validation_dataset_every_epoch:
+
+        self.base_model_validate(state=state)
+
+        if self.cfg.dataset.reset_validation_dataset_every_epoch or self.cfg.trainer.base_model_custom_validation:
             if state.epoch == 0:
                 self.validation_dataset_holder.subset_size = self.cfg.trainer.num_gpus
             else:
@@ -168,6 +174,7 @@ class Trainer:
 
             g = torch.Generator()
             g.manual_seed(state.global_step + get_rank())
+            self.validation_dataset_holder.batch_size = self.cfg.dataset.validation_dataset.batch_size
             self.validation_dataloader = self.validation_dataset_holder.get_dataloader(generator=g)
             self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
 
@@ -180,6 +187,7 @@ class Trainer:
             model=self.model,
             state=state,
             output_path=self.cfg.output_dir / "images",
+            prefix='val/'
         )
 
         unwrap(self.model).set_training_mode()
@@ -188,6 +196,50 @@ class Trainer:
         log_info(
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.get('wandb_url', None)}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
         )
+
+    # TODO: This is model-specific and should be achieved by inheritance or some other mechanism
+    def base_model_validate(self, state: TrainingState):
+        from gen.models.cross_attn.base_inference import run_qualitative_inference, run_quantitative_inference
+        self.model.run_inference = types.MethodType(run_quantitative_inference, self.model)
+
+        subset_size, batch_size = 200, 10
+        self.validation_dataset_holder.subset_size = subset_size
+        self.train_dataloader_holder.random_subset = False
+        self.validation_dataset_holder.batch_size = batch_size
+        self.validation_dataloader = self.validation_dataset_holder.get_dataloader()
+        self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
+
+        run_inference_dataloader(
+            accelerator=self.accelerator,
+            dataloader=self.validation_dataloader,
+            model=self.model,
+            state=state,
+            output_path=self.cfg.output_dir / "images",
+            prefix="val/"
+        )
+        
+        self.train_dataloader_holder.subset_size = subset_size
+        self.train_dataloader_holder.random_subset = False
+        self.train_dataloader_holder.batch_size = batch_size
+        self.train_dataloader = self.train_dataloader_holder.get_dataloader()
+        self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
+
+        run_inference_dataloader(
+            accelerator=self.accelerator,
+            dataloader=self.train_dataloader,
+            model=self.model,
+            state=state,
+            output_path=self.cfg.output_dir / "images",
+            prefix="train/"
+        )
+
+        self.train_dataloader_holder.subset_size = self.cfg.dataset.train_dataset.subset_size
+        self.train_dataloader_holder.random_subset = self.cfg.dataset.train_dataset.random_subset
+        self.train_dataloader_holder.batch_size = self.cfg.dataset.train_dataset.batch_size
+        self.train_dataloader = self.train_dataloader_holder.get_dataloader()
+        self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
+
+        self.model.run_inference = types.MethodType(run_qualitative_inference, self.model)
 
     def unfreeze_unet(self, state: TrainingState):
         log_warn(f"Unfreezing UNet at {state.global_step} steps")

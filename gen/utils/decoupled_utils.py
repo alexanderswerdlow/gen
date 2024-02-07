@@ -428,3 +428,11 @@ def get_modules(model: torch.nn.Module, cls: Any):
         return []
     else:
         return [ci for c in children for ci in get_modules(model=c, cls=cls)]
+
+map_chars = {
+    "/" : "__",
+    " " : "_",
+}
+
+def sanitize_filename(filename: str) -> str:
+    return "".join(map_chars.get(c, c) for c in filename if c.isalnum() or c in (" ", ".", "_", "-"))
