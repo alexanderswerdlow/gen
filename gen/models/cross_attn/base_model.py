@@ -319,17 +319,27 @@ class BaseMapper(Trainable):
         if self.cfg.model.break_a_scene_cross_attn_loss_second_stage:
             self.cfg.model.break_a_scene_masked_loss = True
 
-    def set_inference_mode(self):
-        self.pipeline: Union[StableDiffusionControlNetPipeline, StableDiffusionPipeline] = load_stable_diffusion_model(
-            cfg=self.cfg,
-            device=self.device,
-            tokenizer=self.tokenizer,
-            text_encoder=self.text_encoder,
-            unet=self.unet,
-            vae=self.vae,
-            model=self,
-            torch_dtype=self.dtype,
-        )
+    def set_inference_mode(self, init_pipeline: bool = True):
+        if init_pipeline:
+            self.pipeline: Union[StableDiffusionControlNetPipeline, StableDiffusionPipeline] = load_stable_diffusion_model(
+                cfg=self.cfg,
+                device=self.device,
+                tokenizer=self.tokenizer,
+                text_encoder=self.text_encoder,
+                unet=self.unet,
+                vae=self.vae,
+                model=self,
+                torch_dtype=self.dtype,
+            )
+        else:
+            # For rotation denoising only
+            self.scheduler = DDIMScheduler(
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                clip_sample=False,
+                set_alpha_to_one=False,
+            )
 
         self.eval()
             

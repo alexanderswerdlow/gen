@@ -28,8 +28,15 @@ from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import Profiler, get_rank, is_main_process, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn
-from gen.utils.trainer_utils import (Trainable, TrainingState, check_every_n_epochs, check_every_n_steps, handle_checkpointing_dirs, load_from_ckpt,
-                                     unwrap)
+from gen.utils.trainer_utils import (
+    Trainable,
+    TrainingState,
+    check_every_n_epochs,
+    check_every_n_steps,
+    handle_checkpointing_dirs,
+    load_from_ckpt,
+    unwrap,
+)
 from inference import run_inference_dataloader
 
 
@@ -42,15 +49,20 @@ def trainable_parameters(module, requires_grad: bool):
 def get_named_params(models: tuple[Union[nn.Module, dict]], requires_grad=True):
     return dict(
         itertools.chain(
-            *(trainable_parameters(model, requires_grad=requires_grad) for model in models if isinstance(model, nn.Module)), *(np.items() for np in models if isinstance(np, dict))
+            *(trainable_parameters(model, requires_grad=requires_grad) for model in models if isinstance(model, nn.Module)),
+            *(np.items() for np in models if isinstance(np, dict)),
         )
     )
+
 
 def validate_params(models: Iterable[nn.Module], dtype: torch.dtype):
     # In general, we want all trainable params in FP32 and all non-trainable params possibly in BF16
     for p in get_named_params(models).values():
-        if p.requires_grad: assert p.dtype == torch.float32
-        elif not p.requires_grad: assert p.dtype == dtype
+        if p.requires_grad:
+            assert p.dtype == torch.float32
+        elif not p.requires_grad:
+            assert p.dtype == dtype
+
 
 class Trainer:
     def __init__(self, cfg: BaseConfig, accelerator: Accelerator):
@@ -90,7 +102,7 @@ class Trainer:
                     summary(model, col_names=("trainable", "num_params"), depth=3)
 
                 if (param_groups_ := unwrap(self.model).get_param_groups()) is not None:
-                    assert len([p for d_ in param_groups_ for p in list(d_['params'])]) == len(get_named_params(self.models).values())
+                    assert len([p for d_ in param_groups_ for p in list(d_["params"])]) == len(get_named_params(self.models).values())
 
         validate_params(self.models, self.dtype)
 
@@ -164,9 +176,7 @@ class Trainer:
     def validate(self, state: TrainingState):
         validation_start_time = time()
 
-        self.base_model_validate(state=state)
-
-        if self.cfg.dataset.reset_validation_dataset_every_epoch or self.cfg.trainer.base_model_custom_validation:
+        if self.cfg.dataset.reset_validation_dataset_every_epoch or self.cfg.trainer.base_model_custom_validation_steps:
             if state.epoch == 0:
                 self.validation_dataset_holder.subset_size = self.cfg.trainer.num_gpus
             else:
@@ -187,12 +197,12 @@ class Trainer:
             model=self.model,
             state=state,
             output_path=self.cfg.output_dir / "images",
-            prefix='val/'
+            prefix="val/",
         )
 
         unwrap(self.model).set_training_mode()
         validate_params(self.models, self.dtype)
-        
+
         log_info(
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.get('wandb_url', None)}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
         )
@@ -200,9 +210,10 @@ class Trainer:
     # TODO: This is model-specific and should be achieved by inheritance or some other mechanism
     def base_model_validate(self, state: TrainingState):
         from gen.models.cross_attn.base_inference import run_qualitative_inference, run_quantitative_inference
+
         self.model.run_inference = types.MethodType(run_quantitative_inference, self.model)
 
-        subset_size, batch_size = 200, 10
+        subset_size, batch_size = len(self.validation_dataset_holder), self.train_dataloader_holder.batch_size * 4
         self.validation_dataset_holder.subset_size = subset_size
         self.train_dataloader_holder.random_subset = False
         self.validation_dataset_holder.batch_size = batch_size
@@ -215,9 +226,10 @@ class Trainer:
             model=self.model,
             state=state,
             output_path=self.cfg.output_dir / "images",
-            prefix="val/"
+            prefix="val/",
+            init_pipeline=False
         )
-        
+
         self.train_dataloader_holder.subset_size = subset_size
         self.train_dataloader_holder.random_subset = False
         self.train_dataloader_holder.batch_size = batch_size
@@ -230,7 +242,8 @@ class Trainer:
             model=self.model,
             state=state,
             output_path=self.cfg.output_dir / "images",
-            prefix="train/"
+            prefix="train/",
+            init_pipeline=False
         )
 
         self.train_dataloader_holder.subset_size = self.cfg.dataset.train_dataset.subset_size
@@ -240,6 +253,9 @@ class Trainer:
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
         self.model.run_inference = types.MethodType(run_qualitative_inference, self.model)
+
+        unwrap(self.model).set_training_mode()
+        validate_params(self.models, self.dtype)
 
     def unfreeze_unet(self, state: TrainingState):
         log_warn(f"Unfreezing UNet at {state.global_step} steps")
@@ -270,17 +286,19 @@ class Trainer:
             summary(unwrap(self.model), col_names=("trainable", "num_params"), depth=4)
 
     def train(self):
-        total_batch_size = self.cfg.dataset.train_dataset.batch_size * self.cfg.trainer.num_gpus * self.cfg.trainer.gradient_accumulation_steps
+        tr = self.cfg.trainer
+
+        total_batch_size = self.cfg.dataset.train_dataset.batch_size * tr.num_gpus * tr.gradient_accumulation_steps
 
         log_info("***** Running training *****")
         log_info(f"  Num examples = {len(self.train_dataloader.dataset)}")
         log_info(f"  Num batches each epoch = {len(self.train_dataloader)}")
-        log_info(f"  Num Epochs = {self.cfg.trainer.num_train_epochs}")
+        log_info(f"  Num Epochs = {tr.num_train_epochs}")
         log_info(f"  Instantaneous batch size per device = {self.cfg.dataset.train_dataset.batch_size}")
-        log_info(f"  Gradient Accumulation steps = {self.cfg.trainer.gradient_accumulation_steps}")
-        log_info(f"  Num GPUs = {self.cfg.trainer.num_gpus}")
+        log_info(f"  Gradient Accumulation steps = {tr.gradient_accumulation_steps}")
+        log_info(f"  Num GPUs = {tr.num_gpus}")
         log_info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
-        log_info(f"  Total optimization steps = {self.cfg.trainer.max_train_steps}")
+        log_info(f"  Total optimization steps = {tr.max_train_steps}")
 
         if len(self.train_dataloader.dataset) < total_batch_size:
             log_warn("The training dataloader is smaller than the total batch size. This may lead to unexpected behaviour.")
@@ -290,17 +308,15 @@ class Trainer:
         first_epoch = 0
 
         # Potentially load in the weights and states from a previous save
-        initial_global_step = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=self.model) if self.cfg.trainer.ckpt else 0
+        initial_global_step = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=self.model) if tr.ckpt else 0
 
         if self.cfg.profile:
-            profiler = Profiler(output_dir=self.cfg.output_dir, active_steps=self.cfg.trainer.profiler_active_steps)
+            profiler = Profiler(output_dir=self.cfg.output_dir, active_steps=tr.profiler_active_steps)
 
-        progress_bar = tqdm(
-            range(0, self.cfg.trainer.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False
-        )
+        progress_bar = tqdm(range(0, tr.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False)
 
-        if is_main_process() and self.cfg.trainer.log_gradients is not None:
-            wandb.watch(self.model, log="all" if self.cfg.trainer.log_parameters else "gradients", log_freq=self.cfg.trainer.log_gradients)
+        if is_main_process() and tr.log_gradients is not None:
+            wandb.watch(self.model, log="all" if tr.log_parameters else "gradients", log_freq=tr.log_gradients)
 
         log_info(f"load_time: {time() - load_time} seconds")
         log_info(f"Train Dataloader Size on single GPU: {len(self.train_dataloader)}")
@@ -308,22 +324,17 @@ class Trainer:
         global_step_metrics = defaultdict(float)
         accumulate_steps = 0  # TODO: Figure out what happens if we end the dataloader between gradient update steps
         last_end_step_time = time()
-        for epoch in range(first_epoch, self.cfg.trainer.num_train_epochs):
+        for epoch in range(first_epoch, tr.num_train_epochs):
             for step, batch in enumerate(self.train_dataloader):
                 step_start_time = time()
-                accumulate_steps += 1
                 global_step_metrics["dataloading_time"] += step_start_time - last_end_step_time
-                if is_main_process() and global_step == 0:
+                if is_main_process() and global_step == 0 and accumulate_steps == 1:
                     log_info(f"time to complete 1st step: {step_start_time - load_time} seconds")
 
                 with self.accelerator.accumulate(*filter(lambda x: isinstance(x, nn.Module), self.models)):
                     global_step_metrics["examples_seen_per_gpu"] += batch["gen_pixel_values"].shape[0]
                     state: TrainingState = TrainingState(
-                        epoch_step=step,
-                        num_epoch_steps=len(self.train_dataloader),
-                        global_step=global_step,
-                        epoch=epoch,
-                        true_step=true_step
+                        epoch_step=step, num_epoch_steps=len(self.train_dataloader), global_step=global_step, epoch=epoch, true_step=true_step
                     )
 
                     batch["state"] = state
@@ -333,34 +344,34 @@ class Trainer:
 
                     true_step += 1
                     for k, v in losses.items():
-                        global_step_metrics[k.removeprefix('metric_')] += v.detach().item()
-                    
-                    # Allow for custom metrics that are not losses
-                    losses = dict(filter(lambda item: not item[0].startswith('metric_'), losses.items()))
+                        global_step_metrics[k.removeprefix("metric_")] += v.detach().item()
+
+                    losses = dict(filter(lambda item: not item[0].startswith("metric_"), losses.items())) # Allow for custom metrics that are not losses
                     loss = sum(losses.values())
                     global_step_metrics["loss"] += loss.detach().item()  # Only on the main process to avoid syncing
+                    accumulate_steps += 1
 
+                    # The below lines may be silently skipped for gradient accumulation
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(get_named_params(self.models).values(), self.cfg.trainer.max_grad_norm)
+                        self.accelerator.clip_grad_norm_(get_named_params(self.models).values(), tr.max_grad_norm)
 
                     self.optimizer.step()
                     self.lr_scheduler.step()
-                    self.optimizer.zero_grad(set_to_none=self.cfg.trainer.set_grads_to_none)
+                    self.optimizer.zero_grad(set_to_none=tr.set_grads_to_none)
 
-                # Important Note: Right now a single "global_step" is a single gradient update step (same if we don't have grad accum)
-                # This is different from "step" which only counts the number of forward passes
-                # Checks if the self.accelerator has performed an optimization step behind the scenes
+                # Important: A single "global_step" is a single optimizer step. The accumulate decorator silently skips backward + optimizer to allow for gradient accumulation. A "true_step" counts the number of forward passes (on a per-GPU basis). The condition below should only happen immediately after a backward + optimizer step.
                 if self.accelerator.sync_gradients:
-                    if check_every_n_steps(state, self.cfg.trainer.checkpointing_steps, run_first=False, all_processes=False):
+                    if check_every_n_steps(state, tr.checkpointing_steps, run_first=False, all_processes=False):
                         self.checkpoint(state)
 
-                    if (
-                        check_every_n_steps(state, self.cfg.trainer.eval_every_n_steps, run_first=self.cfg.trainer.eval_on_start, all_processes=True, decay_steps=True)
-                        or (self.cfg.trainer.eval_on_start and global_step == initial_global_step)
-                        or check_every_n_epochs(state, self.cfg.trainer.eval_every_n_epochs, all_processes=True)
-                    ):
+                    if check_every_n_steps(
+                        state, tr.eval_every_n_steps, run_first=tr.eval_on_start, all_processes=True, decay_steps=True
+                    ) or check_every_n_epochs(state, tr.eval_every_n_epochs, all_processes=True):
                         self.validate(state)
+
+                    if check_every_n_steps(state, tr.base_model_custom_validation_steps, run_first=tr.eval_on_start, all_processes=True):
+                        self.base_model_validate(state)
 
                     if self.cfg.model.unfreeze_unet_after_n_steps and global_step == self.cfg.model.unfreeze_unet_after_n_steps:
                         self.unfreeze_unet(state)
@@ -368,21 +379,21 @@ class Trainer:
                     progress_bar.update(1)
                     global_step += 1
                     logs = {
-                        "lr": self.lr_scheduler.get_last_lr()[0],
                         "gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
                         "examples_seen": global_step * total_batch_size,
                         **{k: v / accumulate_steps for k, v in global_step_metrics.items()},
+                        **{f"lr_{i}": lr for i, lr in enumerate(self.lr_scheduler.get_last_lr())},
                     }
                     progress_bar.set_postfix(**logs)
                     self.accelerator.log(logs, step=global_step)
                     global_step_metrics = defaultdict(float)
                     accumulate_steps = 0
 
-                if global_step >= self.cfg.trainer.max_train_steps:
+                if global_step >= tr.max_train_steps:
                     break
 
                 elif self.cfg.profile and profiler.step(global_step):
-                    assert self.cfg.trainer.gradient_accumulation_steps == 1
+                    assert tr.gradient_accumulation_steps == 1
                     log_info(f"Profiling finished at step: {global_step}")
                     break
 

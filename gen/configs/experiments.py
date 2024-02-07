@@ -262,6 +262,8 @@ def get_experiments():
     mode_store(
         name="token_pred",
         model=dict(token_cls_pred_loss=True, token_rot_pred_loss=True),
+        trainer=dict(base_model_custom_validation_steps=100),
+        dataset=dict(train_dataset=dict(drop_last=False), validation_dataset=dict(drop_last=False)),
     )
 
     mode_store(

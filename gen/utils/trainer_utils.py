@@ -114,13 +114,14 @@ class Trainable(nn.Module, ABC):
 
 def check_every_n_steps(
     state: TrainingState,
-    n: int,
+    n: Optional[int],
     run_first: bool = False,
     all_processes: bool = False,
     decay_steps: bool = False,
     max_eval_interval: Optional[int] = None,
     decrease_n_runs: Optional[int] = None,
 ):
+    if n is None: return False
     if decay_steps:
         max_eval_interval = max_eval_interval or n * 5
         decrease_n_runs = decrease_n_runs or 5

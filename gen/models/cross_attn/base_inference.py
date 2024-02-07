@@ -91,7 +91,7 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
     if self.cfg.model.token_rot_pred_loss:
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
-            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.pipeline.scheduler)
+            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.scheduler)
             pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
             ret['pred_loss'] = pred_loss
     return ret

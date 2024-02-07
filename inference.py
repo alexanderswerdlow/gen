@@ -47,10 +47,11 @@ def run_inference_dataloader(
     output_path: Path,
     state: TrainingState,
     prefix: Optional[str] = None,
+    **kwargs,
 ):
     output_path.mkdir(exist_ok=True, parents=True)
-    unwrap(model).set_inference_mode()
-    log_info(f"Running inference. Dataloder size: {len(dataloader)}")
+    unwrap(model).set_inference_mode(**kwargs)
+    log_info(f"Running inference w/prefix: {prefix}, Dataloder size: {len(dataloader)}")
     
     outputs = []
     for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
