@@ -121,9 +121,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     ret = {}
 
     orig_image = Im((batch["gen_pixel_values"].squeeze(0) + 1) / 2)
-    gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(
-        text="GT", relative_font_scale=0.004
-    )
+    gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(text="GT")
     ret["validation"] = gt_info
 
     added_kwargs = dict()
@@ -154,6 +152,8 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             attn_ = all_attn[b]
             idx_mask = cond.learnable_idxs[1][cond.learnable_idxs[0] == b]
             tokens = attn_[idx_mask.to(device=attn_.device)]
+            if tokens.shape[0] == 0:
+                continue
             tokens = rearrange("t (h w) -> t 3 h w", softmax("t [hw]", rearrange("t h w -> t (h w)", tokens)), h=tokens.shape[-1])
             tokens = (tokens - torch.min(tokens)) / (torch.max(tokens) - torch.min(tokens))
             masks = Im(rearrange("h w masks -> masks 3 h w", batch['gen_segmentation'][b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
@@ -175,7 +175,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
     generated_images = Im.concat_horizontal(
-        Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}", relative_font_scale=0.004)
+        Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}")
         for i, prompt_image_ in enumerate(prompt_image)
     )
     ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
@@ -244,7 +244,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         for j in idxs:
             batched_gen_seg.append(orig_gen_segmentation[..., torch.arange(orig_gen_segmentation.size(-1)) != j])
 
-        batched_gen_seg = torch.cat(batched_gen_seg, dim=-1)
+        batched_gen_seg = torch.cat(batched_gen_seg, dim=0)
 
         if batched_gen_seg.sum().item() != 0:
             batch_ = repeat_batch(batch, bs=len(idxs))

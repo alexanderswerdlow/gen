@@ -211,7 +211,7 @@ class Trainer:
     def base_model_validate(self, state: TrainingState):
         from gen.models.cross_attn.base_inference import run_qualitative_inference, run_quantitative_inference
 
-        self.model.run_inference = types.MethodType(run_quantitative_inference, self.model)
+        unwrap(self.model).run_inference = types.MethodType(run_quantitative_inference, self.model)
 
         subset_size, batch_size = len(self.validation_dataset_holder), self.train_dataloader_holder.batch_size * 4
         self.validation_dataset_holder.subset_size = subset_size
@@ -252,7 +252,7 @@ class Trainer:
         self.train_dataloader = self.train_dataloader_holder.get_dataloader()
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
-        self.model.run_inference = types.MethodType(run_qualitative_inference, self.model)
+        unwrap(self.model).run_inference = types.MethodType(run_qualitative_inference, self.model)
 
         unwrap(self.model).set_training_mode()
         validate_params(self.models, self.dtype)
