@@ -208,10 +208,7 @@ def get_gt_rot(
         remove_background_mask = mask_idxs_for_batch != 0
         gt_rot_6d_ = gt_rot_6d_[mask_idxs_for_batch[remove_background_mask]]
         if torch.any(~remove_background_mask):
-            if gt_rot_6d_.shape[0] == 0:
-                gt_rot_6d_ = gt_rot_6d_.new_zeros(1, 6)
-            else:
-                gt_rot_6d_ = rearrange("1 d, masks d -> (1 + masks) d", gt_rot_6d_.new_zeros(1, 6), gt_rot_6d_)
+                gt_rot_6d_ = torch.cat([gt_rot_6d_.new_zeros(1, 6), gt_rot_6d_], dim=0)
         gt_rot_6d.append(gt_rot_6d_)
 
     gt_rot_6d = torch.cat(gt_rot_6d, dim=0)
