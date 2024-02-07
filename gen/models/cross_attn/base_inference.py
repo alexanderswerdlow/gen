@@ -105,6 +105,8 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     assert batch["input_ids"].shape[0] == 1
 
+    if self.cfg.model.unet is False: return {}
+
     ret = {}
 
     orig_image = Im((batch["gen_pixel_values"].squeeze(0) + 1) / 2)

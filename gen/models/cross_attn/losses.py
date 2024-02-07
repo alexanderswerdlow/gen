@@ -124,9 +124,16 @@ def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: Condition
             max_masks.append(torch.max(object_masks, axis=-1).values)
 
     max_masks = torch.stack(max_masks, dim=0)[:, None]
-    downsampled_mask = F.interpolate(input=max_masks.float(), size=(cfg.model.latent_dim, cfg.model.latent_dim))
+    loss_mask = F.interpolate(input=max_masks.float(), size=(cfg.model.latent_dim, cfg.model.latent_dim))
 
-    return downsampled_mask
+    if cfg.model.viz and batch["state"].true_step % 1 == 0:
+        from image_utils import Im
+
+        rgb_ = Im((batch["gen_pixel_values"] + 1) / 2)
+        mask_ = Im(loss_mask).resize(rgb_.height, rgb_.width)
+        Im.concat_horizontal(rgb_.grid(), mask_.grid()).save(f'rgb_{batch["state"].true_step}.png')
+
+    return loss_mask
 
 
 def token_cls_loss(
@@ -214,9 +221,11 @@ def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_d
 
 
 def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pred_data: TokenPredData):
-
     assert cfg.model.background_mask_idx == 0
-    if pred_data.pred_mask.sum() > 0:
-        return torch.tensor(0.0, device=batch["device"])
+    
+    if pred_data.pred_mask.sum() == 0:
+        loss = torch.tensor(0.0, requires_grad=True, device=batch["device"])
+    else:
+        loss = F.mse_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.gt_rot_6d[pred_data.pred_mask], reduction="mean")
 
-    return F.mse_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.gt_rot_6d[pred_data.pred_mask], reduction="mean")
+    return {"token_rot_pred_loss": loss}

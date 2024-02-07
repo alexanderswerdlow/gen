@@ -31,6 +31,7 @@ class ModelConfig:
 
     model_type: ModelType = ModelType.BASE_MAPPER
 
+    unet: bool = True # Allow not loading a U-Net [e.g., for comparison exps without diffusion]
     controlnet: bool = False # Add a controlnet on top of the main U-Net
     freeze_unet: bool = True
     unet_lora: bool = False # Perform low-rank adaptation on the main U-Net

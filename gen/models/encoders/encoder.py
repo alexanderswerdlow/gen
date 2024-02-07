@@ -309,8 +309,7 @@ class ClipFeatureExtractor(FeatureExtractorModel):
 
     def create_model(self):
         base_model, self.preprocess_train, self.preprocess_val = open_clip.create_model_and_transforms(self.model_name, pretrained=self.weights)
-        self.base_model = base_model.visual
-        return create_feature_extractor(self.base_model, return_nodes=self.return_nodes)
+        return create_feature_extractor(base_model.visual, return_nodes=self.return_nodes)
 
     @functools.cached_property
     def transform(self):

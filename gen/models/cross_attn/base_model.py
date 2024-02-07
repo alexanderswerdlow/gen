@@ -82,6 +82,13 @@ class AttentionMetadata(TypedDict):
     gate_scale: Optional[float]
     frozen_dim: Optional[int]
 
+class Dummy:
+    def __getattr__(self, name):
+        def method(*args, **kwargs):
+            pass
+
+        return method
+    
 class BaseMapper(Trainable):
     def __init__(self, cfg: BaseConfig):
         super().__init__()
@@ -92,7 +99,9 @@ class BaseMapper(Trainable):
 
         self.initialize_diffusers_models()
         self.initialize_custom_models()
-        self.add_adapters()
+        self.set_training_mode(set_grad=True) # This must be called before we set LoRA
+
+        if self.cfg.model.unet: self.add_unet_adapters()
 
         from gen.models.cross_attn.base_inference import infer_batch
 
@@ -128,26 +137,27 @@ class BaseMapper(Trainable):
         self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path, subfolder="text_encoder", revision=self.cfg.model.revision
         )
-        self.vae: AutoencoderKL = AutoencoderKL.from_pretrained(
-            self.cfg.model.pretrained_model_name_or_path, subfolder="vae", revision=self.cfg.model.revision, variant=self.cfg.model.variant
-        )
+        
 
         unet_kwargs = dict()
         if self.cfg.model.gated_cross_attn:
             unet_kwargs["attention_type"] = "gated-cross-attn"
             unet_kwargs["low_cpu_mem_usage"] = False
 
-        self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
-            self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
-        )
+        if self.cfg.model.unet:
+            self.vae: AutoencoderKL = AutoencoderKL.from_pretrained(
+                self.cfg.model.pretrained_model_name_or_path, subfolder="vae", revision=self.cfg.model.revision, variant=self.cfg.model.variant
+            )
+            self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
+                self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
+            )
+        else:
+            self.unet = Dummy() # For rotation denoising only
 
         if self.cfg.model.controlnet:
             self.controlnet: ControlNetModel = ControlNetModel.from_unet(self.unet, conditioning_channels=2)
 
-    def add_adapters(self):
-        # Important, this must be called before we set LoRA
-        self.set_training_mode(set_grad=True)
-
+    def add_unet_adapters(self):
         assert not (self.cfg.model.freeze_unet is False and (self.cfg.model.unfreeze_unet_after_n_steps is not None or self.cfg.model.unet_lora))
         if self.cfg.model.unet_lora:
             unet_lora_config = LoraConfig(
@@ -210,16 +220,18 @@ class BaseMapper(Trainable):
         For example, we want to first freeze the U-Net then add the LoRA adapter. We also see this error:
         `element 0 of tensors does not require grad and does not have a grad_fn`
         """
-        if set_grad:
+        md = self.cfg.model
+
+        if set_grad and md.unet:
             self.vae.to(device=self.device, dtype=self.dtype)
             self.vae.requires_grad_(False)
 
-        if self.cfg.model.use_dataset_segmentation is False:
+        if md.use_dataset_segmentation is False:
             self.hqsam.eval()
             if set_grad:
                 self.hqsam.requires_grad_(False)
 
-        if self.cfg.model.freeze_clip:
+        if md.freeze_clip:
             if set_grad:
                 self.clip.requires_grad_(False)
             self.clip.eval()
@@ -230,20 +242,20 @@ class BaseMapper(Trainable):
             self.clip.train()
             log_warn("CLIP is unfrozen")
 
-        if self.cfg.model.unfreeze_last_n_clip_layers is not None:
-            log_warn(f"Unfreezing last {self.cfg.model.unfreeze_last_n_clip_layers} CLIP layers")
-            for block in self.clip.base_model.transformer.resblocks[-self.cfg.model.unfreeze_last_n_clip_layers :]:
+        if md.unfreeze_last_n_clip_layers is not None:
+            log_warn(f"Unfreezing last {md.unfreeze_last_n_clip_layers} CLIP layers")
+            for block in self.clip.base_model.transformer.resblocks[-md.unfreeze_last_n_clip_layers :]:
                 if set_grad:
                     block.requires_grad_(True)
                 block.train()
 
-        if self.cfg.model.unfreeze_resnet:
+        if md.unfreeze_resnet:
             for module in list(self.clip.base_model.children())[:6]:
                 if set_grad:
                     module.requires_grad_(True)
                 module.train()
 
-        if self.cfg.model.freeze_unet:
+        if md.freeze_unet:
             if set_grad:
                 self.unet.to(device=self.device, dtype=self.dtype)
                 self.unet.requires_grad_(False)
@@ -253,7 +265,7 @@ class BaseMapper(Trainable):
                 self.unet.requires_grad_(True)
             self.unet.train()
 
-        if self.cfg.model.unfreeze_gated_cross_attn:
+        if md.unfreeze_gated_cross_attn:
             for m in get_modules(self.unet, BasicTransformerBlock):
                 assert hasattr(m, "fuser")
                 assert hasattr(m, "attn2")
@@ -263,10 +275,10 @@ class BaseMapper(Trainable):
                     m.fuser.requires_grad_(True)
                     m.fuser.to(dtype=torch.float32)
                 m.fuser.train()
-                if self.cfg.model.single_fuser_layer:
+                if md.single_fuser_layer:
                     break
 
-        if self.cfg.model.freeze_text_encoder:
+        if md.freeze_text_encoder:
             if set_grad:
                 self.text_encoder.to(device=self.device, dtype=self.dtype)
                 self.text_encoder.requires_grad_(False)
@@ -274,13 +286,13 @@ class BaseMapper(Trainable):
         else:
             if set_grad:
                 self.text_encoder.requires_grad_(True)
-            if set_grad and self.cfg.model.freeze_text_encoder_except_token_embeddings:
+            if set_grad and md.freeze_text_encoder_except_token_embeddings:
                 self.text_encoder.text_model.encoder.requires_grad_(False)
                 self.text_encoder.text_model.final_layer_norm.requires_grad_(False)
                 self.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
             self.text_encoder.train()
 
-        if self.cfg.model.freeze_mapper:
+        if md.freeze_mapper:
             if set_grad:
                 self.mapper.requires_grad_(False)
             self.mapper.eval()
@@ -289,17 +301,17 @@ class BaseMapper(Trainable):
                 self.mapper.requires_grad_(True)
             self.mapper.train()
 
-        if self.cfg.model.controlnet:
+        if md.controlnet:
             if set_grad:
                 self.controlnet.requires_grad_(True)
             self.controlnet.train()
 
-        if self.cfg.model.clip_shift_scale_conditioning:
+        if md.clip_shift_scale_conditioning:
             if set_grad:
                 self.clip_proj_layers.requires_grad_(True)
             self.clip_proj_layers.train()
 
-        if self.cfg.model.token_cls_pred_loss:
+        if md.token_cls_pred_loss:
             if set_grad:
                 self.token_mapper.requires_grad_(True)
             self.token_mapper.train()
@@ -320,7 +332,7 @@ class BaseMapper(Trainable):
             self.cfg.model.break_a_scene_masked_loss = True
 
     def set_inference_mode(self, init_pipeline: bool = True):
-        if init_pipeline:
+        if init_pipeline and self.cfg.model.unet:
             self.pipeline: Union[StableDiffusionControlNetPipeline, StableDiffusionPipeline] = load_stable_diffusion_model(
                 cfg=self.cfg,
                 device=self.device,
@@ -796,26 +808,17 @@ class BaseMapper(Trainable):
 
         batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
 
-        # Convert images to latent space
-        latents = self.vae.encode(batch["gen_pixel_values"].to(dtype=self.dtype)).latent_dist.sample()
-        latents = latents * self.vae.config.scaling_factor
-
-        # Sample noise that we'll add to the latents
-        noise = torch.randn_like(latents)
-        bsz = latents.shape[0]
-        # Sample a random timestep for each image
-        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+        # Sample a random timestep for each element in batch
+        bsz = batch["gen_pixel_values"].shape[0]
+        
         if self.cfg.model.use_inverted_noise_schedule:
-            timesteps = (torch.arccos(timesteps / self.noise_scheduler.config.num_train_timesteps) / (torch.pi / 2)) * self.noise_scheduler.config.num_train_timesteps
-        timesteps = timesteps.long()
-
-        # Add noise to the latents according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
-        noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+            timesteps = ((torch.arccos(timesteps / self.noise_scheduler.config.num_train_timesteps) / (torch.pi / 2)) * self.noise_scheduler.config.num_train_timesteps).long()
+        else:
+            timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=self.device).long()
 
         cond = self.get_hidden_state(batch, add_conditioning=True)
-        if self.training:
-            self.dropout_cfg(cond)
+
+        if self.training: self.dropout_cfg(cond)
 
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             pred_data = TokenPredData()
@@ -830,58 +833,62 @@ class BaseMapper(Trainable):
 
         encoder_hidden_states = cond.encoder_hidden_states
 
-        if self.cfg.model.controlnet:
-            controlnet_image = self.get_controlnet_conditioning(batch)
-            down_block_res_samples, mid_block_res_sample = self.controlnet(
-                noisy_latents,
-                timesteps,
-                encoder_hidden_states=encoder_hidden_states,
-                controlnet_cond=controlnet_image,
-                return_dict=False,
-            )
+        if self.cfg.model.unet:
+            latents = self.vae.encode(batch["gen_pixel_values"].to(dtype=self.dtype)).latent_dist.sample() # Convert images to latent space
+            latents = latents * self.vae.config.scaling_factor
 
-            # Predict the noise residual
-            model_pred = self.unet(
-                noisy_latents,
-                timesteps,
-                encoder_hidden_states=encoder_hidden_states.to(torch.float32),
-                down_block_additional_residuals=[sample.to(dtype=self.dtype) for sample in down_block_res_samples],
-                mid_block_additional_residual=mid_block_res_sample.to(dtype=self.dtype),
-            ).sample
-        else:
-            # TODO: We shouldn't need to cast to FP32 here
-            model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states.to(torch.float32), **cond.unet_kwargs).sample
+            noise = torch.randn_like(latents) # Sample noise that we'll add to the latents
 
-        # Get the target for loss depending on the prediction type
-        if self.noise_scheduler.config.prediction_type == "epsilon":
-            target = noise
-        elif self.noise_scheduler.config.prediction_type == "v_prediction":
-            target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
-        else:
-            raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
+            # Add noise to the latents according to the noise magnitude at each timestep
+            noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+            if self.cfg.model.controlnet:
+                controlnet_image = self.get_controlnet_conditioning(batch)
+                down_block_res_samples, mid_block_res_sample = self.controlnet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    controlnet_cond=controlnet_image,
+                    return_dict=False,
+                )
+
+                # Predict the noise residual
+                model_pred = self.unet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states=encoder_hidden_states.to(torch.float32),
+                    down_block_additional_residuals=[sample.to(dtype=self.dtype) for sample in down_block_res_samples],
+                    mid_block_additional_residual=mid_block_res_sample.to(dtype=self.dtype),
+                ).sample
+            else:
+                # TODO: We shouldn't need to cast to FP32 here
+                model_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states.to(torch.float32), **cond.unet_kwargs).sample
+
+            # Get the target for loss depending on the prediction type
+            if self.noise_scheduler.config.prediction_type == "epsilon":
+                target = noise
+            elif self.noise_scheduler.config.prediction_type == "v_prediction":
+                target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
+            else:
+                raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
         
-        if self.cfg.model.break_a_scene_masked_loss:
-            loss_mask = break_a_scene_masked_loss(cfg=self.cfg, batch=batch, cond=cond)
-            if self.cfg.model.viz and batch["state"].true_step % 1 == 0:
-                from image_utils import Im
-                rgb_ = Im((batch["gen_pixel_values"] + 1) / 2)
-                mask_ = Im(loss_mask).resize(rgb_.height, rgb_.width)
-                Im.concat_horizontal(rgb_.grid(), mask_.grid()).save(f'rgb_{batch["state"].true_step}.png')
-            model_pred, target = model_pred * loss_mask, target * loss_mask
-
         losses = dict()
-        if self.cfg.model.weighted_object_loss:
-            losses["diffusion_loss"] = evenly_weighted_mask_loss(cfg=self.cfg, batch=batch, cond=cond, pred=model_pred.float(), target=target.float())
-        else:
-            losses["diffusion_loss"] = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+        if self.cfg.model.unet:
+            if self.cfg.model.break_a_scene_masked_loss:
+                loss_mask = break_a_scene_masked_loss(cfg=self.cfg, batch=batch, cond=cond)
+                model_pred, target = model_pred * loss_mask, target * loss_mask
 
-        if self.cfg.model.break_a_scene_cross_attn_loss:
-            losses["cross_attn_loss"] = break_a_scene_cross_attn_loss(cfg=self.cfg, batch=batch, controller=self.controller, cond=cond)
+            if self.cfg.model.weighted_object_loss:
+                losses["diffusion_loss"] = evenly_weighted_mask_loss(cfg=self.cfg, batch=batch, cond=cond, pred=model_pred.float(), target=target.float())
+            else:
+                losses["diffusion_loss"] = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+
+            if self.cfg.model.break_a_scene_cross_attn_loss:
+                losses["cross_attn_loss"] = break_a_scene_cross_attn_loss(cfg=self.cfg, batch=batch, controller=self.controller, cond=cond)
 
         if self.cfg.model.token_cls_pred_loss:
             losses.update(token_cls_loss(cfg=self.cfg, batch=batch, cond=cond, pred_data=pred_data))
 
         if self.cfg.model.token_rot_pred_loss:
-            losses["token_rot_pred_loss"] = token_rot_loss(cfg=self.cfg, batch=batch, cond=cond, pred_data=pred_data)    
+            losses.update(token_rot_loss(cfg=self.cfg, batch=batch, cond=cond, pred_data=pred_data))
 
         return losses

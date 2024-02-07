@@ -235,12 +235,6 @@ def get_experiments():
     )
 
     mode_store(
-        name="unet_finetune_with_pos_emb",
-        model=dict(add_pos_emb=True, finetune_unet_with_different_lrs=True, decoder_transformer=dict(depth=4)),
-        hydra_defaults=["multiscale", "unet_finetune", "low_res", "movi_medium"],
-    )
-
-    mode_store(
         name="low_res",
         dataset=dict(
             train_dataset=dict(
@@ -254,9 +248,20 @@ def get_experiments():
     )
 
     mode_store(
+        name="cur_exp",
+        hydra_defaults=["multiscale", "low_res", "movi_medium"],
+    )
+
+    mode_store(
         name="gated_cross_attn",
         model=dict(add_pos_emb=True, gated_cross_attn=True, unfreeze_gated_cross_attn=True, lora_rank=4),
-        hydra_defaults=["unet_no_lora", "multiscale", "low_res", "movi_medium"],
+        hydra_defaults=["unet_no_lora", "cur_exp"],
+    )
+
+    mode_store(
+        name="unet_finetune_with_pos_emb",
+        model=dict(add_pos_emb=True, finetune_unet_with_different_lrs=True, decoder_transformer=dict(depth=4)),
+        hydra_defaults=["unet_finetune", "cur_exp"],
     )
 
     mode_store(
@@ -264,10 +269,11 @@ def get_experiments():
         model=dict(token_cls_pred_loss=True, token_rot_pred_loss=True),
         trainer=dict(base_model_custom_validation_steps=100),
         dataset=dict(train_dataset=dict(drop_last=False), validation_dataset=dict(drop_last=False)),
+        hydra_defaults=["cur_exp"],
     )
 
     mode_store(
         name="debug_token_pred",
         model=dict(token_cls_pred_loss=True, token_rot_pred_loss=True),
-        hydra_defaults=["gated_cross_attn", "unet_lora", "token_pred", "movi_medium", "small_gpu"],
+        hydra_defaults=["gated_cross_attn", "unet_lora", "token_pred", "small_gpu"],
     )
