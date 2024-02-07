@@ -31,6 +31,8 @@ def repeat_batch(batch, bs: int):
             assert v.shape[0] == 1
             batch_[k] = repeat(v[0], "... -> h ...", h=bs)
 
+    return batch_
+
 new_prompts = [
             "A photo of a {}",
             "A photo of {} in the jungle",
@@ -87,6 +89,9 @@ def infer_batch(
 
     if "formatted_input_ids" in batch:
         del batch["formatted_input_ids"]
+
+    if "cross_attention_kwargs" in cond.unet_kwargs and "attn_meta" in cond.unet_kwargs["cross_attention_kwargs"] and "return_attn_probs" in cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]:
+        del cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["return_attn_probs"]
 
     return images, cond
 
@@ -278,7 +283,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             self.controller.reset()
 
         ret["prompt_images"] = Im.concat_horizontal(
-            Im(prompt_image).write_text(prompt, relative_font_scale=0.00125) for prompt_image, prompt in zip(prompt_images, prompts)
+            Im(prompt_image).write_text(prompt, size=3.2) for prompt_image, prompt in zip(prompt_images, prompts)
         )
         ret["prompt_images"] = Im.concat_horizontal(orig_image, ret["prompt_images"], spacing=20)
 
@@ -333,16 +338,16 @@ def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embe
 
     Im.concat_vertical(
         Im.concat_horizontal(
-            Im(prompt_image_).write_text(text=f"Gen {i}", relative_font_scale=0.004) for i, prompt_image_ in enumerate(prompt_image)
+            Im(prompt_image_).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)
         ),
         Im(utils.make_grid(Im(final_rgb).torch)).write_text("Combined Conditioned masks [GT]"),
         Im.concat_horizontal(
-            Im(image_0_dict["orig_image"]).write_text("First Image GT", relative_font_scale=0.001),
-            Im(prompt_image_0[0]).write_text("First Image Autoencoded", relative_font_scale=0.001),
+            Im(image_0_dict["orig_image"]).write_text("First Image GT", size=0.25),
+            Im(prompt_image_0[0]).write_text("First Image Autoencoded", size=0.25),
         ),
         Im.concat_horizontal(
-            Im(image_1_dict["orig_image"]).write_text("Second Image GT", relative_font_scale=0.001),
-            Im(prompt_image_1[0]).write_text("Second Image Autoencoded", relative_font_scale=0.001),
+            Im(image_1_dict["orig_image"]).write_text("Second Image GT", size=0.25),
+            Im(prompt_image_1[0]).write_text("Second Image Autoencoded", size=0.25),
         ),
     ).save("test_00.png")
 
@@ -411,11 +416,11 @@ def interpolate_latents(self: BaseMapper, batch: dict, state: TrainingState, emb
 
     Im.concat_vertical(
         Im.concat_horizontal(
-            Im(prompt_image_).write_text(text=f"Weight {interp_values[i].item():.2f}", relative_font_scale=0.004) for i, prompt_image_ in enumerate(prompt_images)
+            Im(prompt_image_).write_text(text=f"Weight {interp_values[i].item():.2f}") for i, prompt_image_ in enumerate(prompt_images)
         ),
         Im.concat_horizontal(
-            Im(image_0_dict["orig_image"]).write_text("Left (0) GT", relative_font_scale=0.003),
-            Im(image_1_dict["orig_image"]).write_text("Right (1) GT", relative_font_scale=0.003),
+            Im(image_0_dict["orig_image"]).write_text("Left (0) GT", size=0.75),
+            Im(image_1_dict["orig_image"]).write_text("Right (1) GT", size=0.75),
         ),
         spacing=50,
     ).save("test_01.png")

@@ -124,7 +124,6 @@ exp_store(
         empty_string_cfg=True,
         guidance_scale=7.5,
         use_custom_pipeline=False,
-        visualize_attention_map=False,
         num_masks_to_remove=4,
         num_images_per_prompt=2,
         infer_new_prompts=True,
@@ -132,6 +131,7 @@ exp_store(
         use_ddim=True,
         max_batch_size=4,
         vary_cfg_plot=True,
+        visualize_attention_map=True,
     ),
     model=dict(
         use_dataset_segmentation=True,
