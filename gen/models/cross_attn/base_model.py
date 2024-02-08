@@ -477,10 +477,6 @@ class BaseMapper(Trainable):
             # compute the previous noisy sample x_t -> x_t-1
             latents = scheduler.step(pred_data.pred_6d_rot, t, latents, return_dict=False)[0]
 
-        
-        pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
-        pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
-
         return pred_data
 
     def check_add_segmentation(self, batch: InputData):

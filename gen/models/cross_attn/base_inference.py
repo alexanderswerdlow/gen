@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from math import sqrt
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -8,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import repeat
+from einx import mean, rearrange, softmax
 from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
 from torchvision import utils
@@ -18,8 +20,6 @@ from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
-from math import sqrt
-from einx import rearrange, mean, softmax
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
@@ -103,8 +103,10 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
             pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.scheduler)
+            pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
+            pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
             pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
-            ret['pred_loss'] = pred_loss
+            ret['pred_loss'] = pred_loss.float().cpu()
     return ret
 
 
@@ -167,11 +169,19 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             R_ref = compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).cpu().numpy()
             R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot).cpu().numpy()
             assert R_ref.shape == R_pred.shape
+
             rot_imgs = []
             for i in range(R_ref.shape[0]):
                 rot_imgs.append(Im(visualize_rotations(R_ref[i], R_pred[i])).torch)
-            
-            ret["rotations"] = Im(torch.stack(rot_imgs)).grid()
+            rot_imgs = torch.stack(rot_imgs)
+
+            bs = batch['gen_pixel_values'].shape[0]
+            all_imgs = []
+            for i in range(bs):
+                mask_ = ((cond.mask_batch_idx == i) & pred_data.pred_mask).to(rot_imgs.device)
+                all_imgs.append(Im(rot_imgs[mask_]).grid())
+
+            ret["rotations"] = Im.concat_vertical(*all_imgs, spacing=20, fill=(128, 128, 128))
 
     full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
     generated_images = Im.concat_horizontal(
