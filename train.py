@@ -217,7 +217,7 @@ class Trainer:
         self.validation_dataset_holder.subset_size = subset_size
         self.train_dataloader_holder.random_subset = False
         self.validation_dataset_holder.batch_size = batch_size
-        self.validation_dataloader = self.validation_dataset_holder.get_dataloader()
+        self.validation_dataloader = self.validation_dataset_holder.get_dataloader(pin_memory=False)
         self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
 
         run_inference_dataloader(
@@ -233,7 +233,7 @@ class Trainer:
         self.train_dataloader_holder.subset_size = subset_size
         self.train_dataloader_holder.random_subset = False
         self.train_dataloader_holder.batch_size = batch_size
-        self.train_dataloader = self.train_dataloader_holder.get_dataloader()
+        self.train_dataloader = self.train_dataloader_holder.get_dataloader(pin_memory=False)
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
         run_inference_dataloader(
@@ -253,6 +253,9 @@ class Trainer:
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
         unwrap(self.model).run_inference = types.MethodType(run_qualitative_inference, unwrap(self.model))
+
+        import gc; gc.collect()
+        torch.cuda.empty_cache()
 
         unwrap(self.model).set_training_mode()
         validate_params(self.models, self.dtype)

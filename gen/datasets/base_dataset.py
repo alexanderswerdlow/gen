@@ -48,7 +48,7 @@ class AbstractDataset(ABC):
     def collate_fn(self, batch):
         pass
 
-    def get_dataloader(self, generator: Optional[Generator] = None):
+    def get_dataloader(self, generator: Optional[Generator] = None, pin_memory: bool = True):
         orig_dataset = self.get_dataset()
         if self.allow_subset and self.subset_size is not None:
             if self.random_subset:
@@ -72,6 +72,6 @@ class AbstractDataset(ABC):
         if self.drop_last:
             log_warn("Dropping last batch if it exists")
 
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=self.allow_shuffle and self.shuffle, collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=True, drop_last=self.drop_last)
+        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=self.allow_shuffle and self.shuffle, collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=pin_memory, drop_last=self.drop_last)
         log_info(f"Dataset size: {len(orig_dataset)}, Dataset size after subset: {len(dataset)}, Combined dataloader size (all GPUs): {len(dataloader)}")
         return dataloader

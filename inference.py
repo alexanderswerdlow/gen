@@ -19,6 +19,7 @@ from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import all_gather, get_rank, is_main_process, sanitize_filename, save_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, unwrap
+import gc
 
 def inference(cfg: BaseConfig, accelerator: Accelerator):
     model = get_model_from_cfg(cfg)
@@ -92,7 +93,6 @@ def run_inference_dataloader(
                     global_step=(state.global_step if state.global_step is not None else i),
                     spacing=25,
                 )
-
     log_info(f"Saved to {output_path}")
 
 def log_with_accelerator(
