@@ -85,6 +85,7 @@ class ModelConfig:
     token_rot_pred_loss: bool = False
     num_token_cls: int = 17
     single_fuser_layer: bool = False
+    detach_mask_tokens_for_pred: bool = False
 
 
 @dataclass

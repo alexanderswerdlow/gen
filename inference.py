@@ -78,7 +78,10 @@ def run_inference_dataloader(
         if prefix: new_dict = {f"{prefix}{k}":v for k,v in new_dict.items()}
         for k, v in sorted(new_dict.items()):
             if "pred_" in k:
-                v_ = torch.cat(v, dim=0).mean()
+                if v[0].ndim == 0:
+                    v_ = torch.stack(v).mean()
+                else:
+                    v_ = torch.cat(v, dim=0).mean()
                 accelerator.log({k: v_}, step=state.global_step)
             elif isinstance(v[0], dict):
                 for i in range(len(v)):

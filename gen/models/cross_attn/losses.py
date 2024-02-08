@@ -180,10 +180,10 @@ def token_cls_loss(
         loss = F.cross_entropy(pred_, instance_categories.long())
         losses.append(loss)
 
-        _, predicted_labels = pred_.max(1)
+        _, predicted_labels = pred_.max(dim=1)
         correct_predictions += (predicted_labels == instance_categories).sum().item()
 
-        _, top5_preds = pred_.topk(5, 1, True, True)
+        _, top5_preds = pred_.topk(k=5, dim=1)
         correct_top5_predictions += sum(instance_categories.view(-1, 1) == top5_preds).sum().item()
 
         total_instances += instance_categories.size(0)

@@ -25,11 +25,11 @@ def visualize_rotations(R_ref, R_pred):
     
     # Plot reference axes
     for i in range(3):
-        ax.quiver(*origin.T, *ref_axes[i], length=length, color=['g', 'g', 'g'][i], label='Ref' if i == 0 else "")
+        ax.quiver(*origin.T, *ref_axes[i], length=length, color=['r', 'g', 'b'][i], label='Ref' if i == 0 else "")
     
     # Plot prediction axes, slightly offset to differentiate
     for i in range(3):
-        ax.quiver(*origin.T, *pred_axes[i], length=length, color=['r', 'r', 'r'][i], label='Pred' if i == 0 else "")
+        ax.quiver(*origin.T, *pred_axes[i], length=length, color=['r', 'g', 'b'][i], label='Pred' if i == 0 else "")
     
     # Setting the legend and the limits of the plot
     ax.legend()

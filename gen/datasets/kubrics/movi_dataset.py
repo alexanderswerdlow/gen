@@ -12,6 +12,7 @@ import webdataset as wds
 from einops import rearrange
 from ipdb import set_trace as st
 from torch.utils.data import Dataset
+from scipy.spatial.transform import Rotation as R
 
 from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
@@ -54,7 +55,7 @@ class MoviDataset(AbstractDataset, Dataset):
         self.return_video = return_video
         self.fake_return_n = fake_return_n
         self.use_single_mask = use_single_mask
-        self.new_format = multi_camera_format
+        self.multi_camera_format = multi_camera_format
         self.num_cameras = num_cameras
 
         if num_cameras > 1: assert multi_camera_format
@@ -105,7 +106,7 @@ class MoviDataset(AbstractDataset, Dataset):
 
         ret = {}
         
-        if self.new_format:
+        if self.multi_camera_format:
             data = np.load(self.root_dir / path / "data.npz")
             rgb = data["rgb"][camera_idx, frame_idx]
             instance = data["segment"][camera_idx, frame_idx]
@@ -114,6 +115,14 @@ class MoviDataset(AbstractDataset, Dataset):
             positions = data["positions"][camera_idx, frame_idx] # (23, 3)
             valid = data["valid"][camera_idx, :].squeeze(0) # (23, )
             categories = data["categories"][camera_idx, :].squeeze(0) # (23, )
+
+            if 'camera_quaternions' in data:
+                camera_quaternion = data['camera_quaternions'][camera_idx, frame_idx] # (4, )
+                quaternions[~valid] = 1 # Set invalid quaternions to 1 to avoid 0 norm.
+                quaternions = (R.from_quat(quaternions) * R.from_quat(camera_quaternion).inv()).as_quat()
+                quaternions[~valid] = 0
+            else:
+                raise NotImplementedError("Camera quaternions not found in data.npz")
             
             ret.update({
                 "quaternions": quaternions,
@@ -216,7 +225,7 @@ if __name__ == "__main__":
         path=MOVI_MEDIUM_PATH,
         num_objects=23,
         num_frames=8,
-        num_cameras=2, 
+        num_cameras=1, 
         augmentation=Augmentation(target_resolution=256, minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
         return_video=True,
         multi_camera_format=True,

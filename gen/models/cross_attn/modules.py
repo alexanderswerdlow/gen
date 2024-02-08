@@ -6,6 +6,7 @@ import hydra
 import torch
 from torch import Tensor, nn
 from einx import rearrange
+import einops
 
 from gen.models.utils import _init_weights
 from gen.utils.logging_utils import log_info
@@ -152,10 +153,10 @@ class FilmMlp(nn.Module):
         t_emb = self.t_embedder(t) # TODO: This is weird, out timestep embedding is 6 dims
         cond = cond + t_emb
         y = self.activation(self.norm1(self.fc1(x)))
-        scale, shift = rearrange("b (n a) -> a b n", self.film1(cond), a=2)
+        scale, shift = einops.rearrange(self.film1(cond), "b (n a) -> a b n", a=2)
         y = y * (1 - scale) + shift
         y = self.activation(self.norm2(self.fc2(y)))
-        scale, shift = rearrange("b (n a) -> a b n", self.film2(cond), a=2)
+        scale, shift = einops.rearrange(self.film2(cond), "b (n a) -> a b n", a=2)
         y = y * (1 - scale) + shift
         y = self.fc3(y)
         return y
@@ -178,13 +179,17 @@ class TokenMapper(nn.Module):
         self.apply(_init_weights)
 
     def forward(self, cond: ConditioningData, pred_data: TokenPredData):
+        mask_tokens = cond.mask_tokens
+        if self.cfg.model.detach_mask_tokens_for_pred:
+            mask_tokens = mask_tokens.detach()
+
         if self.cfg.model.token_cls_pred_loss:
-            output = self.cls_mlp(cond.mask_tokens)
+            output = self.cls_mlp(mask_tokens)
             pred = output.softmax(dim=-1)
             pred_data.cls_pred = pred
 
         if self.cfg.model.token_rot_pred_loss:
-            output = self.rot_mlp(pred_data.noised_rot_6d, pred_data.timesteps, cond.mask_tokens)
+            output = self.rot_mlp(pred_data.noised_rot_6d, pred_data.timesteps, mask_tokens)
             pred = output.softmax(dim=-1)
             pred_data.pred_6d_rot = pred
 

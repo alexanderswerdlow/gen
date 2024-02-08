@@ -15,6 +15,7 @@ from PIL import Image
 from torchvision import utils
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
+from gen.models.cross_attn.losses import token_cls_loss
 from gen.utils.decoupled_utils import load_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations
@@ -99,14 +100,21 @@ def infer_batch(
 @torch.no_grad()
 def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingState):
     ret = {}
-    if self.cfg.model.token_rot_pred_loss:
+    
+    if self.cfg.model.token_rot_pred_loss or self.cfg.model.token_cls_pred_loss:
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
             pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.scheduler)
+
+    if self.cfg.model.token_rot_pred_loss:
             pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
             pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
             pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
             ret['pred_loss'] = pred_loss.float().cpu()
+
+    if self.cfg.model.token_cls_pred_loss:
+        ret.update(token_cls_loss(self.cfg, batch, cond, pred_data))
+
     return ret
 
 
@@ -118,11 +126,44 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     assert batch["input_ids"].shape[0] == 1
 
-    if self.cfg.model.unet is False: return {}
-
     ret = {}
-
     orig_image = Im((batch["gen_pixel_values"].squeeze(0) + 1) / 2)
+
+    if self.cfg.model.token_rot_pred_loss:
+        with torch.cuda.amp.autocast():
+            cond = self.get_standard_conditioning_for_inference(batch=batch)
+            scheduler = getattr(self, "scheduler") if hasattr(self, "scheduler") else self.pipeline.scheduler
+            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=scheduler)
+            R_ref = compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).cpu().numpy()
+            R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot).cpu().numpy()
+            assert R_ref.shape == R_pred.shape
+
+            rot_imgs = []
+            for i in range(R_ref.shape[0]):
+                rot_imgs.append(Im(visualize_rotations(R_ref[i], R_pred[i])).torch)
+            rot_imgs = torch.stack(rot_imgs)
+
+            bs = batch['gen_pixel_values'].shape[0]
+            all_imgs = []
+            for i in range(bs):
+                mask_ = ((cond.mask_batch_idx == i) & pred_data.pred_mask).to(rot_imgs.device)
+                instance_idx = cond.mask_instance_idx[mask_]
+                composited_images = []
+                for j in instance_idx:
+                    mask_image = Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+                    mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
+                    mask_alpha = (batch['gen_segmentation'][..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+                    composited_image = orig_image.pil.copy().convert("RGBA")
+                    composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
+                    composited_images.append(Im(composited_image.convert("RGB")).resize(rot_imgs.shape[-2], rot_imgs.shape[-1]))
+
+                all_imgs.append(Im.concat_vertical(Im.concat_horizontal(*rot_imgs[mask_]), Im.concat_horizontal(*composited_images)))
+
+            ret["rotations"] = Im.concat_vertical(*all_imgs, spacing=30, fill=(128, 128, 128))
+            
+    if self.cfg.model.unet is False: return ret
+
+    
     gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(text="GT")
     ret["validation"] = gt_info
 
@@ -162,26 +203,6 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             attn_imgs.append(Im.concat_vertical(Im.concat_horizontal(*tokens), Im.concat_horizontal(*masks.torch)))
 
         ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
-
-    if self.cfg.model.token_rot_pred_loss:
-        with torch.cuda.amp.autocast():
-            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.pipeline.scheduler)
-            R_ref = compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).cpu().numpy()
-            R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot).cpu().numpy()
-            assert R_ref.shape == R_pred.shape
-
-            rot_imgs = []
-            for i in range(R_ref.shape[0]):
-                rot_imgs.append(Im(visualize_rotations(R_ref[i], R_pred[i])).torch)
-            rot_imgs = torch.stack(rot_imgs)
-
-            bs = batch['gen_pixel_values'].shape[0]
-            all_imgs = []
-            for i in range(bs):
-                mask_ = ((cond.mask_batch_idx == i) & pred_data.pred_mask).to(rot_imgs.device)
-                all_imgs.append(Im(rot_imgs[mask_]).grid())
-
-            ret["rotations"] = Im.concat_vertical(*all_imgs, spacing=20, fill=(128, 128, 128))
 
     full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
     generated_images = Im.concat_horizontal(
