@@ -213,7 +213,7 @@ class Trainer:
 
         unwrap(self.model).run_inference = types.MethodType(run_quantitative_inference, unwrap(self.model))
 
-        subset_size, batch_size = len(self.validation_dataset_holder), self.train_dataloader_holder.batch_size * 4
+        subset_size, batch_size = len(self.validation_dataset_holder), self.train_dataloader_holder.batch_size
         self.validation_dataset_holder.subset_size = subset_size
         self.train_dataloader_holder.random_subset = False
         self.validation_dataset_holder.batch_size = batch_size

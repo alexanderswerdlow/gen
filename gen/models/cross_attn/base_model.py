@@ -378,7 +378,7 @@ class BaseMapper(Trainable):
     
     def get_param_groups(self):
         if self.cfg.model.finetune_unet_with_different_lrs:
-            unet_params = dict(self.unet.named_parameters())
+            unet_params = dict(self.unet.named_parameters()) if self.cfg.model.unet else dict()
 
             def get_params(params, keys):
                 group = {k: v for k, v in params.items() if all([key in k for key in keys])}
@@ -387,9 +387,9 @@ class BaseMapper(Trainable):
                 return group
 
             return [  # Order matters here
+                {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate * 2},
                 {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate},
                 {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
-                {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate * 2},
             ]
         elif self.cfg.model.unfreeze_gated_cross_attn:
             unet_params = dict(self.unet.named_parameters())
@@ -401,8 +401,8 @@ class BaseMapper(Trainable):
                 return group
 
             return [  # Order matters here
-                {"params": get_params(unet_params, ("fuser",)).values(), "lr": self.cfg.trainer.learning_rate},
                 {"params": self.get_custom_params(), "lr": 2 * self.cfg.trainer.learning_rate},
+                {"params": get_params(unet_params, ("fuser",)).values(), "lr": self.cfg.trainer.learning_rate},
             ]
         else:
             return None

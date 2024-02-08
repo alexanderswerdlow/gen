@@ -949,7 +949,7 @@ class StableDiffusionPipeline(
             # BEGIN MODIFICATION
             if negative_prompt_embeds.shape[-1] != prompt_embeds.shape[-1]:
                 negative_prompt_embeds = negative_prompt_embeds.repeat(1, 1, prompt_embeds.shape[-1] // negative_prompt_embeds.shape[-1])
-                __import__('warnings').warn("The negative prompt embeddings have been repeated to match the shape of the prompt embeddings.")
+                # __import__('warnings').warn("The negative prompt embeddings have been repeated to match the shape of the prompt embeddings.", action='once')
             # END MODIFICATION
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
 
