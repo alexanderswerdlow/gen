@@ -23,6 +23,7 @@ from gen.utils.trainer_utils import TrainingState
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
+    from gen.models.cross_attn.base_model import AttentionMetadata
 
 def repeat_batch(batch, bs: int):
     batch_ = {}
@@ -50,6 +51,7 @@ new_prompts = [
             "Colorful graffiti of {}",
             "A photograph of two {} on a table",
         ]
+
 def infer_batch(
     self: BaseMapper,
     batch: InputData,
@@ -129,6 +131,11 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     added_kwargs = dict()
     if self.cfg.inference.visualize_attention_map:
         added_kwargs["return_attn_probs"] = True
+        cond = ConditioningData()
+        cond.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=AttentionMetadata())
+        cond.attn_dict['return_attn_probs'] = True
+        cond.attn_dict['attn_probs'] = []
+        added_kwargs['cond'] = cond
 
     prompt_image, cond = self.infer_batch(
         batch=batch,

@@ -672,6 +672,12 @@ class BaseMapper(Trainable):
         queries = rearrange("layers d -> (masks layers) d", self.mapper.learnable_token, masks=cond.mask_batch_idx.shape[0])
 
         cond.attn_dict["x"] = queries.to(self.dtype)
+
+        # from flash_attn.modules.mha import MHA, CrossAttention
+        # for i, m in enumerate(get_modules(self.mapper.cross_attn.decoder, MHA)):
+        #     old_cross_attn = m.inner_cross_attn
+        #     m.inner_cross_attn = CrossAttention(causal=old_cross_attn.causal, softmax_scale=old_cross_attn.softmax_scale, attention_dropout=old_cross_attn.drop.p)
+
         cond.mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
 
         if self.cfg.model.per_layer_queries:
