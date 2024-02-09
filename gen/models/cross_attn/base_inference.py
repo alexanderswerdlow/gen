@@ -113,7 +113,11 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
             ret['pred_loss'] = pred_loss.float().cpu()
 
     if self.cfg.model.token_cls_pred_loss:
-        ret.update(token_cls_loss(self.cfg, batch, cond, pred_data))
+        loss_ret = token_cls_loss(self.cfg, batch, cond, pred_data)
+        for k in list(loss_ret.keys()):
+            if isinstance(loss_ret[k], torch.Tensor):
+                loss_ret[k] = loss_ret[k].detach().float().cpu()
+        ret.update(loss_ret)
 
     return ret
 
@@ -178,6 +182,9 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     added_kwargs = dict()
     if self.cfg.inference.visualize_attention_map:
         added_kwargs["return_attn_probs"] = True
+
+    if "formatted_input_ids" in batch:
+        del batch["formatted_input_ids"]
 
     prompt_image, cond = self.infer_batch(
         batch=batch,
