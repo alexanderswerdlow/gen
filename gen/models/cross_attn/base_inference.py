@@ -157,7 +157,15 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                     composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
                     composited_images.append(Im(composited_image.convert("RGB")).resize(rot_imgs.shape[-2], rot_imgs.shape[-1]))
 
-                all_imgs.append(Im.concat_vertical(Im.concat_horizontal(*rot_imgs[mask_]), Im.concat_horizontal(*composited_images)))
+                top_img = Im.concat_horizontal(*rot_imgs[mask_])
+                bot_img = Im.concat_horizontal(*composited_images)
+                try:
+                    all_imgs.append(Im.concat_vertical(top_img, bot_img))
+                except Exception as e:
+                    print(e)
+                    print(top_img)
+                    print(bot_img)
+                    all_imgs.append(top_img)
 
             ret["rotations"] = Im.concat_vertical(*all_imgs, spacing=30, fill=(128, 128, 128))
             
