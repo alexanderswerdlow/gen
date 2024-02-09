@@ -2,3 +2,6 @@
 	path = diffusers
 	url = https://github.com/alexanderswerdlow/diffusers
 	branch = gen
+[submodule "image_utils"]
+	path = image_utils
+	url = https://github.com/alexanderswerdlow/image_utils
