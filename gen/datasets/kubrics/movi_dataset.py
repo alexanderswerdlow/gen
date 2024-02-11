@@ -14,7 +14,7 @@ from ipdb import set_trace as st
 from torch.utils.data import Dataset
 from scipy.spatial.transform import Rotation as R
 
-from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_OVERFIT_DATASET_PATH
+from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
@@ -222,7 +222,7 @@ if __name__ == "__main__":
         subset_size=None,
         dataset="movi_e",
         tokenizer=tokenizer,
-        path=MOVI_MEDIUM_PATH,
+        path=MOVI_MEDIUM_TWO_OBJECTS_PATH,
         num_objects=23,
         num_frames=8,
         num_cameras=1, 

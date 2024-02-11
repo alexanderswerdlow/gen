@@ -9,6 +9,7 @@ MOVI_DATASET_PATH = Path(os.getenv("MOVI_DATASET_PATH", "/projects/katefgroup/da
 MOVI_OVERFIT_DATASET_PATH = Path(os.getenv("MOVI_OVERFIT_DATASET_PATH", "/projects/katefgroup/aswerdlo/movi"))
 MOVI_MEDIUM_PATH = Path(os.getenv("MOVI_MEDIUM_PATH", "/projects/katefgroup/aswerdlo/datasets/movi_medium"))
 MOVI_MEDIUM_TWO_OBJECTS_PATH = Path(os.getenv("MOVI_MEDIUM_TWO_OBJECTS_PATH", "/projects/katefgroup/aswerdlo/datasets/movi_medium_two_objects"))
+MOVI_MEDIUM_SINGLE_OBJECT_PATH = Path(os.getenv("MOVI_MEDIUM_SINGLE_OBJECT_PATH", "/projects/katefgroup/aswerdlo/datasets/single_object_rotating"))
 IMAGENET_PATH = Path(os.getenv("IMAGENET_PATH", "/projects/katefgroup/datasets/ImageNet"))
 PLACEHOLDER_TOKEN: str = os.getenv("PLACEHOLDER_TOKEN", "masks")
 DEFAULT_PROMPT: str = os.getenv("DEFAULT_PROMPT", f"A photo of {PLACEHOLDER_TOKEN}")

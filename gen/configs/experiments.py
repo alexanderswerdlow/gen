@@ -1,6 +1,6 @@
 from hydra_zen import builds
 
-from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_OVERFIT_DATASET_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH
+from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_OVERFIT_DATASET_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH
 from gen.configs.utils import mode_store, store_child_config
 from gen.models.encoders.encoder import ResNetFeatureExtractor
 
@@ -178,6 +178,25 @@ def get_datasets():  # TODO: These do not need to be global configs
         name="movi_medium_single_scene",
         dataset=dict(train_dataset=dict(subset=("000001",), fake_return_n=8), validation_dataset=dict(subset=("000001",), fake_return_n=8), overfit=True),
         hydra_defaults=["movi_medium"],
+    )
+
+    mode_store(
+        name="movi_medium_single_object",
+        dataset=dict(
+            train_dataset=dict(
+                num_cameras=1,
+                num_frames=24,
+                path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
+            ),
+            validation_dataset=dict(
+                num_cameras=1,
+                num_frames=24,
+                path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
+            ),
+        ),
+        hydra_defaults=[
+            "movi_medium"
+        ],
     )
 
     mode_store(

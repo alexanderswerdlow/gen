@@ -14,7 +14,7 @@ conda create -n gen python=3.10
 conda activate gen
 
 pip install 'torch==2.2.*' 'torchvision==0.17.*' --index-url https://download.pytorch.org/whl/cu118
-pip install -e diffusers
+pip install -e diffusers; pip install -e image_utils
 pip install pip install ninja wheel packaging
 pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
 
