@@ -121,7 +121,7 @@ class MoviDataset(AbstractDataset, Dataset):
 
                 object_quaternions[~valid] = 1 # Set invalid quaternions to 1 to avoid 0 norm.
                 object_quaternions = R.from_quat(object_quaternions)
-                object_quaternions = (object_quaternions * camera_quaternion.inv())
+                object_quaternions = camera_quaternion.inv() * (object_quaternions * camera_quaternion.inv())
                 object_quaternions = object_quaternions.as_quat()
                 object_quaternions[~valid] = 0
             else:
