@@ -435,4 +435,4 @@ map_chars = {
 }
 
 def sanitize_filename(filename: str) -> str:
-    return "".join(map_chars.get(c, c) for c in filename if c.isalnum() or c in (" ", ".", "_", "-"))
+    return "".join(map_chars.get(c, c) for c in filename if c.isalnum() or map_chars.get(c, c) in (" ", ".", "_", "-", "__"))

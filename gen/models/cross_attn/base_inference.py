@@ -107,10 +107,17 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
             pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.scheduler)
 
     if self.cfg.model.token_rot_pred_loss:
-            pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
-            pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
-            pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
-            ret['rot_pred_loss'] = pred_loss.float().cpu()
+        pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
+        pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
+        pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
+        ret['rot_pred_loss'] = pred_loss.float().cpu()
+        ret["rot_data"] = {
+            "quaternions": batch["quaternions"].float().cpu(),
+            "gt_rot_6d": pred_data.gt_rot_6d.float().cpu(),
+            "pred_6d_rot": pred_data.pred_6d_rot.float().cpu(),
+            "pred_mask": pred_data.pred_mask.float().cpu(),
+            "metadata": batch["metadata"],
+        }
 
     if self.cfg.model.token_cls_pred_loss:
         loss_ret = token_cls_loss(self.cfg, batch, cond, pred_data)

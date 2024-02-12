@@ -19,11 +19,8 @@ from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
-from gen.datasets.utils import get_open_clip_transforms_v2, get_stable_diffusion_transforms
 
 torchvision.disable_beta_transforms_warning()
-import torchvision.transforms.v2 as transforms
-from torchvision.tv_tensors import BoundingBoxes, BoundingBoxFormat, Image, Mask
 from gen.utils.tokenization_utils import get_tokens
 
 @inherit_parent_args
@@ -41,7 +38,6 @@ class MoviDataset(AbstractDataset, Dataset):
         augmentation: Optional[Augmentation] = Augmentation(),
         custom_split: Optional[str] = None,
         subset: Optional[tuple[str]] = None,
-        return_video: bool = False,
         fake_return_n: Optional[int] = None,
         use_single_mask: bool = False, # Force using a single mask with all 1s
         num_cameras: int = 1,
@@ -53,7 +49,6 @@ class MoviDataset(AbstractDataset, Dataset):
         self.root = path  # Path to the dataset containing folders of "movi_a", "movi_e", etc.
         self.dataset = dataset  # str of dataset name (e.g. "movi_a")
         self.resolution = resolution
-        self.return_video = return_video
         self.fake_return_n = fake_return_n
         self.use_single_mask = use_single_mask
         self.multi_camera_format = multi_camera_format
@@ -108,12 +103,13 @@ class MoviDataset(AbstractDataset, Dataset):
         ret = {}
         
         if self.multi_camera_format:
-            data = np.load(self.root_dir / path / "data.npz")
+            filepath = self.root_dir / path / "data.npz"
+            data = np.load(filepath)
             rgb = data["rgb"][camera_idx, frame_idx]
             instance = data["segment"][camera_idx, frame_idx]
 
-            quaternions = data["quaternions"][camera_idx, frame_idx] # (23, 4)
-            quaternions = roll('objects [wxyz]', quaternions, shift=(-1,))
+            object_quaternions = data["quaternions"][camera_idx, frame_idx] # (23, 4)
+            object_quaternions = roll('objects [wxyz]', object_quaternions, shift=(-1,))
             positions = data["positions"][camera_idx, frame_idx] # (23, 3)
             valid = data["valid"][camera_idx, :].squeeze(0) # (23, )
             categories = data["categories"][camera_idx, :].squeeze(0) # (23, )
@@ -121,17 +117,18 @@ class MoviDataset(AbstractDataset, Dataset):
             if 'camera_quaternions' in data:
                 camera_quaternion = data['camera_quaternions'][camera_idx, frame_idx] # (4, )
                 camera_quaternion = roll('[wxyz]', camera_quaternion, shift=(-1,))
-                quaternions[~valid] = 1 # Set invalid quaternions to 1 to avoid 0 norm.
-                quaternions = (
-                    R.from_quat(quaternions)
-                    * R.from_quat(camera_quaternion).inv()
-                ).as_quat()
-                quaternions[~valid] = 0
+                camera_quaternion = R.from_quat(camera_quaternion)
+
+                object_quaternions[~valid] = 1 # Set invalid quaternions to 1 to avoid 0 norm.
+                object_quaternions = R.from_quat(object_quaternions)
+                object_quaternions = (object_quaternions * camera_quaternion.inv())
+                object_quaternions = object_quaternions.as_quat()
+                object_quaternions[~valid] = 0
             else:
                 raise NotImplementedError("Camera quaternions not found in data.npz")
             
             ret.update({
-                "quaternions": quaternions,
+                "quaternions": object_quaternions,
                 "positions": positions,
                 "valid": valid,
                 "categories": categories,
@@ -188,10 +185,14 @@ class MoviDataset(AbstractDataset, Dataset):
             "disc_grid": source_data.grid,
             "disc_segmentation": source_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
+            "metadata": {
+                "id": str(path),
+                "path": str(filepath),
+                "file_idx": file_idx,
+                "frame_idx": frame_idx,
+                "camera_idx": camera_idx
+            },
         })
-
-        if self.return_video:
-            ret["video"] = path
 
         return ret
 
@@ -217,7 +218,6 @@ if __name__ == "__main__":
         path=MOVI_OVERFIT_DATASET_PATH,
         num_objects=1,
         augmentation=Augmentation(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
-        return_video=True
     )
     new_dataset = MoviDataset(
         cfg=None,
@@ -233,7 +233,6 @@ if __name__ == "__main__":
         num_frames=8,
         num_cameras=1, 
         augmentation=Augmentation(target_resolution=256, minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
-        return_video=True,
         multi_camera_format=True,
     )
     dataloader = new_dataset.get_dataloader()

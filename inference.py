@@ -84,8 +84,10 @@ def run_inference_dataloader(
                     v_ = torch.cat(v, dim=0).mean()
                 accelerator.log({k: v_}, step=state.global_step)
             elif isinstance(v[0], dict):
+                v_ = {}
                 for i in range(len(v)):
-                    save_tensor_dict(v[i], path=output_path / sanitize_filename(f"{k}_{state.global_step}_{i}.npz"))
+                    v_[str(i)] = v[i]
+                save_tensor_dict(v_, path=output_path / sanitize_filename(f"{k}_{state.global_step}.npz"))
             else:
                 output_images = [Im(im) for im in v]
                 log_with_accelerator(
@@ -113,7 +115,7 @@ def log_with_accelerator(
                 Im(images[i]).save(save_path)
             except Exception as e:
                 print(e)
-                log_info(f"Failed to save image: {save_path}, name {name}")
+                log_info(f"Failed to save image: {save_path}, name {name} with exception: {e}")
     try:
         if accelerator is not None:
             for tracker in accelerator.trackers:
@@ -124,4 +126,4 @@ def log_with_accelerator(
                     tracker.log({name: wandb.Image(Im.concat_horizontal(images, spacing=spacing, fill=(255, 255, 255)).pil)}, step=global_step)
     except Exception as e:
         print(e)
-        log_info(f"Wandb Failed to save image: {save_path}, name {name}")
+        log_info(f"Failed to log image: {save_path}, name {name} with exception: {e}")

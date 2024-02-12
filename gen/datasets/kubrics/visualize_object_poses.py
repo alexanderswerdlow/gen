@@ -49,8 +49,6 @@ def main(root_dir: Path):
 
     for i, file in enumerate(find_files(root_dir, "data.npz")):
         create_video(file)
-        if i > 4:
-            break
 
 def create_video(path):
     print(f"Creating video for {path}...")
