@@ -13,17 +13,20 @@ from einx import mean, rearrange, softmax
 from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
 from PIL import Image
 from torchvision import utils
+from gen import GSO_PCD_PATH
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
 from gen.models.cross_attn.losses import token_cls_loss
 from gen.utils.decoupled_utils import load_tensor_dict
 from gen.utils.logging_utils import log_info
-from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations
+from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
+
+gso_pcds = None
 
 def repeat_batch(batch, bs: int):
     batch_ = {}
@@ -149,15 +152,33 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot).cpu().numpy()
             assert R_ref.shape == R_pred.shape
 
-            rot_imgs = []
-            for i in range(R_ref.shape[0]):
-                rot_imgs.append(Im(visualize_rotations(R_ref[i], R_pred[i])).torch)
-            rot_imgs = torch.stack(rot_imgs)
+            # Old Coordinate Axis Viz
+            # rot_imgs = []
+            # for b in range(R_ref.shape[0]):
+            #     rot_imgs.append(Im(visualize_rotations(R_ref[b], R_pred[b])).torch)
+            # rot_imgs = torch.stack(rot_imgs)
+
+            global gso_pcds
+            if gso_pcds is None:
+                # Load all PCDs once. This is wasteful but good enough.
+                gso_pcds = np.load(GSO_PCD_PATH)
 
             bs = batch['gen_pixel_values'].shape[0]
+            rot_imgs_pcds = []
+            for b in range(bs):
+                mask_ = ((cond.mask_batch_idx == b) & pred_data.pred_mask).to(orig_image.device)
+                instance_idx = cond.mask_instance_idx[mask_]
+                composited_images = []
+                for j in instance_idx:
+                    asset_id = batch['asset_id'][j - 1][b]
+                    pcd = gso_pcds[asset_id]
+                    rot_idx = len(rot_imgs_pcds)
+                    rot_imgs_pcds.append(Im(visualize_rotations_pcds(R_ref[pred_data.pred_mask.cpu().numpy()][rot_idx], R_pred[pred_data.pred_mask.cpu().numpy()][rot_idx], pcd)).torch)
+            rot_imgs_pcds = torch.stack(rot_imgs_pcds)
+
             all_imgs = []
-            for i in range(bs):
-                mask_ = ((cond.mask_batch_idx == i) & pred_data.pred_mask).to(rot_imgs.device)
+            for b in range(bs):
+                mask_ = ((cond.mask_batch_idx == b) & pred_data.pred_mask).to(orig_image.device)
                 instance_idx = cond.mask_instance_idx[mask_]
                 composited_images = []
                 for j in instance_idx:
@@ -166,9 +187,10 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                     mask_alpha = (batch['gen_segmentation'][..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
                     composited_image = orig_image.pil.copy().convert("RGBA")
                     composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
-                    composited_images.append(Im(composited_image.convert("RGB")).resize(rot_imgs.shape[-2], rot_imgs.shape[-1]))
+                    composited_images.append(Im(composited_image.convert("RGB")))
 
-                top_img = Im.concat_horizontal(*rot_imgs[mask_])
+                # top_img = Im.concat_horizontal(*rot_imgs[mask_])
+                top_img = Im.concat_horizontal(*rot_imgs_pcds)
                 bot_img = Im.concat_horizontal(*composited_images)
                 try:
                     all_imgs.append(Im.concat_vertical(top_img, bot_img))

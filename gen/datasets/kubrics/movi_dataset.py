@@ -113,6 +113,7 @@ class MoviDataset(AbstractDataset, Dataset):
             positions = data["positions"][camera_idx, frame_idx] # (23, 3)
             valid = data["valid"][camera_idx, :].squeeze(0) # (23, )
             categories = data["categories"][camera_idx, :].squeeze(0) # (23, )
+            asset_id = data["asset_ids"][camera_idx, :].squeeze(0)
 
             if 'camera_quaternions' in data:
                 camera_quaternion = data['camera_quaternions'][camera_idx, frame_idx] # (4, )
@@ -132,6 +133,7 @@ class MoviDataset(AbstractDataset, Dataset):
                 "positions": positions,
                 "valid": valid,
                 "categories": categories,
+                "asset_id": [str(x) for x in asset_id],
             })
         else:
             assert self.num_cameras == 1 and camera_idx == 0
