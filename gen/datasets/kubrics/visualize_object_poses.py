@@ -46,9 +46,11 @@ def main(root_dir: Path):
     """
     On Linux, you must start an X11 server to run.
     """
-    for file in find_files(root_dir, "data.npz"):
+
+    for i, file in enumerate(find_files(root_dir, "data.npz")):
         create_video(file)
-        # break
+        if i > 4:
+            break
 
 def create_video(path):
     print(f"Creating video for {path}...")
@@ -75,7 +77,7 @@ def create_video(path):
 
     for frame_idx in range(frames):
         frame_img = []
-        for j in [0, 1, 4]:
+        for j in [0, 5, 4]:
             vis.clear_geometries()
 
             camera_quaternion, camera_position, object_quaternions, positions, valid, asset_id, rgb, scale = get_data(data, camera_idx, frame_idx)
@@ -83,6 +85,8 @@ def create_video(path):
             object_quaternions[~valid] = 1  # Set invalid quaternions to 1 to avoid 0 norm.
             object_quaternions = R.from_quat(object_quaternions)
             camera_quaternion = R.from_quat(camera_quaternion)
+
+            # breakpoint()
 
             if j == 0:
                 # Render as in original sim
@@ -94,12 +98,14 @@ def create_video(path):
             elif j == 2:
                 # Puts the object in canonical pose. Fixed in world space as the camera moves.
                 object_quaternions = R.from_quat(np.array([[0, 0, 0, 1]]).repeat(len(object_quaternions), axis=0))
-            elif j == 3:
-                # Object frame -> world frame -> camera frame.
-                # The pose of the object is now in the camera frame. Keeps it locked w.r.t the camera.
-                object_quaternions = camera_quaternion * object_quaternions.inv()
             elif j == 4:
-                object_quaternions = ((object_quaternions * camera_quaternion.inv()).inv() * object_quaternions)
+                # Sets the object frame to be the camera frame [e.g., object is not in relative canonical pose]
+                object_quaternions = R.from_quat(camera_quaternion.as_quat()[None].repeat(len(object_quaternions), axis=0))
+            elif j == 5:
+                # We have the delta pose between the camera and object. We put it in the camera frame.
+                # (object_quaternions * camera_quaternion.inv()) -> x
+                # camera_quaternion -> identity
+                object_quaternions = camera_quaternion.inv() * (object_quaternions * camera_quaternion.inv())
 
             object_quaternions = object_quaternions.as_quat()
             object_quaternions[~valid] = 0
@@ -171,7 +177,8 @@ def create_video(path):
                 2: "World Canonical Pose",
                 3: "Object frame -> world frame -> camera frame",
                 4: "Camera Relative Canonical Pose",
-                5: "test"
+                5: "test",
+                6: "test2",
             }
             frame_img.append(Im(np.asarray(image)).write_text(text_map[j], size=0.5).torch)
         frame_imgs.append(Im.concat_horizontal(*frame_img, Im(rgb)).torch)
