@@ -48,8 +48,10 @@ def main(root_dir: Path):
     """
     for file in find_files(root_dir, "data.npz"):
         create_video(file)
+        # break
 
 def create_video(path):
+    print(f"Creating video for {path}...")
     data = np.load(path)
     camera_idx = 0
 
@@ -73,49 +75,56 @@ def create_video(path):
 
     for frame_idx in range(frames):
         frame_img = []
-        for j in range(3):
+        for j in [0, 1, 4]:
             vis.clear_geometries()
 
             camera_quaternion, camera_position, object_quaternions, positions, valid, asset_id, rgb, scale = get_data(data, camera_idx, frame_idx)
 
             object_quaternions[~valid] = 1  # Set invalid quaternions to 1 to avoid 0 norm.
+            object_quaternions = R.from_quat(object_quaternions)
+            camera_quaternion = R.from_quat(camera_quaternion)
+
             if j == 0:
                 # Render as in original sim
-                pass
+                object_quaternions = object_quaternions
             elif j == 1:
                 # Camera frame -> World frame -> object frame
                 # This is what we want to predict. This should be the delta between the object and the object if it had the same pose as the camera.
-                object_quaternions = (R.from_quat(object_quaternions) * R.from_quat(camera_quaternion).inv()).as_quat()
+                object_quaternions = (object_quaternions * camera_quaternion.inv())
             elif j == 2:
                 # Puts the object in canonical pose. Fixed in world space as the camera moves.
-                object_quaternions = np.array([[0, 0, 0, 1]]).repeat(len(object_quaternions), axis=0)
+                object_quaternions = R.from_quat(np.array([[0, 0, 0, 1]]).repeat(len(object_quaternions), axis=0))
             elif j == 3:
                 # Object frame -> world frame -> camera frame.
                 # The pose of the object is now in the camera frame. Keeps it locked w.r.t the camera.
-                object_quaternions = (R.from_quat(camera_quaternion) * R.from_quat(object_quaternions).inv()).as_quat()
+                object_quaternions = camera_quaternion * object_quaternions.inv()
+            elif j == 4:
+                object_quaternions = ((object_quaternions * camera_quaternion.inv()).inv() * object_quaternions)
 
+            object_quaternions = object_quaternions.as_quat()
             object_quaternions[~valid] = 0
 
-            rot = torch.from_numpy(R.from_quat(camera_quaternion).as_matrix()).to(device)
+            rot = torch.from_numpy(camera_quaternion.as_matrix()).to(device)
             obj_rot = torch.from_numpy(R.from_quat(object_quaternions[valid]).as_matrix()).to(device)
 
             T = torch.from_numpy(camera_position).float().to(device)
-            image_size = torch.tensor([(width, height)])
 
             verts = []
             rgbs = []
             for i in range(valid.sum()):
-                obj_pcd = obj_rot[i] @ (scale[i] * rearrange("n xyz -> xyz n", pcds[asset_id[i]]))
+                obj_pcd = rearrange("n xyz -> xyz n", pcds[asset_id[i]])
+                obj_pcd = obj_rot[i] @ (scale[i] * obj_pcd)
                 obj_pcd = rearrange("xyz n -> n xyz", obj_pcd) + positions[i]
                 verts.append(torch.Tensor(obj_pcd).to(device))
-                rgbs.append(verts[-1].new_ones(verts[-1].shape[0], 4))
+                rgb_ = verts[-1].new_ones(verts[-1].shape[0], 3) * 0.4
+                rgbs.append(rgb_)
 
-            rot = -torch.eye(3).float() @ rot[:3, :3].float()
+            rot = -torch.eye(3).float() @ rot[:3, :3].float() # Convert between Kubrics and Open3D coordinate systems. See: https://github.com/google-research/kubric/pull/307/files
             E = torch.cat([rot.T, (-rot.T.double() @ T.double())[:, None]], dim=1).float()
 
-            XYZ = torch.cat([obj_pcd, torch.ones(obj_pcd.shape[0], 1)], dim=1).permute(1, 0).float()
-
-            xy = K @ E @ XYZ
+            # Project to 2D. Not currently used.
+            xyz_homogenous = torch.cat([obj_pcd, torch.ones(obj_pcd.shape[0], 1)], dim=1).permute(1, 0).float()
+            xy = K @ E @ xyz_homogenous
             xy = xy[:2, :] / xy[2, :]
 
             rgbs = torch.cat(rgbs, dim=0).cpu().numpy()
@@ -123,6 +132,7 @@ def create_video(path):
 
             pcd = o3d.geometry.PointCloud()
             pcd.points = o3d.utility.Vector3dVector(verts)
+            pcd.colors = o3d.utility.Vector3dVector(rgbs)
 
             ctr = vis.get_view_control()
 
@@ -155,7 +165,15 @@ def create_video(path):
             vis.update_renderer()
 
             image = vis.capture_screen_float_buffer()
-            frame_img.append(Im(np.asarray(image)).write_text(str(j)).torch)
+            text_map = {
+                0: "Original",
+                1: "GT Pred Rot",
+                2: "World Canonical Pose",
+                3: "Object frame -> world frame -> camera frame",
+                4: "Camera Relative Canonical Pose",
+                5: "test"
+            }
+            frame_img.append(Im(np.asarray(image)).write_text(text_map[j], size=0.5).torch)
         frame_imgs.append(Im.concat_horizontal(*frame_img, Im(rgb)).torch)
 
     Im(torch.stack(frame_imgs, dim=0)).save_video(Path(f"{path.parent.name}.mp4"), fps=12)
