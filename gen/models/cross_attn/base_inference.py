@@ -110,7 +110,7 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
             pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
             pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
             pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
-            ret['pred_loss'] = pred_loss.float().cpu()
+            ret['rot_pred_loss'] = pred_loss.float().cpu()
 
     if self.cfg.model.token_cls_pred_loss:
         loss_ret = token_cls_loss(self.cfg, batch, cond, pred_data)
@@ -174,7 +174,6 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             ret["rotations"] = Im.concat_vertical(*all_imgs, spacing=30, fill=(128, 128, 128))
             
     if self.cfg.model.unet is False: return ret
-
     
     gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(text="GT")
     ret["validation"] = gt_info

@@ -10,6 +10,7 @@ import torch
 import torchvision
 import webdataset as wds
 from einops import rearrange
+from einx import roll
 from ipdb import set_trace as st
 from torch.utils.data import Dataset
 from scipy.spatial.transform import Rotation as R
@@ -112,14 +113,19 @@ class MoviDataset(AbstractDataset, Dataset):
             instance = data["segment"][camera_idx, frame_idx]
 
             quaternions = data["quaternions"][camera_idx, frame_idx] # (23, 4)
+            quaternions = roll('objects [wxyz]', quaternions, shift=(-1,))
             positions = data["positions"][camera_idx, frame_idx] # (23, 3)
             valid = data["valid"][camera_idx, :].squeeze(0) # (23, )
             categories = data["categories"][camera_idx, :].squeeze(0) # (23, )
 
             if 'camera_quaternions' in data:
                 camera_quaternion = data['camera_quaternions'][camera_idx, frame_idx] # (4, )
+                camera_quaternion = roll('[wxyz]', camera_quaternion, shift=(-1,))
                 quaternions[~valid] = 1 # Set invalid quaternions to 1 to avoid 0 norm.
-                quaternions = (R.from_quat(quaternions) * R.from_quat(camera_quaternion).inv()).as_quat()
+                quaternions = (
+                    R.from_quat(quaternions)
+                    * R.from_quat(camera_quaternion).inv()
+                ).as_quat()
                 quaternions[~valid] = 0
             else:
                 raise NotImplementedError("Camera quaternions not found in data.npz")

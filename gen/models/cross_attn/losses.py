@@ -193,9 +193,9 @@ def token_cls_loss(
     top5_accuracy = (correct_top5_predictions / total_instances) if total_instances > 0 else 0
 
     return {
-        "token_cls_pred_loss": avg_loss * 0.1,
-        "metric_token_cls_pred_acc": torch.tensor(accuracy, device=device),
-        "metric_token_cls_pred_top5_acc": torch.tensor(top5_accuracy, device=device),
+        "cls_pred_loss": avg_loss * 0.1,
+        "metric_cls_pred_acc": torch.tensor(accuracy, device=device),
+        "metric_cls_pred_top5_acc": torch.tensor(top5_accuracy, device=device),
     }
 
 
@@ -228,4 +228,4 @@ def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pr
     else:
         loss = F.mse_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.gt_rot_6d[pred_data.pred_mask], reduction="mean")
 
-    return {"token_rot_pred_loss": loss}
+    return {"rot_pred_loss": loss}
