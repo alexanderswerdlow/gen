@@ -379,3 +379,5 @@ def viz():
 #         losses.append(loss)
 
 #     return torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=device)
+
+#             scheduler = getattr(self, "scheduler") if hasattr(self, "scheduler") else self.pipeline.scheduler

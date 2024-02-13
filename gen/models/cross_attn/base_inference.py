@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 gso_pcds = None
 
+
 def repeat_batch(batch, bs: int):
     batch_ = {}
     for k, v in batch.items():
@@ -38,23 +39,26 @@ def repeat_batch(batch, bs: int):
 
     return batch_
 
+
 new_prompts = [
-            "A photo of a {}",
-            "A photo of {} in the jungle",
-            "A photo of {} on a beach",
-            "A photo of {} in Times Square",
-            "A photo of {} in the moon",
-            "A painting of {} in the style of Monet",
-            "Oil painting of {}",
-            "A Marc Chagall painting of {}",
-            "A manga drawing of {}",
-            "A watercolor painting of {}",
-            "A statue of {}",
-            "App icon of {}",
-            "A sand sculpture of {}",
-            "Colorful graffiti of {}",
-            "A photograph of two {} on a table",
-        ]
+    "A photo of a {}",
+    "A photo of {} in the jungle",
+    "A photo of {} on a beach",
+    "A photo of {} in Times Square",
+    "A photo of {} in the moon",
+    "A painting of {} in the style of Monet",
+    "Oil painting of {}",
+    "A Marc Chagall painting of {}",
+    "A manga drawing of {}",
+    "A watercolor painting of {}",
+    "A statue of {}",
+    "App icon of {}",
+    "A sand sculpture of {}",
+    "Colorful graffiti of {}",
+    "A photograph of two {} on a table",
+]
+
+
 def infer_batch(
     self: BaseMapper,
     batch: InputData,
@@ -95,7 +99,11 @@ def infer_batch(
     if "formatted_input_ids" in batch:
         del batch["formatted_input_ids"]
 
-    if "cross_attention_kwargs" in cond.unet_kwargs and "attn_meta" in cond.unet_kwargs["cross_attention_kwargs"] and "return_attn_probs" in cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]:
+    if (
+        "cross_attention_kwargs" in cond.unet_kwargs
+        and "attn_meta" in cond.unet_kwargs["cross_attention_kwargs"]
+        and "return_attn_probs" in cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]
+    ):
         del cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["return_attn_probs"]
 
     return images, cond
@@ -115,9 +123,9 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
         quat_l1 = (quat1 - quat2).abs().sum(-1)
         quat_l1_ = (quat1 + quat2).abs().sum(-1)
         select_mask = (quat_l1 < quat_l1_).float()
-        quat_l1 = (select_mask * quat_l1 + (1 - select_mask) * quat_l1_)
+        quat_l1 = select_mask * quat_l1 + (1 - select_mask) * quat_l1_
         return quat_l1
-    
+
     if self.cfg.model.token_rot_pred_loss or self.cfg.model.token_cls_pred_loss:
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
@@ -127,8 +135,8 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
         pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
         pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
         pred_loss = quat_l1_loss(pred_data.gt_rot_6d, pred_data.pred_6d_rot)
-        ret['rot_pred_loss'] = pred_loss.float().cpu()
-        ret['rot_pred_acc<0.025'] = (pred_loss < 0.025).float().cpu()
+        ret["rot_pred_loss"] = pred_loss.float().cpu()
+        ret["rot_pred_acc<0.025"] = (pred_loss < 0.025).float().cpu()
         ret["rot_data"] = {
             "quaternions": batch["quaternions"].float().cpu(),
             "gt_rot_6d": pred_data.gt_rot_6d.float().cpu(),
@@ -161,34 +169,44 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     if self.cfg.model.token_rot_pred_loss:
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
-            scheduler = getattr(self, "scheduler") if hasattr(self, "scheduler") else self.pipeline.scheduler
             pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.rotation_scheduler)
-            R_ref = compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).cpu().numpy()
-            R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot).cpu().numpy()
+            R_ref = compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d)[pred_data.pred_mask].cpu().numpy()
+            R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot)[pred_data.pred_mask].cpu().numpy()
+            R_hist = compute_rotation_matrix_from_ortho6d(rearrange("m h d -> (m h) d", pred_data.denoise_history_6d_rot))
+            R_hist = rearrange("(m h) ... -> m h ...", R_hist, m=pred_data.gt_rot_6d.shape[0])[pred_data.pred_mask].cpu().numpy()
             assert R_ref.shape == R_pred.shape
-
-            # Old Coordinate Axis Viz
-            # rot_imgs = []
-            # for b in range(R_ref.shape[0]):
-            #     rot_imgs.append(Im(visualize_rotations(R_ref[b], R_pred[b])).torch)
-            # rot_imgs = torch.stack(rot_imgs)
 
             global gso_pcds
             if gso_pcds is None:
                 # Load all PCDs once. This is wasteful but good enough.
                 gso_pcds = np.load(GSO_PCD_PATH)
 
-            bs = batch['gen_pixel_values'].shape[0]
+            bs = batch["gen_pixel_values"].shape[0]
             rot_imgs_pcds = []
             for b in range(bs):
                 mask_ = ((cond.mask_batch_idx == b) & pred_data.pred_mask).to(orig_image.device)
                 instance_idx = cond.mask_instance_idx[mask_]
                 composited_images = []
                 for j in instance_idx:
-                    asset_id = batch['asset_id'][j - 1][b]
+                    asset_id = batch["asset_id"][j - 1][b]
                     pcd = gso_pcds[asset_id]
                     rot_idx = len(rot_imgs_pcds)
-                    rot_imgs_pcds.append(Im(visualize_rotations_pcds(R_ref[pred_data.pred_mask.cpu().numpy()][rot_idx], R_pred[pred_data.pred_mask.cpu().numpy()][rot_idx], pcd)).torch)
+                    if self.cfg.inference.visualize_rotation_denoising:
+
+                        def evenly_spaced_indices(n, percentage=0.1, minimum=3):
+                            num_elements = max(minimum, int(n * percentage))
+                            if num_elements <= minimum:
+                                return [0, n // 2, n - 1]
+                            spacing = (n - 1) / (num_elements - 1)
+                            return np.round(np.arange(0, n, spacing)).astype(int)
+
+                        img = []
+                        for t in evenly_spaced_indices(R_hist.shape[1]):
+                            img.append(Im(visualize_rotations_pcds(R_ref[rot_idx], R_hist[rot_idx, t], pcd)).write_text(f"Timestep {t}"))
+                        img = Im.concat_vertical(*img)
+                    else:
+                        img = Im(visualize_rotations_pcds(R_ref[rot_idx], R_pred[rot_idx], pcd))
+                    rot_imgs_pcds.append(img.torch)
             rot_imgs_pcds = torch.stack(rot_imgs_pcds)
 
             all_imgs = []
@@ -197,9 +215,11 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 instance_idx = cond.mask_instance_idx[mask_]
                 composited_images = []
                 for j in instance_idx:
-                    mask_image = Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+                    mask_image = Im(
+                        get_layered_image_from_binary_mask(batch["gen_segmentation"][..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8
+                    )
                     mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
-                    mask_alpha = (batch['gen_segmentation'][..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+                    mask_alpha = (batch["gen_segmentation"][..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
                     composited_image = orig_image.pil.copy().convert("RGBA")
                     composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
                     composited_images.append(Im(composited_image.convert("RGB")))
@@ -216,9 +236,10 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                     all_imgs.append(top_img)
 
             ret["rotations"] = Im.concat_vertical(*all_imgs, spacing=30, fill=(128, 128, 128))
-            
-    if self.cfg.model.unet is False: return ret
-    
+
+    if self.cfg.model.unet is False:
+        return ret
+
     gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(text="GT")
     ret["validation"] = gt_info
 
@@ -229,18 +250,14 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     if "formatted_input_ids" in batch:
         del batch["formatted_input_ids"]
 
-    prompt_image, cond = self.infer_batch(
-        batch=batch,
-        num_images_per_prompt=self.cfg.inference.num_images_per_prompt,
-        **added_kwargs
-    )
+    prompt_image, cond = self.infer_batch(batch=batch, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, **added_kwargs)
 
     if self.cfg.inference.visualize_attention_map:
-        attn = cond.unet_kwargs['cross_attention_kwargs']['attn_meta']['attn_probs']
+        attn = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attn_probs"]
         target_size = (self.cfg.model.latent_dim, self.cfg.model.latent_dim)
         all_attn = []
         bs = len(prompt_image)
-        for k,v in attn.items():
+        for k, v in attn.items():
             layer_attn = torch.stack(v, dim=0).cpu()[:, -bs:]
             layer_attn = rearrange("timesteps b (h w) tokens -> timesteps (b tokens) () h w", layer_attn, h=int(sqrt(layer_attn.shape[-2])))
             layer_attn = torch.mean(layer_attn, dim=0)
@@ -257,15 +274,14 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 continue
             tokens = rearrange("t (h w) -> t 3 h w", softmax("t [hw]", rearrange("t h w -> t (h w)", tokens)), h=tokens.shape[-1])
             tokens = (tokens - torch.min(tokens)) / (torch.max(tokens) - torch.min(tokens))
-            masks = Im(rearrange("h w masks -> masks 3 h w", batch['gen_segmentation'][b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
+            masks = Im(rearrange("h w masks -> masks 3 h w", batch["gen_segmentation"][b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
             attn_imgs.append(Im.concat_vertical(Im.concat_horizontal(*tokens), Im.concat_horizontal(*masks.torch)))
 
         ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
 
     full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
     generated_images = Im.concat_horizontal(
-        Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}")
-        for i, prompt_image_ in enumerate(prompt_image)
+        Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)
     )
     ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
 
@@ -426,9 +442,7 @@ def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embe
     )
 
     Im.concat_vertical(
-        Im.concat_horizontal(
-            Im(prompt_image_).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)
-        ),
+        Im.concat_horizontal(Im(prompt_image_).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)),
         Im(utils.make_grid(Im(final_rgb).torch)).write_text("Combined Conditioned masks [GT]"),
         Im.concat_horizontal(
             Im(image_0_dict["orig_image"]).write_text("First Image GT", size=0.25),
@@ -446,8 +460,18 @@ def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embe
 def lerp(a, b, ts):
     return a + (b - a) * ts
 
+
 @torch.no_grad()
-def interpolate_latents(self: BaseMapper, batch: dict, state: TrainingState, embed_path_1: Path, embed_path_2: Path, remove_background_token: bool = False, batch_interp: bool = True, steps: int = 10):
+def interpolate_latents(
+    self: BaseMapper,
+    batch: dict,
+    state: TrainingState,
+    embed_path_1: Path,
+    embed_path_2: Path,
+    remove_background_token: bool = False,
+    batch_interp: bool = True,
+    steps: int = 10,
+):
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
 
     image_0_dict = load_tensor_dict(embed_path_1)
@@ -498,7 +522,9 @@ def interpolate_latents(self: BaseMapper, batch: dict, state: TrainingState, emb
             if remove_background_token:
                 interp_token = interp_token[1:]
             prompt_image, cond = self.infer_batch(
-                batch=batch, cond=ConditioningData(mask_tokens=interp_token, mask_batch_idx=torch.zeros((interp_token.shape[0],), dtype=torch.int64)), num_images_per_prompt=2
+                batch=batch,
+                cond=ConditioningData(mask_tokens=interp_token, mask_batch_idx=torch.zeros((interp_token.shape[0],), dtype=torch.int64)),
+                num_images_per_prompt=2,
             )
             prompt_image = Im.concat_vertical(prompt_image)
             prompt_images.append(prompt_image)

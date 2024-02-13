@@ -20,6 +20,7 @@ class InferenceConfig:
     num_masks_to_remove: Optional[int] = 4
     visualize_attention_map: bool = False
     visualize_embeds: bool = False
+    visualize_rotation_denoising: bool = False
     infer_new_prompts: bool = False
     save_prompt_embeds: bool = False
     vary_cfg_plot: bool = False

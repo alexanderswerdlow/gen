@@ -73,6 +73,7 @@ class TokenPredData:
     cls_pred: Optional[Float[Tensor, "n classes"]] = None
     pred_6d_rot: Optional[Float[Tensor, "n 6"]] = None
     pred_mask: Optional[Bool[Tensor, "n"]] = None
+    denoise_history_6d_rot: Optional[Float[Tensor, "t n 6"]] = None
 
 class AttentionMetadata(TypedDict):
     layer_idx: int
@@ -471,12 +472,12 @@ class BaseMapper(Trainable):
         scheduler.set_timesteps(num_inference_steps=self.cfg.model.rotation_diffusion_timestep, device=self.device)
         timesteps = scheduler.timesteps
        
+        latents = randn_tensor(pred_data.gt_rot_6d.shape, device=self.device, dtype=self.dtype)
         if self.cfg.model.rotation_diffusion_start_timestep is not None:
             latents = scheduler.add_noise(pred_data.gt_rot_6d, latents, timesteps[None, self.cfg.model.rotation_diffusion_start_timestep].repeat(latents.shape[0]))
-        else:
-            latents = randn_tensor(pred_data.gt_rot_6d.shape, device=self.device, dtype=self.dtype)
         
         sl = slice(None, -self.cfg.model.rotation_diffusion_start_timestep) if self.cfg.model.rotation_diffusion_start_timestep else slice(None)
+        latent_history = []
         for t in timesteps[sl]:
             pred_data.noised_rot_6d = latents
             pred_data.timesteps = t[None].repeat(latents.shape[0])
@@ -486,8 +487,10 @@ class BaseMapper(Trainable):
 
             # compute the previous noisy sample x_t -> x_t-1
             latents = scheduler.step(pred_data.pred_6d_rot, t, latents).prev_sample
+            latent_history.append(latents)
 
         pred_data.pred_6d_rot = latents
+        pred_data.denoise_history_6d_rot = torch.stack(latent_history, dim=1)
 
         return pred_data
 

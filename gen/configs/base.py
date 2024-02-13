@@ -133,6 +133,7 @@ exp_store(
         max_batch_size=4,
         vary_cfg_plot=True,
         visualize_attention_map=True,
+        visualize_rotation_denoising=True,
     ),
     model=dict(
         use_dataset_segmentation=True,

@@ -180,7 +180,7 @@ def visualize_rotations_pcds(ref, pred, pcd, legends=[], markers=[], save=False)
 
     fig.tight_layout()
     images = []
-    for elev, azim in zip([0, 15, 25, 45, 65], [0, 15, 25, 45, 65]):
+    for elev, azim in zip([0, 20, 50], [0, 20, 50]):
         ax.view_init(elev=elev, azim=azim, roll=0)
         canvas.draw()
         image_flat = np.frombuffer(canvas.tostring_rgb(), dtype="uint8")
