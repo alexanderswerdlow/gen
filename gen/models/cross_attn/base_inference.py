@@ -22,6 +22,7 @@ from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
+from gen.utils.pytorch3d_transforms import matrix_to_quaternion
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
@@ -103,17 +104,32 @@ def infer_batch(
 @torch.no_grad()
 def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingState):
     ret = {}
+
+    def quat_l1_loss(rot1, rot2):
+        mat1 = compute_rotation_matrix_from_ortho6d(rot1)
+        quat1 = matrix_to_quaternion(mat1)
+
+        mat2 = compute_rotation_matrix_from_ortho6d(rot2)
+        quat2 = matrix_to_quaternion(mat2)
+
+        quat_l1 = (quat1 - quat2).abs().sum(-1)
+        quat_l1_ = (quat1 + quat2).abs().sum(-1)
+        select_mask = (quat_l1 < quat_l1_).float()
+        quat_l1 = (select_mask * quat_l1 + (1 - select_mask) * quat_l1_)
+        return quat_l1
     
     if self.cfg.model.token_rot_pred_loss or self.cfg.model.token_cls_pred_loss:
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
-            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.scheduler)
+            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.rotation_scheduler)
 
     if self.cfg.model.token_rot_pred_loss:
         pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
         pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
-        pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
+        # pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
+        pred_loss = quat_l1_loss(pred_data.gt_rot_6d, pred_data.pred_6d_rot)
         ret['rot_pred_loss'] = pred_loss.float().cpu()
+        ret['rot_pred_acc<0.025'] = (pred_loss < 0.025).float().cpu()
         ret["rot_data"] = {
             "quaternions": batch["quaternions"].float().cpu(),
             "gt_rot_6d": pred_data.gt_rot_6d.float().cpu(),
@@ -147,7 +163,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
             scheduler = getattr(self, "scheduler") if hasattr(self, "scheduler") else self.pipeline.scheduler
-            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=scheduler)
+            pred_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.rotation_scheduler)
             R_ref = compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).cpu().numpy()
             R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot).cpu().numpy()
             assert R_ref.shape == R_pred.shape

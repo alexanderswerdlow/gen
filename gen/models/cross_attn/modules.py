@@ -190,8 +190,7 @@ class TokenMapper(nn.Module):
 
         if self.cfg.model.token_rot_pred_loss:
             output = self.rot_mlp(pred_data.noised_rot_6d, pred_data.timesteps, mask_tokens)
-            pred = output.softmax(dim=-1)
-            pred_data.pred_6d_rot = pred
+            pred_data.pred_6d_rot = output
 
         return pred_data
 

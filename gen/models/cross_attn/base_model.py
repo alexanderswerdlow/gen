@@ -137,6 +137,11 @@ class BaseMapper(Trainable):
 
         # Load scheduler and models
         self.noise_scheduler: DDPMScheduler = DDPMScheduler.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="scheduler")
+        self.rotation_scheduler = DDPMScheduler(
+            num_train_timesteps=self.cfg.model.rotation_diffusion_timestep,
+            beta_schedule="squaredcos_cap_v2",
+            prediction_type=self.cfg.model.rotation_diffusion_parameterization,
+        )
         self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path, subfolder="text_encoder", revision=self.cfg.model.revision
         )
@@ -375,10 +380,17 @@ class BaseMapper(Trainable):
         params.append(self.mapper.parameters())
 
         return itertools.chain(*params)
+
+    def get_unet_params(self):
+        if self.cfg.model.unet and self.cfg.model.freeze_unet is False:
+            unet_params = dict(self.unet.named_parameters())
+        else:
+            unet_params = dict()
+        return unet_params
     
     def get_param_groups(self):
         if self.cfg.model.finetune_unet_with_different_lrs:
-            unet_params = dict(self.unet.named_parameters()) if self.cfg.model.unet else dict()
+            unet_params = self.get_unet_params()
 
             def get_params(params, keys):
                 group = {k: v for k, v in params.items() if all([key in k for key in keys])}
@@ -392,7 +404,7 @@ class BaseMapper(Trainable):
                 {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
             ]
         elif self.cfg.model.unfreeze_gated_cross_attn:
-            unet_params = dict(self.unet.named_parameters())
+            unet_params = self.get_unet_params()
 
             def get_params(params, keys):
                 group = {k: v for k, v in params.items() if all([key in k for key in keys]) and v.requires_grad}
@@ -454,28 +466,36 @@ class BaseMapper(Trainable):
 
         return cond
 
-    def denoise_rotation(self, batch: InputData, cond: ConditioningData, scheduler: DDIMScheduler):
+    def denoise_rotation(self, batch: InputData, cond: ConditioningData, scheduler: DDPMScheduler):
         pred_data = TokenPredData()
         pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
         assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
         
-        scheduler.set_timesteps(num_inference_steps=50, device=self.device)
+        # <DEBUG>
+        # scheduler.set_timesteps(num_inference_steps=50, device=self.device)
+        scheduler.set_timesteps(num_inference_steps=self.cfg.model.rotation_diffusion_timestep, device=self.device)
         timesteps = scheduler.timesteps
 
         latents = randn_tensor(pred_data.gt_rot_6d.shape, device=self.device, dtype=self.dtype)
-        latents = latents * scheduler.init_noise_sigma
+        latents = scheduler.add_noise(pred_data.gt_rot_6d, latents, timesteps[[-10]].repeat(latents.shape[0]))
+        # latents = latents * scheduler.init_noise_sigma
         
-        for i, t in enumerate(timesteps):
-            latent_model_input = scheduler.scale_model_input(latents, t)
+        for t in timesteps[-10:]:
+            print(t)
+            # latent_model_input = scheduler.scale_model_input(latents, t)
 
-            pred_data.noised_rot_6d = latent_model_input
+            # pred_data.noised_rot_6d = latent_model_input
+            pred_data.noised_rot_6d = latents
             pred_data.timesteps = t[None].repeat(latents.shape[0])
 
             # predict the noise residual
             pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
 
             # compute the previous noisy sample x_t -> x_t-1
-            latents = scheduler.step(pred_data.pred_6d_rot, t, latents, return_dict=False)[0]
+            # latents = scheduler.step(pred_data.pred_6d_rot, t, latents, return_dict=False)[0]
+            latents = scheduler.step(pred_data.pred_6d_rot, t, latents).prev_sample
+
+        pred_data.pred_6d_rot = latents
 
         return pred_data
 
@@ -822,11 +842,17 @@ class BaseMapper(Trainable):
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             pred_data = TokenPredData()
             if self.cfg.model.token_rot_pred_loss:
-                pred_data.timesteps = timesteps[cond.mask_batch_idx]
+                # make rotation_diffusion_timestep independent from unet_diffusion_timesteps
+                rot_timesteps = torch.randint(
+                    # 0, self.cfg.model.rotation_diffusion_timestep, (bsz,),
+                    0, 15, (bsz,), # <DEBUG>
+                    device=self.device
+                ).long()
+                pred_data.timesteps = rot_timesteps[cond.mask_batch_idx]
                 pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
                 assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
                 pred_data.rot_6d_noise = torch.randn_like(pred_data.gt_rot_6d)
-                pred_data.noised_rot_6d = self.noise_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, pred_data.timesteps)
+                pred_data.noised_rot_6d = self.rotation_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, pred_data.timesteps)
             
             pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
 

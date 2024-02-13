@@ -87,6 +87,10 @@ class ModelConfig:
     single_fuser_layer: bool = False
     detach_mask_tokens_for_pred: bool = False
 
+    # rotation denoising parameters
+    rotation_diffusion_timestep: int = 100
+    rotation_diffusion_parameterization: str = "epsilon"
+
 
 @dataclass
 class ControlNetConfig(ModelConfig):

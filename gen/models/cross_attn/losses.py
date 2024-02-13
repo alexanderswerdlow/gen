@@ -226,6 +226,11 @@ def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pr
     if pred_data.pred_mask.sum() == 0:
         loss = torch.tensor(0.0, requires_grad=True, device=batch["device"])
     else:
-        loss = F.mse_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.gt_rot_6d[pred_data.pred_mask], reduction="mean")
+        if cfg.model.rotation_diffusion_parameterization == "sample":
+            loss = F.l1_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.gt_rot_6d[pred_data.pred_mask], reduction="mean")
+        elif cfg.model.rotation_diffusion_parameterization == "epsilon":
+            loss = F.l1_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.rot_6d_noise[pred_data.pred_mask], reduction="mean")
+        else:
+            raise NotImplementedError
 
     return {"rot_pred_loss": loss}
