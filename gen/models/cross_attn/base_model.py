@@ -382,11 +382,8 @@ class BaseMapper(Trainable):
         return itertools.chain(*params)
 
     def get_unet_params(self):
-        if self.cfg.model.unet and self.cfg.model.freeze_unet is False:
-            unet_params = dict(self.unet.named_parameters())
-        else:
-            unet_params = dict()
-        return unet_params
+        is_unet_trainable = self.cfg.model.unet and self.cfg.model.freeze_unet
+        return dict(self.unet.named_parameters()) if is_unet_trainable else dict()
     
     def get_param_groups(self):
         if self.cfg.model.finetune_unet_with_different_lrs:
@@ -471,20 +468,16 @@ class BaseMapper(Trainable):
         pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
         assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
         
-        # <DEBUG>
-        # scheduler.set_timesteps(num_inference_steps=50, device=self.device)
         scheduler.set_timesteps(num_inference_steps=self.cfg.model.rotation_diffusion_timestep, device=self.device)
         timesteps = scheduler.timesteps
-
-        latents = randn_tensor(pred_data.gt_rot_6d.shape, device=self.device, dtype=self.dtype)
-        latents = scheduler.add_noise(pred_data.gt_rot_6d, latents, timesteps[[-10]].repeat(latents.shape[0]))
-        # latents = latents * scheduler.init_noise_sigma
+       
+        if self.cfg.model.rotation_diffusion_start_timestep is not None:
+            latents = scheduler.add_noise(pred_data.gt_rot_6d, latents, timesteps[None, self.cfg.model.rotation_diffusion_start_timestep].repeat(latents.shape[0]))
+        else:
+            latents = randn_tensor(pred_data.gt_rot_6d.shape, device=self.device, dtype=self.dtype)
         
-        for t in timesteps[-10:]:
-            print(t)
-            # latent_model_input = scheduler.scale_model_input(latents, t)
-
-            # pred_data.noised_rot_6d = latent_model_input
+        sl = slice(None, -self.cfg.model.rotation_diffusion_start_timestep) if self.cfg.model.rotation_diffusion_start_timestep else slice(None)
+        for t in timesteps[sl]:
             pred_data.noised_rot_6d = latents
             pred_data.timesteps = t[None].repeat(latents.shape[0])
 
@@ -492,7 +485,6 @@ class BaseMapper(Trainable):
             pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
 
             # compute the previous noisy sample x_t -> x_t-1
-            # latents = scheduler.step(pred_data.pred_6d_rot, t, latents, return_dict=False)[0]
             latents = scheduler.step(pred_data.pred_6d_rot, t, latents).prev_sample
 
         pred_data.pred_6d_rot = latents
@@ -842,12 +834,7 @@ class BaseMapper(Trainable):
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             pred_data = TokenPredData()
             if self.cfg.model.token_rot_pred_loss:
-                # make rotation_diffusion_timestep independent from unet_diffusion_timesteps
-                rot_timesteps = torch.randint(
-                    # 0, self.cfg.model.rotation_diffusion_timestep, (bsz,),
-                    0, 15, (bsz,), # <DEBUG>
-                    device=self.device
-                ).long()
+                rot_timesteps = torch.randint(0, self.cfg.model.rotation_diffusion_timestep, (bsz,), device=self.device).long()
                 pred_data.timesteps = rot_timesteps[cond.mask_batch_idx]
                 pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
                 assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]

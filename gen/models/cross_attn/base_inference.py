@@ -126,7 +126,6 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
     if self.cfg.model.token_rot_pred_loss:
         pred_data.pred_6d_rot = pred_data.pred_6d_rot[pred_data.pred_mask]
         pred_data.gt_rot_6d = pred_data.gt_rot_6d[pred_data.pred_mask]
-        # pred_loss = F.mse_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction='none')
         pred_loss = quat_l1_loss(pred_data.gt_rot_6d, pred_data.pred_6d_rot)
         ret['rot_pred_loss'] = pred_loss.float().cpu()
         ret['rot_pred_acc<0.025'] = (pred_loss < 0.025).float().cpu()

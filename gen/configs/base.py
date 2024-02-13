@@ -113,6 +113,7 @@ exp_store(
         log_gradients=100,
         gradient_checkpointing=True,
         compile=False,
+        validate_training_dataset=True,
     ),
     dataset=dict(
         num_validation_images=1,

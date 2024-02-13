@@ -57,6 +57,7 @@ class TrainerConfig:
     detect_anomaly: bool = False
     find_unused_parameters: bool = False
     base_model_custom_validation_steps: Optional[int] = None
+    validate_training_dataset: bool = False # Whether to also run inference on the training dataset after the validation dataset
 
     # Set in code
     num_gpus: Optional[int] = None

@@ -90,6 +90,7 @@ class ModelConfig:
     # rotation denoising parameters
     rotation_diffusion_timestep: int = 100
     rotation_diffusion_parameterization: str = "epsilon"
+    rotation_diffusion_start_timestep: Optional[int] = None
 
 
 @dataclass

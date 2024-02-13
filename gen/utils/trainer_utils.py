@@ -62,6 +62,8 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module) 
 def handle_checkpointing_dirs(cfg: BaseConfig, prefix: str):
     # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
     if cfg.trainer.checkpoints_total_limit is not None:
+        if not os.path.exists(cfg.checkpoint_dir):
+            os.makedirs(cfg.checkpoint_dir, exist_ok=True)
         checkpoints = os.listdir(cfg.checkpoint_dir)
         checkpoints = [d for d in checkpoints if d.startswith(f"{prefix}_")]
         checkpoints = sorted(checkpoints, key=lambda x: int(x.split("_")[-1]))

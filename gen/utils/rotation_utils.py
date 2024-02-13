@@ -1,23 +1,20 @@
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import io
-from PIL import Image
-from image_utils import Im
-import torch
-import numpy as np
-import torch.nn.functional as F
 
+import cv2
 import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn.functional as F
+from matplotlib.patches import FancyArrowPatch
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.proj3d import proj_transform
+from PIL import Image
+
+from image_utils import Im
 
 matplotlib.use("agg")
 matplotlib.rcParams["figure.dpi"] = 128
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import PIL.Image as Image
-import cv2
 
 
 def visualize_rotations(R_ref, R_pred):
@@ -90,35 +87,100 @@ def set_axes_equal(ax):
     ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
     ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
 
+    return max([x_range, y_range, z_range])
 
-def visualize_rotations_pcds(ref, pred, cur_vis_pcd, legends=[], markers=[], save=False):
-    # np.linalg.inv(ref) @ pred
 
+class Arrow3D(FancyArrowPatch):
+
+    def __init__(self, x, y, z, dx, dy, dz, *args, **kwargs):
+        super().__init__((0, 0), (0, 0), *args, **kwargs)
+        self._xyz = (x, y, z)
+        self._dxdydz = (dx, dy, dz)
+
+    def draw(self, renderer):
+        x1, y1, z1 = self._xyz
+        dx, dy, dz = self._dxdydz
+        x2, y2, z2 = (x1 + dx, y1 + dy, z1 + dz)
+
+        xs, ys, zs = proj_transform((x1, x2), (y1, y2), (z1, z2), self.axes.M)
+        self.set_positions((xs[0], ys[0]), (xs[1], ys[1]))
+        super().draw(renderer)
+
+    def do_3d_projection(self, renderer=None):
+        x1, y1, z1 = self._xyz
+        dx, dy, dz = self._dxdydz
+        x2, y2, z2 = (x1 + dx, y1 + dy, z1 + dz)
+
+        xs, ys, zs = proj_transform((x1, x2), (y1, y2), (z1, z2), self.axes.M)
+        self.set_positions((xs[0], ys[0]), (xs[1], ys[1]))
+
+        return np.min(zs)
+
+
+def _arrow3D(ax, x, y, z, dx, dy, dz, *args, **kwargs):
+    """Add an 3d arrow to an `Axes3D` instance."""
+
+    arrow = Arrow3D(x, y, z, dx, dy, dz, *args, **kwargs)
+    ax.add_artist(arrow)
+
+
+setattr(Axes3D, "arrow3D", _arrow3D)
+
+
+def visualize_rotations_pcds(ref, pred, pcd, legends=[], markers=[], save=False):
     fig = plt.figure()
     canvas = fig.canvas
-    # ax = fig.add_subplot(projection='3d')
     ax = Axes3D(fig, auto_add_to_figure=False)
     fig.add_axes(ax)
     ax.set_box_aspect([1.0, 1.0, 1.0])
 
-    cur_vis_pcd_ = cur_vis_pcd.copy()
-    cur_vis_rgb = np.zeros_like(cur_vis_pcd)
+    min_vals = np.min(pcd, axis=0)
+    max_vals = np.max(pcd, axis=0)
+    scale_factor = (max_vals - min_vals).max()
+    pcd = (pcd - min_vals) / scale_factor
+
+    cur_vis_pcd_ = pcd.copy()
+    cur_vis_pcd_ -= np.mean(cur_vis_pcd_, axis=0)
+    cur_vis_pcd_[:, 1] -= 0.5
+    cur_vis_pcd_[:, 2] += 0.5
+
+    cur_vis_rgb = np.zeros_like(pcd)
     cur_vis_rgb[:, 1] = 1.0
-    ax.scatter(cur_vis_pcd_[:, 0], cur_vis_pcd_[:, 1], cur_vis_pcd_[:, 2], c=cur_vis_rgb[:], s=1)
 
-    cur_vis_rgb = np.zeros_like(cur_vis_pcd)
-    cur_vis_rgb[:, 0] = 1.0
-    cur_vis_pcd_ = cur_vis_pcd.copy()
+    ax.scatter(cur_vis_pcd_[:, 0], cur_vis_pcd_[:, 1], cur_vis_pcd_[:, 2], c=cur_vis_rgb[:], s=1, label="GT Canonical Pose")
+
+    cur_vis_pcd_ = pcd.copy()
     cur_vis_pcd_ = ((np.linalg.inv(ref) @ pred) @ cur_vis_pcd_.transpose(1, 0)).transpose(1, 0)
-    x_offset = (cur_vis_pcd_[:, 0].max() - cur_vis_pcd_[:, 0].min()) * 1.5
-    cur_vis_pcd_[:, 0] += x_offset
-    ax.scatter(cur_vis_pcd_[:, 0], cur_vis_pcd_[:, 1], cur_vis_pcd_[:, 2], c=cur_vis_rgb[:], s=1)
+    cur_vis_pcd_ -= np.mean(cur_vis_pcd_, axis=0)
+    cur_vis_pcd_[:, 1] += 0.5
+    cur_vis_pcd_[:, 2] += 0.5
 
+    cur_vis_rgb = np.zeros_like(pcd)
+    cur_vis_rgb[:, 0] = 1.0
+
+    ax.scatter(cur_vis_pcd_[:, 0], cur_vis_pcd_[:, 1], cur_vis_pcd_[:, 2], c=cur_vis_rgb[:], s=1, label="Pred Pose")
+
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
     ax.legend()
-    set_axes_equal(ax)
+
+    plot_bounds = set_axes_equal(ax)
+
+    arrow_length = plot_bounds / 2
+
+    ax.arrow3D(0, 0, 0, arrow_length, 0, 0, mutation_scale=20, ec="green", fc="red")
+    ax.arrow3D(0, 0, 0, 0, arrow_length, 0, mutation_scale=20, ec="green", fc="green")
+    ax.arrow3D(0, 0, 0, 0, 0, arrow_length, mutation_scale=20, ec="green", fc="blue")
+
+    ax.text(0.0, 0.0, -0.1, r"$0$")
+    ax.text(arrow_length + 0.1, 0, 0, r"$x$")
+    ax.text(0, arrow_length + 0.1, 0, r"$y$")
+    ax.text(0, 0, arrow_length + 0.1, r"$z$")
+
     fig.tight_layout()
     images = []
-    for elev, azim in zip([10, 15, 20, 25, 30, 25, 20, 15, 45, 90], [0, 45, 90, 135, 180, 225, 270, 315, 360, 360]):
+    for elev, azim in zip([0, 15, 25, 45, 65], [0, 15, 25, 45, 65]):
         ax.view_init(elev=elev, azim=azim, roll=0)
         canvas.draw()
         image_flat = np.frombuffer(canvas.tostring_rgb(), dtype="uint8")
@@ -126,7 +188,7 @@ def visualize_rotations_pcds(ref, pred, cur_vis_pcd, legends=[], markers=[], sav
         image = image[60:, 110:-110]  # HACK <>
         image = cv2.resize(image, dsize=None, fx=0.75, fy=0.75)
         images.append(image)
-    images = np.concatenate([np.concatenate(images[:5], axis=1), np.concatenate(images[5:10], axis=1)], axis=0)
+    images = np.concatenate(images[:5], axis=1)
     if save:
         Image.fromarray(images, mode="RGB").save("diff_traj.png")
 

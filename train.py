@@ -200,12 +200,37 @@ class Trainer:
             prefix="val/",
         )
 
+        if self.cfg.trainer.validate_training_dataset:
+            self.validate_train_dataloader(state)
+
         unwrap(self.model).set_training_mode()
         validate_params(self.models, self.dtype)
 
         log_info(
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.get('wandb_url', None)}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
         )
+
+    def validate_train_dataloader(self, state: TrainingState):
+        self.train_dataloader_holder.subset_size = self.validation_dataset_holder.subset_size
+        self.train_dataloader_holder.random_subset = self.validation_dataset_holder.random_subset
+        self.train_dataloader_holder.batch_size = self.validation_dataset_holder.batch_size
+        self.train_dataloader = self.train_dataloader_holder.get_dataloader(pin_memory=False)
+        self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
+
+        run_inference_dataloader(
+            accelerator=self.accelerator,
+            dataloader=self.train_dataloader,
+            model=self.model,
+            state=state,
+            output_path=self.cfg.output_dir / "images",
+            prefix="train/",
+        )
+
+        self.train_dataloader_holder.subset_size = self.cfg.dataset.train_dataset.subset_size
+        self.train_dataloader_holder.random_subset = self.cfg.dataset.train_dataset.random_subset
+        self.train_dataloader_holder.batch_size = self.cfg.dataset.train_dataset.batch_size
+        self.train_dataloader = self.train_dataloader_holder.get_dataloader()
+        self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
     # TODO: This is model-specific and should be achieved by inheritance or some other mechanism
     def base_model_validate(self, state: TrainingState):
