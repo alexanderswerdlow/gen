@@ -1,4 +1,5 @@
 import autoroot
+
 import os
 import warnings
 from pathlib import Path
@@ -12,8 +13,8 @@ import webdataset as wds
 from einops import rearrange
 from einx import roll
 from ipdb import set_trace as st
-from torch.utils.data import Dataset
 from scipy.spatial.transform import Rotation as R
+from torch.utils.data import Dataset
 
 from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
@@ -21,7 +22,10 @@ from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
 
 torchvision.disable_beta_transforms_warning()
+import copy
+
 from gen.utils.tokenization_utils import get_tokens
+
 
 @inherit_parent_args
 class MoviDataset(AbstractDataset, Dataset):
@@ -42,6 +46,7 @@ class MoviDataset(AbstractDataset, Dataset):
         use_single_mask: bool = False, # Force using a single mask with all 1s
         num_cameras: int = 1,
         multi_camera_format: bool = False,
+        cache_in_memory: bool = False,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -53,6 +58,7 @@ class MoviDataset(AbstractDataset, Dataset):
         self.use_single_mask = use_single_mask
         self.multi_camera_format = multi_camera_format
         self.num_cameras = num_cameras
+        self.cache_in_memory = cache_in_memory
 
         if num_cameras > 1: assert multi_camera_format
 
@@ -77,6 +83,9 @@ class MoviDataset(AbstractDataset, Dataset):
         if self.override_text:
             warnings.warn(f"Overriding text captions with {DEFAULT_PROMPT}")
 
+        if self.cache_in_memory:
+            self.cache = {}
+
     def get_dataset(self):
         return self
 
@@ -92,7 +101,10 @@ class MoviDataset(AbstractDataset, Dataset):
     def __getitem__(self, index):
         file_idx, camera_idx, frame_idx = self.map_idx(index)
         if self.fake_return_n:
-            file_idx = 0
+            file_idx = file_idx % len(self.files)
+
+        if self.cache_in_memory and index in self.cache:
+            return copy.deepcopy(self.cache[(file_idx, camera_idx, frame_idx)])
 
         try:
             path = self.files[file_idx]
@@ -192,6 +204,9 @@ class MoviDataset(AbstractDataset, Dataset):
                 "camera_idx": camera_idx
             },
         })
+
+        if self.cache_in_memory:
+            self.cache[(file_idx, camera_idx, frame_idx)] = copy.deepcopy(ret)
 
         return ret
 
