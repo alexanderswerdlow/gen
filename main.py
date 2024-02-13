@@ -200,7 +200,7 @@ def main(cfg: BaseConfig):
             config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
             init_kwargs=dict(wandb=wandb_kwargs),
         )
-        wandb.run.log_code(include_fn=lambda path: any(path.endswith(f) for f in (".py", ".yaml", ".yml", ".txt", ".md")))
+        wandb.run.log_code(include_fn=lambda path: any(path.endswith(f) for f in (".py", ".yaml", ".yml", ".txt", ".md")), exclude_fn=lambda path: "outputs/" in path)
         cfg.wandb_url = wandb.run.get_url()
 
         log_info(OmegaConf.to_yaml(cfg))

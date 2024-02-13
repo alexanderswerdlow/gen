@@ -33,7 +33,7 @@ def inference(cfg: BaseConfig, accelerator: Accelerator):
     validation_dataloader, model = accelerator.prepare(validation_dataloader, model)
 
     run_inference_dataloader(
-        accelerator=accelerator, state=TrainingState(0, 0, 0, 0, 0), dataloader=validation_dataloader, model=model, output_path=cfg.output_dir
+        accelerator=accelerator, state=TrainingState(0, 0, 0, 0, 0), dataloader=validation_dataloader, model=model, output_path=cfg.output_dir, prefix='inference/'
     )
 
 

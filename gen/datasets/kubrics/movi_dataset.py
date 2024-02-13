@@ -115,18 +115,15 @@ class MoviDataset(AbstractDataset, Dataset):
             categories = data["categories"][camera_idx, :].squeeze(0) # (23, )
             asset_id = data["asset_ids"][camera_idx, :].squeeze(0)
 
-            if 'camera_quaternions' in data:
-                camera_quaternion = data['camera_quaternions'][camera_idx, frame_idx] # (4, )
-                camera_quaternion = roll('[wxyz]', camera_quaternion, shift=(-1,))
-                camera_quaternion = R.from_quat(camera_quaternion)
+            camera_quaternion = data['camera_quaternions'][camera_idx, frame_idx] # (4, )
+            camera_quaternion = roll('[wxyz]', camera_quaternion, shift=(-1,))
+            camera_quaternion = R.from_quat(camera_quaternion)
 
-                object_quaternions[~valid] = 1 # Set invalid quaternions to 1 to avoid 0 norm.
-                object_quaternions = R.from_quat(object_quaternions)
-                object_quaternions = camera_quaternion.inv() * (object_quaternions * camera_quaternion.inv())
-                object_quaternions = object_quaternions.as_quat()
-                object_quaternions[~valid] = 0
-            else:
-                raise NotImplementedError("Camera quaternions not found in data.npz")
+            object_quaternions[~valid] = 1 # Set invalid quaternions to 1 to avoid 0 norm.
+            object_quaternions = R.from_quat(object_quaternions)
+            object_quaternions = camera_quaternion.inv() * (object_quaternions * camera_quaternion.inv())
+            object_quaternions = object_quaternions.as_quat()
+            object_quaternions[~valid] = 0
             
             ret.update({
                 "quaternions": object_quaternions,
