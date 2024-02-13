@@ -40,6 +40,8 @@ def main(
     big_gpu: bool = False,
     long_job: bool = False,
     dry_run: bool = False,
+    nodelist: Optional[str] = None,
+    constraint: Optional[str] = None,
 ):
     """
     This script is used to run experiments in parallel on a SLURM cluster. It is a wrapper around launch_slurm.py to support hyperparameter sweeps.
@@ -85,7 +87,11 @@ def main(
             cmd=f"{sweep_args}reference_dir={output_dir_} {regular_args}{prod_args}",
             env_vars=env_vars,
             init_cmds=init_cmds,
+            nodelist=nodelist,
         )
+
+        if constraint is not None:
+            job.constraint = constraint
         
         if gpus is not None:
             job.gpus = gpus

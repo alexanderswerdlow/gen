@@ -33,6 +33,7 @@ class SlurmConfig:
     exclude: Optional[str] = None
     constraint: str = "A100|6000ADA|A5500"
     env_vars: Optional[dict[str, str]] = None
+    nodelist: Optional[str] = None
 
 def is_a5500_gpu():
     try:
@@ -186,6 +187,9 @@ def add_job(cfg: SlurmConfig):
         "ntasks_per_node": cfg.n_processes,
         "constraint": cfg.constraint,
     }
+
+    if cfg.nodelist is not None:
+        slurm_additional_parameters["nodelist"] = cfg.nodelist
 
     print(f"SLURM additional parameters: {slurm_additional_parameters}")
     
