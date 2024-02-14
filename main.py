@@ -186,7 +186,11 @@ def main(cfg: BaseConfig):
         wandb_kwargs = dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.first_level_output_path, sync_tensorboard=cfg.profile)
         if cfg.wandb_run_id is None:
             cfg.wandb_run_id = wandb.util.generate_id()
-        
+
+        if cfg.sweep_id is not None:
+            log_info(f"Setting Wandb group to {cfg.sweep_id}")
+            wandb_kwargs['group'] = cfg.sweep_id
+
         wandb_kwargs['id'] = cfg.wandb_run_id
 
         if cfg.trainer.resume:

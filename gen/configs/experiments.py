@@ -114,6 +114,14 @@ def get_datasets():  # TODO: These do not need to be global configs
     )
 
     mode_store(
+        name="no_movi_augmentation",
+        dataset=dict(
+            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False)),
+            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False)),
+        ),
+    )
+
+    mode_store(
         name="movi_validate_single_scene",
         dataset=dict(
             validation_dataset=dict(
@@ -323,6 +331,22 @@ def get_experiments():
 
     mode_store(
         name="debug_token_pred",
-        model=dict(token_cls_pred_loss=True, token_rot_pred_loss=True),
-        hydra_defaults=["gated_cross_attn", "unet_lora", "token_pred", "movi_medium_two_objects", "small_gpu"],
+        model=dict(
+            add_pos_emb=True, 
+            decoder_transformer=dict(depth=2),
+            unet=False,
+            rotation_diffusion_start_timestep=10,
+            num_conditioning_pairs=1
+        ),
+        trainer=dict(
+            learning_rate=1e-6,
+            lr_warmup_steps=100,
+            eval_every_n_steps=100,
+            base_model_custom_validation_steps=100,
+            eval_on_start=False,
+        ),
+        dataset=dict(
+            train_dataset=dict(batch_size=16, cache_in_memory=True, num_workers=2, num_subset=5),
+        ),
+        hydra_defaults=["token_pred", "movi_medium_single_object", "no_movi_augmentation"],
     )

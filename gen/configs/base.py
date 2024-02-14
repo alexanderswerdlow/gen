@@ -64,7 +64,7 @@ def get_run_dir(_, *, _root_: BaseConfig):
     if _root_.output_dir is not None:
         return _root_.output_dir
 
-    exp_name = f"{_root_.exp}_" if _root_.exp else ""
+    exp_name = f"{_root_.exp}" if _root_.exp else ""
     overfit_str = "overfit_" if _root_.overfit else ""
     debug_str = "debug_" if _root_.debug else ""
     _root_.run_name = f"{overfit_str}{debug_str}{exp_name}"
@@ -76,7 +76,7 @@ def get_run_dir(_, *, _root_: BaseConfig):
         _root_.sweep_id = str(_root_.sweep_id)
         _root_.sweep_run_id = str(_root_.sweep_run_id)
 
-        _root_.run_name = _root_.run_name + "_" + _root_.sweep_id + "_" + _root_.sweep_run_id
+        _root_.run_name = f"{_root_.run_name}_{_root_.sweep_id}_{_root_.sweep_run_id}"
         return Path(_root_.first_level_output_path) / _root_.second_level_output_path / _root_.sweep_id / _root_.sweep_run_id
     else:
         _root_.run_name = _root_.run_name + f'{datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}'

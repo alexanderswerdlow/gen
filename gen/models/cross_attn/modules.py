@@ -224,8 +224,10 @@ class TokenMapper(nn.Module):
             self.cls_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
 
         if self.cfg.model.token_rot_pred_loss:
-            # self.rot_mlp = FilmMlp(in_features=6, cond_features=dim, out_features=6, activation=nn.GELU())
-            self.rot_mlp = FilmMlpv2(in_features=6, cond_features=dim, hidden_features=256, out_features=6, activation=nn.GELU())
+            if self.cfg.model.use_orig_film:
+                self.rot_mlp = FilmMlp(in_features=6, cond_features=dim, out_features=6, activation=nn.GELU())
+            else:
+                self.rot_mlp = FilmMlpv2(in_features=6, cond_features=dim, hidden_features=256, out_features=6, activation=nn.GELU())
 
         self.apply(_init_weights)
 

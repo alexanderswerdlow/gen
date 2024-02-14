@@ -92,6 +92,9 @@ class ModelConfig:
     rotation_diffusion_parameterization: str = "epsilon"
     rotation_diffusion_start_timestep: Optional[int] = None
 
+    # tmp params
+    use_orig_film: bool = False
+
 
 @dataclass
 class ControlNetConfig(ModelConfig):

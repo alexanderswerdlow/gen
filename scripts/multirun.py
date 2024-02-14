@@ -35,7 +35,7 @@ def main(
     args: Annotated[Optional[List[str]], typer.Argument()] = None,
     prod: Annotated[Optional[List[str]], typer.Option()] = None,
     output_dir: Path = REPO_DIR / "outputs" / "slurm",
-    name: str = f'{datetime.now().strftime("%Y_%m_%d_%H_%M")}',
+    name: str = f'{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}',
     gpus: Optional[int] = None,
     big_gpu: bool = False,
     long_job: bool = False,
@@ -47,12 +47,15 @@ def main(
     This script is used to run experiments in parallel on a SLURM cluster. It is a wrapper around launch_slurm.py to support hyperparameter sweeps.
     """
 
-    is_sweep = os.environ.get("SWEEP") is not None or (prod is not None and len(prod) > 0)
-    name = os.environ.get("SWEEP", name + ("_sweep" if is_sweep else ""))
-    sweep_dir = output_dir / name
-    if sweep_dir.exists():
-        name = f"{name}_" + "".join(random.choices(string.ascii_letters, k=3))
-        sweep_dir = output_dir / (f'{name}_{datetime.now().strftime("%Y_%m_%d_%H_%M")}')
+    # TODO: The naming and directories are needlessly complicated. We should make things more uniform and orthogonal.
+
+    is_sweep = os.environ.get("SWEEP") or (prod is not None and len(prod) > 0)
+    multirun_name = os.environ.get("SWEEP") or name
+    
+    if not os.environ.get("SWEEP"):
+        multirun_name = f'{multirun_name}_{"".join(random.choices(string.ascii_letters, k=2))}_{datetime.now().strftime("%m_%d")}'
+
+    multirun_dir = output_dir / multirun_name
     regular_args = " ".join(args)
 
     if prod is None:
@@ -68,22 +71,20 @@ def main(
         if len(combination) == 0:
             prod_args = ""
             if is_sweep:
-                run_id = "".join(random.choices(string.ascii_letters, k=3))
+                run_id = f'{name}_{"".join(random.choices(string.ascii_letters, k=3))}'
         else:
             prod_args = " " + " ".join([f"{keys[i]}={value}" for i, value in enumerate(combination)])
-            run_id = sanitize_filename("__".join([f"{keys[i]}={value}" for i, value in enumerate(combination)]))
+            run_id = sanitize_filename("_".join([f"{keys[i]}={value}" for i, value in enumerate(combination)]))
 
-        output_dir_ = sweep_dir
-        if is_sweep:
-            output_dir_ = output_dir_ / run_id
+        
+        output_dir_ = multirun_dir / run_id if is_sweep else multirun_dir
         output_dir_.mkdir(parents=True, exist_ok=True)
 
-        sweep_args = f"sweep_id={name} sweep_run_id={run_id} " if is_sweep else (f"exp={name} ")
+        sweep_args = f"sweep_id={multirun_name} sweep_run_id={run_id} " if is_sweep else (f"exp={multirun_name} ")
         output_file_ = output_dir_ / "submitit.log"
-        append_run_id = f"_{run_id}" if is_sweep else ""
 
         job = SlurmConfig(
-            job_name=f"{name}{append_run_id}",
+            job_name=multirun_name,
             output_dir=output_dir_,
             cmd=f"{sweep_args}reference_dir={output_dir_} {regular_args}{prod_args}",
             env_vars=env_vars,
