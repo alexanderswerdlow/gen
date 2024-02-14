@@ -501,12 +501,14 @@ class BaseMapper(Trainable):
         """
         This function checks if we have segmentation for the current batch. If we do not, we add dummy segmentation or use HQSam to get segmentation.
         """
-        if self.cfg.model.use_dataset_segmentation:
-            return batch  # We already have segmentation
 
         if self.cfg.model.use_dummy_mask:
-            original = batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1]))
-            assert False
+            batch["gen_segmentation"] = batch["gen_segmentation"].new_ones(batch["gen_segmentation"].shape)
+            object_is_visible = (rearrange('b h w c -> b c (h w)', batch["gen_segmentation"]) > 0).any(dim=-1)
+            rearrange('b h w c -> b c (h w)', batch["gen_segmentation"])[object_is_visible] = 1
+            return batch
+        elif self.cfg.model.use_dataset_segmentation:
+            return batch  # We already have segmentation
 
         # SAM requires NumPy [0, 255]
         sam_input = rearrange("b c h w -> b h w c", (((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy())
@@ -570,11 +572,11 @@ class BaseMapper(Trainable):
         device = batch["gen_pixel_values"].device
         dtype = self.dtype
 
-        clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))  # b n (h w) d
+        clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))  # b (h w) d
 
         if isinstance(clip_feature_map, dict):
             for k in clip_feature_map.keys():
-                if k != 'ln_post' and clip_feature_map[k].ndim == 3:
+                if k != 'ln_post' and clip_feature_map[k].ndim == 3 and clip_feature_map[k].shape[1] == bs:
                     clip_feature_map[k] = rearrange("l b d -> b l d", clip_feature_map[k])
 
         if self.cfg.model.feature_map_keys is not None:

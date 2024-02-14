@@ -2,7 +2,7 @@ from hydra_zen import builds
 
 from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_OVERFIT_DATASET_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH
 from gen.configs.utils import mode_store, store_child_config
-from gen.models.encoders.encoder import ResNetFeatureExtractor
+from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
 
 
 def get_override_dict(**kwargs):
@@ -266,6 +266,19 @@ def get_experiments():
                 "stage12",
                 "stage18",
                 "stage24",
+            ),
+        ),
+    )
+
+    mode_store(
+        name="dino",
+        model=dict(
+            encoder=builds(ViTFeatureExtractor, return_only=None, populate_full_signature=False),
+            encoder_dim=768,
+            per_layer_queries=True,
+            feature_map_keys=(
+                "blocks",
+                "norm",
             ),
         ),
     )
