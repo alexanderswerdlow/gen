@@ -50,8 +50,9 @@ def main(
     is_sweep = os.environ.get("SWEEP") is not None or (prod is not None and len(prod) > 0)
     name = os.environ.get("SWEEP", name + ("_sweep" if is_sweep else ""))
     sweep_dir = output_dir / name
-    if sweep_dir.exists:
+    if sweep_dir.exists():
         sweep_dir = output_dir / (f'{datetime.now().strftime("%Y_%m_%d_%H_%M")}_' + name)
+        name = f"{name}_" + "".join(random.choices(string.ascii_letters, k=3))
     regular_args = " ".join(args)
 
     if prod is None:
@@ -114,10 +115,6 @@ def main(
         log_file = output_dir_ / f"{added_job.job_id}_{added_job.task_id}_log.out"
         print(f"Output file: {log_file}")
         print("\n\n\n")
-
-        # import time
-        # time.sleep(60)
-        # added_job._interrupt(timeout=True)
 
     watch()
 

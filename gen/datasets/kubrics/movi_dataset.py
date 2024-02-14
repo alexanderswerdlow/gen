@@ -103,7 +103,7 @@ class MoviDataset(AbstractDataset, Dataset):
         if self.fake_return_n:
             file_idx = file_idx % len(self.files)
 
-        if self.cache_in_memory and index in self.cache:
+        if self.cache_in_memory and (file_idx, camera_idx, frame_idx) in self.cache:
             return copy.deepcopy(self.cache[(file_idx, camera_idx, frame_idx)])
 
         try:
