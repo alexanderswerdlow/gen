@@ -160,7 +160,57 @@ class FilmMlp(nn.Module):
         y = y * (1 - scale) + shift
         y = self.fc3(y)
         return y
+
+class FilmMlpv2(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        cond_features,
+        hidden_features=None,
+        out_features=None,
+        activation=F.gelu,
+        device=None,
+        dtype=None,
+    ):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        out_features = out_features if out_features is not None else in_features
+        hidden_features = hidden_features if hidden_features is not None else in_features * 4
+
+        self.t_embedder = TimestepEmbedder(256)
+
+        self.activation = activation
+        self.fc1 = nn.Linear(in_features + cond_features, hidden_features, **factory_kwargs)
+        self.norm1 = nn.LayerNorm(hidden_features, **factory_kwargs)
+        self.film1 = nn.Linear(256, 2 * hidden_features, **factory_kwargs)
+
+        self.fc2 = nn.Linear(hidden_features, hidden_features, **factory_kwargs)
+        self.norm2 = nn.LayerNorm(hidden_features, **factory_kwargs)
+        self.film2 = nn.Linear(256, 2 * hidden_features, **factory_kwargs)
+
+        self.fc3 = nn.Linear(hidden_features, out_features, **factory_kwargs)
+
+        nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
+        nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
+
+        nn.init.constant_(self.film1.weight, 0)
+        nn.init.constant_(self.film1.bias, 0)
+        nn.init.constant_(self.film2.weight, 0)
+        nn.init.constant_(self.film2.bias, 0)
+
+    def forward(self, x, t, cond):
+        t_emb = self.t_embedder(t) # TODO: This is weird, out timestep embedding is 6 dims
+        x = torch.cat((x, cond), dim=-1)
+        y = self.activation(self.norm1(self.fc1(x)))
+        scale, shift = einops.rearrange(self.film1(t_emb), "b (n a) -> a b n", a=2)
+        y = y * (1 - scale) + shift
+        y = self.activation(self.norm2(self.fc2(y)))
+        scale, shift = einops.rearrange(self.film2(t_emb), "b (n a) -> a b n", a=2)
+        y = y * (1 - scale) + shift
+        y = self.fc3(y)
+        return y
     
+   
 class TokenMapper(nn.Module):
     def __init__(
         self,
@@ -174,7 +224,8 @@ class TokenMapper(nn.Module):
             self.cls_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
 
         if self.cfg.model.token_rot_pred_loss:
-            self.rot_mlp = FilmMlp(in_features=6, cond_features=dim, out_features=6, activation=nn.GELU())
+            # self.rot_mlp = FilmMlp(in_features=6, cond_features=dim, out_features=6, activation=nn.GELU())
+            self.rot_mlp = FilmMlpv2(in_features=6, cond_features=dim, hidden_features=256, out_features=6, activation=nn.GELU())
 
         self.apply(_init_weights)
 
