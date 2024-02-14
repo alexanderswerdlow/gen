@@ -207,10 +207,11 @@ def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_d
         # We only compute loss on non-dropped out masks
         gt_rot_mat = R.from_quat(batch["quaternions"][b][batch["valid"][b]].cpu()).as_matrix()
         gt_rot_6d_ = get_ortho6d_from_rotation_matrix(torch.from_numpy(gt_rot_mat).to(batch["disc_pixel_values"]))
-        mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b] - 1
-        remove_background_mask = mask_idxs_for_batch != 0
-        gt_rot_6d_ = gt_rot_6d_[mask_idxs_for_batch[remove_background_mask]]
-        if torch.any(~remove_background_mask):
+        batch_instance_idxs = cond.mask_instance_idx[cond.mask_batch_idx == b]
+        foreground_mask = batch_instance_idxs != 0
+        batch_object_idxs = batch_instance_idxs - 1 # Object data does not include the background
+        gt_rot_6d_ = gt_rot_6d_[batch_object_idxs[foreground_mask]]
+        if torch.any(~foreground_mask):
             gt_rot_6d_ = torch.cat([gt_rot_6d_.new_zeros(1, 6), gt_rot_6d_], dim=0)
         gt_rot_6d.append(gt_rot_6d_)
 
