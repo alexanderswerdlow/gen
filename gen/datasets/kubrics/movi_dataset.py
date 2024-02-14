@@ -47,6 +47,7 @@ class MoviDataset(AbstractDataset, Dataset):
         num_cameras: int = 1,
         multi_camera_format: bool = False,
         cache_in_memory: bool = False,
+        num_subset: Optional[int] = None,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -71,6 +72,9 @@ class MoviDataset(AbstractDataset, Dataset):
         else:
             self.files = os.listdir(self.root_dir)
             self.files.sort()
+
+        if num_subset is not None:
+            self.files = self.files[:num_subset]
 
         self.num_frames = num_frames
         self.num_classes = num_objects

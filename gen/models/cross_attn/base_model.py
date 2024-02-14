@@ -474,7 +474,7 @@ class BaseMapper(Trainable):
        
         latents = randn_tensor(pred_data.gt_rot_6d.shape, device=self.device, dtype=self.dtype)
         if self.cfg.model.rotation_diffusion_start_timestep is not None:
-            latents = scheduler.add_noise(pred_data.gt_rot_6d, latents, timesteps[None, self.cfg.model.rotation_diffusion_start_timestep].repeat(latents.shape[0]))
+            latents = scheduler.add_noise(pred_data.gt_rot_6d, latents, timesteps[None, -self.cfg.model.rotation_diffusion_start_timestep].repeat(latents.shape[0]))
         
         sl = slice(None, -self.cfg.model.rotation_diffusion_start_timestep) if self.cfg.model.rotation_diffusion_start_timestep else slice(None)
         latent_history = []
