@@ -108,9 +108,6 @@ class MoviDataset(AbstractDataset, Dataset):
         if self.fake_return_n:
             file_idx = file_idx % len(self.files)
 
-        if self.cache_in_memory and (file_idx, camera_idx, frame_idx) in self.cache:
-            return copy.deepcopy(self.cache[(file_idx, camera_idx, frame_idx)])
-
         try:
             path = self.files[file_idx]
         except IndexError:
@@ -121,7 +118,17 @@ class MoviDataset(AbstractDataset, Dataset):
         
         if self.multi_camera_format:
             filepath = self.root_dir / path / "data.npz"
-            data = np.load(filepath)
+            
+            if self.cache_in_memory and file_idx in self.cache:
+                data = copy.deepcopy(self.cache[file_idx])
+            else:
+                data = np.load(filepath)
+
+            if self.cache_in_memory:
+                data = {k:v for k,v in data.items()}
+                self.cache[file_idx] = copy.deepcopy(data)
+                print(f"Added {file_idx} to cache")
+                
             rgb = data["rgb"][camera_idx, frame_idx]
             instance = data["segment"][camera_idx, frame_idx]
 
@@ -209,10 +216,6 @@ class MoviDataset(AbstractDataset, Dataset):
                 "camera_idx": camera_idx
             },
         })
-
-        if self.cache_in_memory:
-            self.cache[(file_idx, camera_idx, frame_idx)] = copy.deepcopy(ret)
-            print(f"Added {file_idx, camera_idx, frame_idx} to cache")
 
         return ret
 
