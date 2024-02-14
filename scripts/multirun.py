@@ -51,8 +51,8 @@ def main(
     name = os.environ.get("SWEEP", name + ("_sweep" if is_sweep else ""))
     sweep_dir = output_dir / name
     if sweep_dir.exists():
-        sweep_dir = output_dir / (f'{datetime.now().strftime("%Y_%m_%d_%H_%M")}_' + name)
         name = f"{name}_" + "".join(random.choices(string.ascii_letters, k=3))
+        sweep_dir = output_dir / (f'{name}_{datetime.now().strftime("%Y_%m_%d_%H_%M")}')
     regular_args = " ".join(args)
 
     if prod is None:
