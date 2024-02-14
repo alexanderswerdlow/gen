@@ -16,13 +16,13 @@ from ipdb import set_trace as st
 from scipy.spatial.transform import Rotation as R
 from torch.utils.data import Dataset
 
-from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH, MOVI_OVERFIT_DATASET_PATH
+from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
 
 torchvision.disable_beta_transforms_warning()
-import copy
+import io
 
 from gen.utils.tokenization_utils import get_tokens
 
@@ -117,17 +117,20 @@ class MoviDataset(AbstractDataset, Dataset):
         ret = {}
         
         if self.multi_camera_format:
-            filepath = self.root_dir / path / "data.npz"
+            file = self.root_dir / path / "data.npz"
             
-            if self.cache_in_memory and file_idx in self.cache:
-                data = copy.deepcopy(self.cache[file_idx])
-            else:
-                data = np.load(filepath)
-
             if self.cache_in_memory:
-                data = {k:v for k,v in data.items()}
-                self.cache[file_idx] = copy.deepcopy(data)
-                print(f"Added {file_idx} to cache")
+                # We cache the file in the compressed form (as raw BytesIO) as the uncompressed size is far too large.
+                if file_idx in self.cache:
+                    file = self.cache[file_idx]
+                else:
+                    with open(file, 'rb') as f:
+                        file = io.BytesIO(f.read())
+                        self.cache[file_idx] = file
+                file.seek(0)
+
+            data = np.load(file)
+                
                 
             rgb = data["rgb"][camera_idx, frame_idx]
             instance = data["segment"][camera_idx, frame_idx]
@@ -210,7 +213,7 @@ class MoviDataset(AbstractDataset, Dataset):
             "input_ids": get_tokens(self.tokenizer),
             "metadata": {
                 "id": str(path),
-                "path": str(filepath),
+                "path": str(file),
                 "file_idx": file_idx,
                 "frame_idx": frame_idx,
                 "camera_idx": camera_idx
@@ -251,12 +254,13 @@ if __name__ == "__main__":
         subset_size=None,
         dataset="movi_e",
         tokenizer=tokenizer,
-        path=MOVI_MEDIUM_TWO_OBJECTS_PATH,
+        path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
         num_objects=23,
         num_frames=8,
         num_cameras=1, 
         augmentation=Augmentation(target_resolution=256, minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
         multi_camera_format=True,
+        cache_in_memory=True,
     )
     dataloader = new_dataset.get_dataloader()
     for batch in dataloader:

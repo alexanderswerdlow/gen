@@ -366,9 +366,11 @@ class Trainer:
                     )
 
                     batch["state"] = state
+                    start_forward_time = time()
                     match self.cfg.model.model_type:
                         case ModelType.BASE_MAPPER:
                             losses = self.model(batch)
+                    global_step_metrics["forward_pass_time"] += time() - start_forward_time
 
                     true_step += 1
                     for k, v in losses.items():

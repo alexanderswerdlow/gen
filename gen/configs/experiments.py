@@ -346,7 +346,8 @@ def get_experiments():
             eval_on_start=False,
         ),
         dataset=dict(
-            train_dataset=dict(batch_size=16, cache_in_memory=True, num_workers=2, num_subset=5),
+            train_dataset=dict(batch_size=16, cache_in_memory=True, num_workers=4, num_subset=5),
+            validation_dataset=dict(cache_in_memory=True)
         ),
         hydra_defaults=["token_pred", "movi_medium_single_object", "no_movi_augmentation"],
     )
