@@ -207,6 +207,7 @@ class MoviDataset(AbstractDataset, Dataset):
 
         if self.cache_in_memory:
             self.cache[(file_idx, camera_idx, frame_idx)] = copy.deepcopy(ret)
+            print(f"Added {file_idx, camera_idx, frame_idx} to cache")
 
         return ret
 

@@ -182,17 +182,27 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 gso_pcds = np.load(GSO_PCD_PATH)
 
             bs = batch["gen_pixel_values"].shape[0]
-            rot_imgs_pcds = []
+            
+            all_imgs = []
             for b in range(bs):
                 mask_ = ((cond.mask_batch_idx == b) & pred_data.pred_mask).to(orig_image.device)
                 instance_idx = cond.mask_instance_idx[mask_]
-                composited_images = []
+                gt_image_viz, pred_rot_viz = [], []
                 for j in instance_idx:
+                    mask_image = Im(
+                        get_layered_image_from_binary_mask(batch["gen_segmentation"][..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8
+                    )
+                    mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
+                    mask_alpha = (batch["gen_segmentation"][..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+                    composited_image = orig_image.pil.copy().convert("RGBA")
+                    composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
+                    gt_image_viz.append(Im(composited_image.convert("RGB")))
+
+                    # Visualize rotations
                     asset_id = batch["asset_id"][j - 1][b]
                     pcd = gso_pcds[asset_id]
-                    rot_idx = len(rot_imgs_pcds)
+                    rot_idx = len(pred_rot_viz)
                     if self.cfg.inference.visualize_rotation_denoising:
-
                         def evenly_spaced_indices(n, percentage=0.1, minimum=3):
                             num_elements = max(minimum, int(n * percentage))
                             if num_elements <= minimum:
@@ -206,27 +216,10 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                         img = Im.concat_vertical(*img)
                     else:
                         img = Im(visualize_rotations_pcds(R_ref[rot_idx], R_pred[rot_idx], pcd))
-                    rot_imgs_pcds.append(img.torch)
-            rot_imgs_pcds = torch.stack(rot_imgs_pcds)
+                    pred_rot_viz.append(img)
 
-            all_imgs = []
-            for b in range(bs):
-                mask_ = ((cond.mask_batch_idx == b) & pred_data.pred_mask).to(orig_image.device)
-                instance_idx = cond.mask_instance_idx[mask_]
-                composited_images = []
-                for j in instance_idx:
-                    mask_image = Im(
-                        get_layered_image_from_binary_mask(batch["gen_segmentation"][..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8
-                    )
-                    mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
-                    mask_alpha = (batch["gen_segmentation"][..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
-                    composited_image = orig_image.pil.copy().convert("RGBA")
-                    composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
-                    composited_images.append(Im(composited_image.convert("RGB")))
-
-                # top_img = Im.concat_horizontal(*rot_imgs[mask_])
-                top_img = Im.concat_horizontal(*rot_imgs_pcds)
-                bot_img = Im.concat_horizontal(*composited_images)
+                top_img = Im.concat_horizontal(*pred_rot_viz)
+                bot_img = Im.concat_horizontal(*gt_image_viz)
                 try:
                     all_imgs.append(Im.concat_vertical(top_img, bot_img))
                 except Exception as e:
