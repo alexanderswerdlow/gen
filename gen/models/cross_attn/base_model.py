@@ -503,8 +503,8 @@ class BaseMapper(Trainable):
         """
 
         if self.cfg.model.use_dummy_mask:
-            batch["gen_segmentation"] = batch["gen_segmentation"].new_ones(batch["gen_segmentation"].shape)
-            object_is_visible = (rearrange('b h w c -> b c (h w)', batch["gen_segmentation"]) > 0).any(dim=-1)
+            # Very hacky. We ignore masks with <= 32 pixels later on.
+            object_is_visible = (rearrange('b h w c -> b c (h w)', batch["gen_segmentation"]) > 0).sum(dim=-1) > 32
             rearrange('b h w c -> b c (h w)', batch["gen_segmentation"])[object_is_visible] = 1
             return batch
         elif self.cfg.model.use_dataset_segmentation:
