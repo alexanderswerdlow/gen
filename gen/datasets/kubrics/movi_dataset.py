@@ -75,6 +75,7 @@ class MoviDataset(AbstractDataset, Dataset):
 
         if num_subset is not None:
             self.files = self.files[:num_subset]
+            print(f"Using subset of {num_subset} files: {self.files}")
 
         self.num_frames = num_frames
         self.num_classes = num_objects

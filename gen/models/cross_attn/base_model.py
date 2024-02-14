@@ -74,6 +74,7 @@ class TokenPredData:
     pred_6d_rot: Optional[Float[Tensor, "n 6"]] = None
     pred_mask: Optional[Bool[Tensor, "n"]] = None
     denoise_history_6d_rot: Optional[Float[Tensor, "t n 6"]] = None
+    denoise_history_timesteps: Optional[list[int]] = None
 
 class AttentionMetadata(TypedDict):
     layer_idx: int
@@ -476,8 +477,9 @@ class BaseMapper(Trainable):
         if self.cfg.model.rotation_diffusion_start_timestep is not None:
             latents = scheduler.add_noise(pred_data.gt_rot_6d, latents, timesteps[None, -self.cfg.model.rotation_diffusion_start_timestep].repeat(latents.shape[0]))
         
-        sl = slice(None, -self.cfg.model.rotation_diffusion_start_timestep) if self.cfg.model.rotation_diffusion_start_timestep else slice(None)
+        sl = slice(-self.cfg.model.rotation_diffusion_start_timestep, None) if self.cfg.model.rotation_diffusion_start_timestep else slice(None)
         latent_history = []
+        pred_data.denoise_history_timesteps = []
         for t in timesteps[sl]:
             pred_data.noised_rot_6d = latents
             pred_data.timesteps = t[None].repeat(latents.shape[0])
@@ -488,6 +490,7 @@ class BaseMapper(Trainable):
             # compute the previous noisy sample x_t -> x_t-1
             latents = scheduler.step(pred_data.pred_6d_rot, t, latents).prev_sample
             latent_history.append(latents)
+            pred_data.denoise_history_timesteps.append(t)
 
         pred_data.pred_6d_rot = latents
         pred_data.denoise_history_6d_rot = torch.stack(latent_history, dim=1)
@@ -837,7 +840,8 @@ class BaseMapper(Trainable):
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             pred_data = TokenPredData()
             if self.cfg.model.token_rot_pred_loss:
-                rot_timesteps = torch.randint(0, self.cfg.model.rotation_diffusion_timestep, (bsz,), device=self.device).long()
+                max_timesteps = self.cfg.model.rotation_diffusion_start_timestep if self.cfg.model.rotation_diffusion_start_timestep else self.cfg.model.rotation_diffusion_timestep
+                rot_timesteps = torch.randint(0, max_timesteps, (bsz,), device=self.device).long()
                 pred_data.timesteps = rot_timesteps[cond.mask_batch_idx]
                 pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
                 assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]

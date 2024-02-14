@@ -184,6 +184,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             bs = batch["gen_pixel_values"].shape[0]
             
             all_imgs = []
+            all_videos = []
             for b in range(bs):
                 mask_ = ((cond.mask_batch_idx == b) & pred_data.pred_mask).to(orig_image.device)
                 instance_idx = cond.mask_instance_idx[mask_]
@@ -212,10 +213,14 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
                         img = []
                         for t in evenly_spaced_indices(R_hist.shape[1]):
-                            img.append(Im(visualize_rotations_pcds(R_ref[rot_idx], R_hist[rot_idx, t], pcd)).write_text(f"Timestep {t}"))
+                            img.append(Im(visualize_rotations_pcds(R_ref[rot_idx], R_hist[rot_idx, t], pcd)).write_text(f"Timestep {pred_data.denoise_history_timesteps[t]}"))
+
+                        all_videos.append(Im(torch.stack([x.torch for x in img])).encode_video(fps=4))
                         img = Im.concat_vertical(*img)
                     else:
                         img = Im(visualize_rotations_pcds(R_ref[rot_idx], R_pred[rot_idx], pcd))
+
+                    
                     pred_rot_viz.append(img)
 
                 top_img = Im.concat_horizontal(*pred_rot_viz)
@@ -229,6 +234,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                     all_imgs.append(top_img)
 
             ret["rotations"] = Im.concat_vertical(*all_imgs, spacing=30, fill=(128, 128, 128))
+            ret["rotation_videos"] = all_videos
 
     if self.cfg.model.unet is False:
         return ret

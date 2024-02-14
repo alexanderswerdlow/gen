@@ -1,3 +1,4 @@
+from io import BytesIO
 import pickle
 from collections import defaultdict
 from itertools import chain
@@ -19,7 +20,7 @@ from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import all_gather, get_rank, is_main_process, sanitize_filename, save_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, unwrap
-import gc
+import itertools
 
 def inference(cfg: BaseConfig, accelerator: Accelerator):
     model = get_model_from_cfg(cfg)
@@ -88,6 +89,14 @@ def run_inference_dataloader(
                 for i in range(len(v)):
                     v_[str(i)] = v[i]
                 save_tensor_dict(v_, path=output_path / sanitize_filename(f"{k}_{state.global_step}.npz"))
+            elif isinstance(v[0], Iterable) and isinstance(next(iter(v[0])), BytesIO):
+                log_video_with_accelerator(
+                    accelerator=accelerator,
+                    videos=list(itertools.chain(*v)),
+                    save_folder=output_path,
+                    name=k,
+                    global_step=(state.global_step if state.global_step is not None else i),
+                )
             else:
                 output_images = [Im(im) for im in v]
                 log_with_accelerator(
@@ -99,6 +108,24 @@ def run_inference_dataloader(
                     spacing=25,
                 )
     log_info(f"Saved to {output_path}")
+
+def log_video_with_accelerator(
+    accelerator: Optional[Accelerator], videos: List[BytesIO], global_step: int, name: str, save_folder: Optional[Path] = None,
+):
+    save_folder.parent.mkdir(exist_ok=True)
+    for i, v in enumerate(videos):
+        save_path = save_folder / sanitize_filename(f"{name}_{global_step}_{i}.mp4")
+        with open(save_path, "wb") as f:
+            f.write(v.getbuffer())
+    try:
+        if accelerator is not None:
+            for tracker in accelerator.trackers:
+                if tracker.name == "wandb":
+                        tracker.log({f"{name}_{i}": wandb.Video(v, format='mp4') for i,v in enumerate(videos)}, step=global_step)
+    except Exception as e:
+        print(e)
+        log_info(f"Failed to log video to wandb: {save_folder}, name {name} with exception: {e}")
+
 
 def log_with_accelerator(
     accelerator: Optional[Accelerator], images: List[Image.Image], global_step: int, name: str, save_folder: Optional[Path] = None, spacing: int = 15
