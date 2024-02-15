@@ -130,8 +130,7 @@ class MoviDataset(AbstractDataset, Dataset):
                 file.seek(0)
 
             data = np.load(file)
-                
-                
+
             rgb = data["rgb"][camera_idx, frame_idx]
             instance = data["segment"][camera_idx, frame_idx]
 
@@ -203,22 +202,24 @@ class MoviDataset(AbstractDataset, Dataset):
             source_data.segmentation = torch.ones_like(source_data.segmentation)[..., [0]]
             target_data.segmentation = torch.ones_like(target_data.segmentation)[..., [0]]
 
+        file_ = self.root_dir / path / "data.npz"
         ret.update({
             "gen_pixel_values": target_data.image,
-            "gen_grid": target_data.grid,
             "gen_segmentation": target_data.segmentation,
             "disc_pixel_values": source_data.image,
-            "disc_grid": source_data.grid,
             "disc_segmentation": source_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
             "metadata": {
                 "id": str(path),
-                "path": str(file),
+                "path": str(file_),
                 "file_idx": file_idx,
                 "frame_idx": frame_idx,
                 "camera_idx": camera_idx
             },
-        })
+        })  
+
+        if source_data.grid is not None: ret["disc_grid"] = source_data.grid
+        if target_data.grid is not None: ret["gen_grid"] = target_data.grid
 
         return ret
 
@@ -268,5 +269,5 @@ if __name__ == "__main__":
         gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'].squeeze(0))))
         disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'].squeeze(0))))
         print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][0, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][0, ..., 0].numel())
-        Im.concat_horizontal(gen_, disc_).save(batch['video'][0])
+        Im.concat_horizontal(gen_, disc_).save(batch['metadata']['id'][0])
 

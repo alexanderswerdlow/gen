@@ -73,8 +73,8 @@ class Augmentation:
                 K.RandomHorizontalFlip(p=0.95),
             )
 
-        self.source_transform = AugmentationSequential(*source_transforms)
-        self.target_transform = AugmentationSequential(*target_transforms)
+        self.source_transform = AugmentationSequential(*source_transforms) if len(source_transforms) > 0 else None
+        self.target_transform = AugmentationSequential(*target_transforms) if len(target_transforms) > 0 else None
 
     def set_validation(self):
         pass
@@ -92,6 +92,17 @@ class Augmentation:
 
         source_data.image = self.source_normalization(source_data.image)
         target_data.image = self.target_normalization(target_data.image)
+
+        # TODO: Ideally we should apply all transforms through Kornia.
+        # However, torchvision transforms are the defacto standard and this allows us to directly take the normalization from e.g., timm
+        # The below code applies the same transform to the segmentation mask (generally a resize and crop) and skips the normalization but is not ideal
+        for transform_ in self.source_normalization.transforms:
+            if transform_.__class__.__name__ != "Normalize":
+                source_data.segmentation = transform_(source_data.segmentation)
+
+        for transform_ in self.target_normalization.transforms:
+            if transform_.__class__.__name__ != "Normalize":
+                target_data.segmentation = transform_(target_data.segmentation)
 
         return source_data, target_data
 
