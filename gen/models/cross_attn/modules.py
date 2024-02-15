@@ -224,8 +224,12 @@ class TokenMapper(nn.Module):
             self.cls_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
 
         if self.cfg.model.token_rot_pred_loss:
-            if self.cfg.model.use_orig_film:
+            if self.cfg.model.discretize_rot_pred:
+                self.rot_mlp = Mlp(in_features=dim, hidden_features=dim // 2, out_features=self.cfg.model.discretize_rot_bins_per_axis * 3, activation=nn.GELU())
+            elif self.cfg.model.use_orig_film:
                 self.rot_mlp = FilmMlp(in_features=6, cond_features=dim, out_features=6, activation=nn.GELU())
+            elif self.cfg.model.use_larger_film:
+                self.rot_mlp = FilmMlpv2(in_features=6, cond_features=dim, hidden_features=1024, out_features=6, activation=nn.GELU())
             else:
                 self.rot_mlp = FilmMlpv2(in_features=6, cond_features=dim, hidden_features=256, out_features=6, activation=nn.GELU())
 
@@ -242,8 +246,11 @@ class TokenMapper(nn.Module):
             pred_data.cls_pred = pred
 
         if self.cfg.model.token_rot_pred_loss:
-            output = self.rot_mlp(pred_data.noised_rot_6d, pred_data.timesteps, mask_tokens)
-            pred_data.pred_6d_rot = output
+            if self.cfg.model.discretize_rot_pred:
+                pred = self.rot_mlp(mask_tokens)
+            else:
+                pred = self.rot_mlp(pred_data.noised_rot_6d, pred_data.timesteps, mask_tokens)
+            pred_data.pred_6d_rot = pred
 
         return pred_data
 

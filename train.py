@@ -234,6 +234,7 @@ class Trainer:
 
     # TODO: This is model-specific and should be achieved by inheritance or some other mechanism
     def base_model_validate(self, state: TrainingState):
+        start_time = time()
         from gen.models.cross_attn.base_inference import run_qualitative_inference, run_quantitative_inference
 
         unwrap(self.model).run_inference = types.MethodType(run_quantitative_inference, unwrap(self.model))
@@ -284,6 +285,8 @@ class Trainer:
 
         unwrap(self.model).set_training_mode()
         validate_params(self.models, self.dtype)
+        
+        log_info(f"Finished base model validation at global step {state.global_step}, epoch {state.epoch}. Took: {time() - start_time:.2f} seconds")
 
     def unfreeze_unet(self, state: TrainingState):
         log_warn(f"Unfreezing UNet at {state.global_step} steps")

@@ -213,7 +213,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
                         img = []
                         for t in evenly_spaced_indices(R_hist.shape[1]):
-                            img.append(Im(visualize_rotations_pcds(R_ref[rot_idx], R_hist[rot_idx, t], pcd)).write_text(f"Timestep {pred_data.denoise_history_timesteps[t]}"))
+                            img.append(Im.concat_horizontal(Im(visualize_rotations_pcds(R_ref[rot_idx], R_hist[rot_idx, t], pcd)).write_text(f"Timestep {pred_data.denoise_history_timesteps[t]}"), gt_image_viz[-1]))
 
                         all_videos.append(Im(torch.stack([x.torch for x in img])).encode_video(fps=4))
                         img = Im.concat_vertical(*img)

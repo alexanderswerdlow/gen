@@ -94,6 +94,9 @@ class ModelConfig:
 
     # tmp params
     use_orig_film: bool = False
+    use_larger_film: bool = False
+    discretize_rot_bins_per_axis: int = 8
+    discretize_rot_pred: bool = False
 
 
 @dataclass

@@ -351,3 +351,26 @@ def get_experiments():
         ),
         hydra_defaults=["token_pred", "movi_medium_single_object", "no_movi_augmentation"],
     )
+
+    mode_store(
+        name="debug_token_pred_v2",
+        model=dict(
+            rotation_diffusion_start_timestep=100,
+            use_larger_film=True,
+            per_layer_queries=True,
+            feature_map_keys=(
+                "stage1",
+                "stage18",
+            ),
+        ),
+        trainer=dict(
+            learning_rate=5e-6,
+            base_model_custom_validation_steps=250,
+            eval_every_n_steps=250,
+            eval_on_start=True,
+        ),
+        dataset=dict(
+            train_dataset=dict(num_subset=None, batch_size=24),
+        ),
+        hydra_defaults=["debug_token_pred"],
+    )
