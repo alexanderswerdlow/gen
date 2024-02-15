@@ -1,5 +1,6 @@
 import glob
 import hashlib
+from io import BytesIO
 import os
 import pickle
 import subprocess
@@ -82,7 +83,7 @@ def calculate_total_size(obj, count_views=False):
     return total_size
 
 
-def save_tensor_dict(tensor_dict: dict, path: Path):
+def save_tensor_dict(tensor_dict: dict, path: str | Path | BytesIO):
     output_dict = {}
     for k, v in tensor_dict.items():
         if isinstance(v, Tensor):
@@ -90,17 +91,23 @@ def save_tensor_dict(tensor_dict: dict, path: Path):
                 output_dict[k] = v.to(dtype=torch.float32).detach().cpu().numpy()
             else:
                 output_dict[k] = v.detach().cpu().numpy()
+        elif isinstance(v, np.ndarray):
+            output_dict[f"np_{k}"] = v
         else:
             output_dict[k] = v
     np.savez_compressed(path, **output_dict)
 
 
-def load_tensor_dict(path: Path):
+def load_tensor_dict(path: Path, object_keys=[]):
     tensor_dict = {}
-    np_dict = np.load(path)
+    np_dict = np.load(path, allow_pickle=True)
     for k, v in np_dict.items():
-        if v.dtype == BFloat16:
+        if k in object_keys:
+            tensor_dict[k] = v
+        elif v.dtype == BFloat16:
             tensor_dict[k] = torch.from_numpy(v.astype(np.float32)).to(dtype=torch.bfloat16)
+        elif k.startswith("np_"):
+            tensor_dict[k.removeprefix("np_")] = v
         else:
             tensor_dict[k] = torch.from_numpy(v)
     return tensor_dict

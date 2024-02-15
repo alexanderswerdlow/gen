@@ -384,7 +384,8 @@ def get_experiments():
             eval_on_start=True,
         ),
         dataset=dict(
-            train_dataset=dict(num_subset=10, batch_size=24),
+            train_dataset=dict(num_subset=10, batch_size=24, num_workers=2),
+            validation_dataset=dict(num_workers=2),
         ),
         model=dict(
             discretize_rot_pred=True,

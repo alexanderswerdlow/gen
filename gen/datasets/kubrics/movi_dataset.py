@@ -20,6 +20,7 @@ from gen import DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
+from gen.utils.decoupled_utils import load_tensor_dict, save_tensor_dict
 
 torchvision.disable_beta_transforms_warning()
 import io
@@ -47,6 +48,7 @@ class MoviDataset(AbstractDataset, Dataset):
         num_cameras: int = 1,
         multi_camera_format: bool = False,
         cache_in_memory: bool = False,
+        cache_instances_in_memory: bool = False,
         num_subset: Optional[int] = None,
         **kwargs,
     ):
@@ -60,6 +62,7 @@ class MoviDataset(AbstractDataset, Dataset):
         self.multi_camera_format = multi_camera_format
         self.num_cameras = num_cameras
         self.cache_in_memory = cache_in_memory
+        self.cache_instances_in_memory = cache_instances_in_memory
 
         if num_cameras > 1: assert multi_camera_format
 
@@ -91,6 +94,9 @@ class MoviDataset(AbstractDataset, Dataset):
         if self.cache_in_memory:
             self.cache = {}
 
+        if self.cache_instances_in_memory:
+            self.index_cache = {}
+
     def get_dataset(self):
         return self
 
@@ -105,16 +111,40 @@ class MoviDataset(AbstractDataset, Dataset):
 
     def __getitem__(self, index):
         file_idx, camera_idx, frame_idx = self.map_idx(index)
+
         if self.fake_return_n:
             file_idx = file_idx % len(self.files)
 
+        combined_idx = (file_idx, camera_idx, frame_idx)
+
+        path = self.files[file_idx]
+        file_ = self.root_dir / path / "data.npz"
+        ret = {
+            "metadata": {
+                "id": str(path),
+                "path": str(file_),
+                "file_idx": file_idx,
+                "frame_idx": frame_idx,
+                "camera_idx": camera_idx
+            },
+        }
+
+        if self.cache_instances_in_memory and combined_idx in self.index_cache:
+            # print(f"Using cache for index: {combined_idx}")
+            bytes_io = self.index_cache[combined_idx]
+            start_time = time.time()
+            bytes_io.seek(0)
+            ret.update(load_tensor_dict(bytes_io, object_keys=['asset_id']))
+            print(f"Time taken to load from cache: {time.time() - start_time}")
+            ret['asset_id'] = [str(x) for x in ret['asset_id']]
+                    
+            return ret
+        
         try:
             path = self.files[file_idx]
         except IndexError:
             print(f"Index {file_idx} is out of bounds for dataset of size {len(self.files)} for dir: {self.root_dir}")
             raise
-
-        ret = {}
         
         if self.multi_camera_format:
             file = self.root_dir / path / "data.npz"
@@ -202,24 +232,22 @@ class MoviDataset(AbstractDataset, Dataset):
             source_data.segmentation = torch.ones_like(source_data.segmentation)[..., [0]]
             target_data.segmentation = torch.ones_like(target_data.segmentation)[..., [0]]
 
-        file_ = self.root_dir / path / "data.npz"
+        
         ret.update({
             "gen_pixel_values": target_data.image,
             "gen_segmentation": target_data.segmentation,
             "disc_pixel_values": source_data.image,
             "disc_segmentation": source_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
-            "metadata": {
-                "id": str(path),
-                "path": str(file_),
-                "file_idx": file_idx,
-                "frame_idx": frame_idx,
-                "camera_idx": camera_idx
-            },
         })  
 
         if source_data.grid is not None: ret["disc_grid"] = source_data.grid
         if target_data.grid is not None: ret["gen_grid"] = target_data.grid
+
+        if self.cache_instances_in_memory:
+            bytes_io = io.BytesIO()
+            save_tensor_dict({k:v for k,v in ret.items() if not isinstance(v, dict)}, bytes_io)
+            self.index_cache[combined_idx] = bytes_io
 
         return ret
 
@@ -249,8 +277,8 @@ if __name__ == "__main__":
     new_dataset = MoviDataset(
         cfg=None,
         split=Split.TRAIN,
-        num_workers=0,
-        batch_size=1,
+        num_workers=2,
+        batch_size=24,
         shuffle=True,
         subset_size=None,
         dataset="movi_e",
@@ -262,12 +290,18 @@ if __name__ == "__main__":
         augmentation=Augmentation(target_resolution=256, minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
         multi_camera_format=True,
         cache_in_memory=True,
+        cache_instances_in_memory=True,
+        num_subset=None,
     )
     dataloader = new_dataset.get_dataloader()
+    import time
+    start_time = time.time()
     for batch in dataloader:
-        from image_utils import Im, get_layered_image_from_binary_mask
-        gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'].squeeze(0))))
-        disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'].squeeze(0))))
-        print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][0, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][0, ..., 0].numel())
-        Im.concat_horizontal(gen_, disc_).save(batch['metadata']['id'][0])
+        print(f'Time taken: {time.time() - start_time}')
+        start_time = time.time()
+        # from image_utils import Im, get_layered_image_from_binary_mask
+        # gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'].squeeze(0))))
+        # disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'].squeeze(0))))
+        # print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][0, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][0, ..., 0].numel())
+        # Im.concat_horizontal(gen_, disc_).save(batch['metadata']['id'][0])
 
