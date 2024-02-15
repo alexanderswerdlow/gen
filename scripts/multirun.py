@@ -42,6 +42,7 @@ def main(
     dry_run: bool = False,
     nodelist: Optional[str] = None,
     constraint: Optional[str] = None,
+    watch_run: bool = True,
 ):
     """
     This script is used to run experiments in parallel on a SLURM cluster. It is a wrapper around launch_slurm.py to support hyperparameter sweeps.
@@ -71,7 +72,7 @@ def main(
         if len(combination) == 0:
             prod_args = ""
             if is_sweep:
-                run_id = f'{name}_{"".join(random.choices(string.ascii_letters, k=3))}'
+                run_id = f'{name}_{datetime.now().strftime("%H%M")}_{"".join(random.choices(string.ascii_letters, k=2))}'
         else:
             prod_args = " " + " ".join([f"{keys[i]}={value}" for i, value in enumerate(combination)])
             run_id = sanitize_filename("_".join([f"{keys[i]}={value}" for i, value in enumerate(combination)]))
@@ -90,6 +91,7 @@ def main(
             env_vars=env_vars,
             init_cmds=init_cmds,
             nodelist=nodelist,
+            comment=f"{run_id}",
         )
 
         if constraint is not None:
@@ -117,7 +119,7 @@ def main(
         print(f"Output file: {log_file}")
         print("\n\n\n")
 
-    watch()
+    if watch_run: watch()
 
 if __name__ == "__main__":
     app()

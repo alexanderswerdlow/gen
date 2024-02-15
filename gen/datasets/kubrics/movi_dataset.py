@@ -160,7 +160,7 @@ class MoviDataset(AbstractDataset, Dataset):
                 file.seek(0)
 
             data = np.load(file)
-
+            
             rgb = data["rgb"][camera_idx, frame_idx]
             instance = data["segment"][camera_idx, frame_idx]
 

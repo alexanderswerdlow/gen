@@ -34,6 +34,7 @@ class SlurmConfig:
     constraint: str = "A100|6000ADA|A5500"
     env_vars: Optional[dict[str, str]] = None
     nodelist: Optional[str] = None
+    comment: Optional[str] = None
 
 def is_a5500_gpu():
     try:
@@ -204,6 +205,7 @@ def add_job(cfg: SlurmConfig):
         "stderr_to_stdout": True,
         "slurm_mem": cfg.mem_gb,
         "slurm_gres": f"gpu:{cfg.gpus}",
+        "slurm_comment": cfg.comment,
     }
     executor.update_parameters(**slurm_kwargs)
 
