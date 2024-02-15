@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import hydra
 import torch
 from torch import Tensor, nn
-from einx import rearrange
+from einx import rearrange, softmax
 import einops
 
 from gen.models.utils import _init_weights
@@ -242,12 +242,12 @@ class TokenMapper(nn.Module):
 
         if self.cfg.model.token_cls_pred_loss:
             output = self.cls_mlp(mask_tokens)
-            pred = output.softmax(dim=-1)
-            pred_data.cls_pred = pred
+            pred_data.cls_pred = output
 
         if self.cfg.model.token_rot_pred_loss:
             if self.cfg.model.discretize_rot_pred:
                 pred = self.rot_mlp(mask_tokens)
+                pred = rearrange("b (axes d) -> b axes d", pred, axes=3)
             else:
                 pred = self.rot_mlp(pred_data.noised_rot_6d, pred_data.timesteps, mask_tokens)
             pred_data.pred_6d_rot = pred

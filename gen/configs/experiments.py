@@ -374,3 +374,21 @@ def get_experiments():
         ),
         hydra_defaults=["debug_token_pred"],
     )
+
+    mode_store(
+        name="debug_token_pred_discretized",
+        trainer=dict(
+            learning_rate=1e-5,
+            base_model_custom_validation_steps=100,
+            eval_every_n_steps=100,
+            eval_on_start=True,
+        ),
+        dataset=dict(
+            train_dataset=dict(num_subset=10, batch_size=24),
+        ),
+        model=dict(
+            discretize_rot_pred=True,
+            discretize_rot_bins_per_axis=8
+        ),
+        hydra_defaults=["debug_token_pred_v2"],
+    )

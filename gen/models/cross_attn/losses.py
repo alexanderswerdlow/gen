@@ -14,7 +14,7 @@ from scipy.spatial.transform import Rotation as R
 import math
 
 from gen.models.cross_attn.break_a_scene import AttentionStore, aggregate_attention
-from gen.utils.rotation_utils import get_ortho6d_from_rotation_matrix, compute_rotation_matrix_from_ortho6d
+from gen.utils.rotation_utils import get_discretized_zyx_from_quat, get_ortho6d_from_rotation_matrix, compute_rotation_matrix_from_ortho6d
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import ConditioningData, InputData
@@ -223,15 +223,43 @@ def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_d
 
 def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pred_data: TokenPredData):
     assert cfg.model.background_mask_idx == 0
+
+    additional_metrics = {}
     
     if pred_data.pred_mask.sum() == 0:
         loss = torch.tensor(0.0, requires_grad=True, device=batch["device"])
     else:
-        if cfg.model.rotation_diffusion_parameterization == "sample":
+        if cfg.model.discretize_rot_pred:
+            pred_zyz = rearrange("b axes d -> (b axes) d", pred_data.pred_6d_rot[pred_data.pred_mask])
+            device = pred_zyz.device
+
+            num_bins = cfg.model.discretize_rot_bins_per_axis
+            gt_quat = torch.from_numpy(R.from_matrix(compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d[pred_data.pred_mask]).float().cpu().numpy()).as_quat()).to(device)
+            discretized_zyx = rearrange("b axes -> (b axes)", get_discretized_zyx_from_quat(gt_quat, num_bins=num_bins))
+
+            loss = F.cross_entropy(pred_zyz, discretized_zyx)
+
+            _, predicted_labels = pred_zyz.max(dim=1)
+            correct_predictions = (predicted_labels == discretized_zyx).sum().item()
+
+            _, top5_preds = pred_zyz.topk(k=2, dim=1)
+            correct_top5_predictions = sum(discretized_zyx.view(-1, 1) == top5_preds).sum().item()
+
+            total_instances = discretized_zyx.size(0)
+
+            accuracy = (correct_predictions / total_instances) if total_instances > 0 else 0
+            top2_accuracy = (correct_top5_predictions / total_instances) if total_instances > 0 else 0
+
+            additional_metrics.update({
+                "metric_rot_pred_acc": torch.tensor(accuracy, device=device),
+                "metric_rot_pred_top2_acc": torch.tensor(top2_accuracy, device=device),
+            })
+
+        elif cfg.model.rotation_diffusion_parameterization == "sample":
             loss = F.l1_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.gt_rot_6d[pred_data.pred_mask], reduction="mean")
         elif cfg.model.rotation_diffusion_parameterization == "epsilon":
             loss = F.l1_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.rot_6d_noise[pred_data.pred_mask], reduction="mean")
         else:
             raise NotImplementedError
 
-    return {"rot_pred_loss": loss}
+    return {"rot_pred_loss": loss, **additional_metrics}

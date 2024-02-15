@@ -33,10 +33,12 @@ from gen.models.utils import find_true_indices_batched, positionalencoding2d
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
+from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, get_discretized_zyx_from_quat, get_ortho6d_from_rotation_matrix, get_quat_from_discretized_zyx
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers import DDIMScheduler
+from scipy.spatial.transform import Rotation as R
 
 class InputData(TypedDict):
     gen_pixel_values: Float[Tensor, "b c h w"]
@@ -487,10 +489,26 @@ class BaseMapper(Trainable):
             # predict the noise residual
             pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
 
-            # compute the previous noisy sample x_t -> x_t-1
-            latents = scheduler.step(pred_data.pred_6d_rot, t, latents).prev_sample
+            if self.cfg.model.discretize_rot_pred:                
+                device = pred_data.gt_rot_6d.device
+                num_bins = self.cfg.model.discretize_rot_bins_per_axis
+
+                rot_pred_, _ = pred_data.pred_6d_rot.max(dim=-1) # [N, 3]
+                latents = get_quat_from_discretized_zyx(rot_pred_.float().cpu().numpy(), num_bins=num_bins)
+                latents = get_ortho6d_from_rotation_matrix(torch.from_numpy(R.from_quat(latents).as_matrix()).to(device))
+
+                gt_quat = torch.from_numpy(R.from_matrix(compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).float().cpu().numpy()).as_quat()).to(device)
+                gt_discretized_quat = get_quat_from_discretized_zyx(get_discretized_zyx_from_quat(gt_quat, num_bins=num_bins).float().cpu().numpy(), num_bins=num_bins) #.
+                pred_data.gt_rot_6d = get_ortho6d_from_rotation_matrix(torch.from_numpy(R.from_quat(gt_discretized_quat).as_matrix()).to(device))
+            else:
+                # compute the previous noisy sample x_t -> x_t-1
+                latents = scheduler.step(pred_data.pred_6d_rot, t, latents).prev_sample
+
             latent_history.append(latents)
             pred_data.denoise_history_timesteps.append(t)
+
+            if self.cfg.model.discretize_rot_pred:
+                break
 
         pred_data.pred_6d_rot = latents
         pred_data.denoise_history_6d_rot = torch.stack(latent_history, dim=1)
