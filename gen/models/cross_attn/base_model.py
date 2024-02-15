@@ -130,7 +130,7 @@ class BaseMapper(Trainable):
         if self.cfg.model.clip_shift_scale_conditioning:
             init_shift_scale(self)
 
-        if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_loss:
+        if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             self.token_mapper = TokenMapper(cfg=self.cfg).to(self.cfg.trainer.device)
 
     def initialize_diffusers_models(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
