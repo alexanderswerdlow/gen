@@ -97,6 +97,7 @@ class ModelConfig:
     use_larger_film: bool = False
     discretize_rot_bins_per_axis: int = 8
     discretize_rot_pred: bool = False
+    token_rot_transformer_head: bool = False # WIP
 
 
 @dataclass

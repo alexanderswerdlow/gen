@@ -7,6 +7,8 @@ import torch
 from torch import Tensor, nn
 from einx import rearrange, softmax
 import einops
+from gen.models.act3d.layers import ParallelAttention
+from gen.models.act3d.position_encodings import RotaryPositionEncoding3D
 
 from gen.models.utils import _init_weights
 from gen.utils.logging_utils import log_info
@@ -224,7 +226,15 @@ class TokenMapper(nn.Module):
             self.cls_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
 
         if self.cfg.model.token_rot_pred_loss:
-            if self.cfg.model.discretize_rot_pred:
+            if self.cfg.model.token_rot_transformer_head:
+                self.rot_attention = ParallelAttention(
+                    num_layers=4,
+                    d_model=dim, n_heads=8,
+                    self_attention1=False, self_attention2=False,
+                    cross_attention1=True, cross_attention2=False,
+                    rotary_pe=True, use_adaln=True
+                )
+            elif self.cfg.model.discretize_rot_pred:
                 self.rot_mlp = Mlp(in_features=dim, hidden_features=dim // 2, out_features=(1 + self.cfg.model.discretize_rot_bins_per_axis) * 3, activation=nn.GELU())
             elif self.cfg.model.use_orig_film:
                 self.rot_mlp = FilmMlp(in_features=6, cond_features=dim, out_features=6, activation=nn.GELU())
@@ -245,7 +255,20 @@ class TokenMapper(nn.Module):
             pred_data.cls_pred = output
 
         if self.cfg.model.token_rot_pred_loss:
-            if self.cfg.model.discretize_rot_pred:
+            if self.cfg.model.token_rot_transformer_head:
+                # WIP
+                seq1 = torch.zeros((2, 16, 768), requires_grad=True).cuda()
+                seq2 = torch.zeros((2, 32, 768), requires_grad=True).cuda()
+                seq1_key_padding_mask = torch.ones((2, 16), dtype=torch.bool).cuda()
+                self.relative_pe_layer = RotaryPositionEncoding3D(768)
+                seq1_pos = self.relative_pe_layer(seq1)
+                seq2_pos = self.relative_pe_layer(seq2)
+                rot_feats, test = self.rot_attention(
+                    seq1=seq1, seq1_key_padding_mask=seq1_key_padding_mask, 
+                    seq2=seq2, seq2_key_padding_mask=None,
+                    seq1_pos=seq1_pos, seq2_pos=seq2_pos,
+                )
+            elif self.cfg.model.discretize_rot_pred:
                 pred = self.rot_mlp(mask_tokens)
                 pred = rearrange("b (axes d) -> b axes d", pred, axes=3)
             else:
