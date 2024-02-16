@@ -405,7 +405,7 @@ def simple_example():
 
 def simple_example_():
     image = Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").scale(0.5).resize(224, 224).torch.cuda()
-    model = ResNetFeatureExtractorV(return_only='layer2', pretrained=False).cuda()
+    model = ResNetFeatureExtractor(return_only='layer2', pretrained=False).cuda()
     print(model.transform)
     output = model(image)
     breakpoint()
