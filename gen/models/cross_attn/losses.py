@@ -238,9 +238,10 @@ def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pr
             discretized_zyx, unquantized_zyx = get_discretized_zyx_from_quat(gt_quat, num_bins=num_bins, return_unquantized=True)
             discretized_zyx = rearrange("b axes -> (b axes)", discretized_zyx)
             unquantized_zyx = rearrange("b axes -> (b axes)", unquantized_zyx)
+            zyx_residual = unquantized_zyx - discretized_zyx
 
             loss = F.cross_entropy(pred_zyx_quant, discretized_zyx)
-            mse_loss = F.mse_loss(pred_zyx_residual, unquantized_zyx, reduction="mean")
+            mse_loss = F.mse_loss(pred_zyx_residual, zyx_residual, reduction="mean")
 
             _, predicted_labels = pred_zyx_quant.max(dim=1)
             correct_predictions = (predicted_labels == discretized_zyx).sum().item()
