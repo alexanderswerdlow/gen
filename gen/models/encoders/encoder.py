@@ -328,15 +328,20 @@ class ViTFeatureExtractor(FeatureExtractorModel, VIT):
         return_only: Optional[str] = None,
         model_name: str = "vit_base_patch14_reg4_dinov2",
         pretrained: bool = True,
+        num_classes: Optional[int] = None,
         **kwargs,
     ):
         self.return_nodes = return_nodes
         self.return_only = return_only
         self.pretrained = pretrained
+        self.num_classes = num_classes
         super().__init__(model_name=model_name, **kwargs)
 
     def create_model(self):
-        return super().create_model(pretrained=self.pretrained)
+        create_kwargs = {}
+        if self.num_classes is not None:
+            create_kwargs["num_classes"] = self.num_classes
+        return super().create_model(pretrained=self.pretrained, **create_kwargs)
 
 
 class ResNetFeatureExtractor(FeatureExtractorModel, ResNet):

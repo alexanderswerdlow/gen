@@ -141,6 +141,6 @@ store_child_config(
     group="model",
     parent="basemapper_vit",
     child="basemapper_vit_scratch",
-    encoder=builds(ViTFeatureExtractor, model_name='vit_tiny_patch16_224', return_only=None, pretrained=False, populate_full_signature=False),
+    encoder=builds(ViTFeatureExtractor, model_name='vit_tiny_patch16_224', num_classes=0, return_only=None, pretrained=False, populate_full_signature=False),
     encoder_dim=192,
 )
