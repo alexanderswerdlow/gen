@@ -393,3 +393,27 @@ def get_experiments():
         ),
         hydra_defaults=["debug_token_pred_v2"],
     )
+
+    mode_store(
+        name="vit_tiny_scratch",
+        model=dict(
+            encoder=dict(model_name='vit_tiny_patch16_224'),
+            encoder_dim=192,
+            per_layer_queries=True,
+            feature_map_keys=(
+                "blocks",
+                "norm",
+            ),
+            freeze_clip=False,
+        ),
+        hydra_defaults=["_self_", {"override /model": "basemapper_vit_scratch"},],
+    )
+
+    mode_store(
+        name="vit_small_scratch",
+        model=dict(
+            encoder=dict(model_name='vit_small_patch16_224'),
+            encoder_dim=384,
+        ),
+        hydra_defaults=["vit_tiny_scratch"],
+    )

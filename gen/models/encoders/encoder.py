@@ -76,7 +76,7 @@ class BaseModel(ABC, nn.Module):
         if compile:
             self.model = torch.compile(self.model, **compile_kwargs)
 
-    def create_model_timm(self, model_name: str, **kwargs):
+    def create_model_timm(self, model_name: str, pretrained: bool = True, **kwargs):
         return timm.create_model(model_name, **kwargs)
 
     @abstractmethod
@@ -327,11 +327,16 @@ class ViTFeatureExtractor(FeatureExtractorModel, VIT):
         },
         return_only: Optional[str] = None,
         model_name: str = "vit_base_patch14_reg4_dinov2",
+        pretrained: bool = True,
         **kwargs,
     ):
         self.return_nodes = return_nodes
         self.return_only = return_only
+        self.pretrained = pretrained
         super().__init__(model_name=model_name, **kwargs)
+
+    def create_model(self):
+        return super().create_model(pretrained=self.pretrained)
 
 
 class ResNetFeatureExtractor(FeatureExtractorModel, ResNet):

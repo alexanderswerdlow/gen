@@ -136,3 +136,11 @@ store_child_config(
     encoder_dim=128,
     unfreeze_resnet=True
 )
+store_child_config(
+    cls=ModelConfig,
+    group="model",
+    parent="basemapper_vit",
+    child="basemapper_vit_scratch",
+    encoder=builds(ViTFeatureExtractor, model_name='vit_tiny_patch16_224', return_only=None, pretrained=False, populate_full_signature=False),
+    encoder_dim=192,
+)

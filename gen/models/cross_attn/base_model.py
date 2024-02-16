@@ -494,6 +494,7 @@ class BaseMapper(Trainable):
                 num_bins = self.cfg.model.discretize_rot_bins_per_axis
 
                 _, rot_pred_ = pred_data.pred_6d_rot[..., 1:].max(dim=-1) # [N, 3]
+                rot_pred_ = rot_pred_ + pred_data.pred_6d_rot[..., 0]
                 latents = get_quat_from_discretized_zyx(rot_pred_.float().cpu().numpy(), num_bins=num_bins)
                 latents = get_ortho6d_from_rotation_matrix(torch.from_numpy(R.from_quat(latents).as_matrix()).to(device))
 
