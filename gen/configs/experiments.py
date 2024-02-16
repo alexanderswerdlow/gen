@@ -378,7 +378,7 @@ def get_experiments():
     mode_store(
         name="debug_token_pred_discretized",
         trainer=dict(
-            learning_rate=1e-5,
+            learning_rate=2e-6,
             base_model_custom_validation_steps=100,
             eval_every_n_steps=100,
             eval_on_start=True,

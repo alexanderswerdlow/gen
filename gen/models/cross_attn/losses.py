@@ -230,19 +230,22 @@ def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pr
         loss = torch.tensor(0.0, requires_grad=True, device=batch["device"])
     else:
         if cfg.model.discretize_rot_pred:
-            pred_zyz = rearrange("b axes d -> (b axes) d", pred_data.pred_6d_rot[pred_data.pred_mask])
-            device = pred_zyz.device
+            pred_zyx_residual, pred_zyx_quant = rearrange("b axes (1 + quantized) -> (b axes), (b axes) quantized", pred_data.pred_6d_rot[pred_data.pred_mask])
+            device = pred_zyx_quant.device
 
             num_bins = cfg.model.discretize_rot_bins_per_axis
             gt_quat = torch.from_numpy(R.from_matrix(compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d[pred_data.pred_mask]).float().cpu().numpy()).as_quat()).to(device)
-            discretized_zyx = rearrange("b axes -> (b axes)", get_discretized_zyx_from_quat(gt_quat, num_bins=num_bins))
+            discretized_zyx, unquantized_zyx = get_discretized_zyx_from_quat(gt_quat, num_bins=num_bins, return_unquantized=True)
+            discretized_zyx = rearrange("b axes -> (b axes)", discretized_zyx)
+            unquantized_zyx = rearrange("b axes -> (b axes)", unquantized_zyx)
 
-            loss = F.cross_entropy(pred_zyz, discretized_zyx)
+            loss = F.cross_entropy(pred_zyx_quant, discretized_zyx)
+            mse_loss = F.mse_loss(pred_zyx_residual, unquantized_zyx, reduction="mean")
 
-            _, predicted_labels = pred_zyz.max(dim=1)
+            _, predicted_labels = pred_zyx_quant.max(dim=1)
             correct_predictions = (predicted_labels == discretized_zyx).sum().item()
 
-            _, top5_preds = pred_zyz.topk(k=2, dim=1)
+            _, top5_preds = pred_zyx_quant.topk(k=2, dim=1)
             correct_top5_predictions = sum(discretized_zyx.view(-1, 1) == top5_preds).sum().item()
 
             total_instances = discretized_zyx.size(0)
@@ -253,6 +256,7 @@ def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pr
             additional_metrics.update({
                 "metric_rot_pred_acc": torch.tensor(accuracy, device=device),
                 "metric_rot_pred_top2_acc": torch.tensor(top2_accuracy, device=device),
+                "rot_residual_mse_loss": mse_loss
             })
 
         elif cfg.model.rotation_diffusion_parameterization == "sample":

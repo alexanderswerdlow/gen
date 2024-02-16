@@ -255,7 +255,7 @@ def get_quat_from_discretized_zyx(zyx: np.ndarray, num_bins: int):
     quat = R.from_euler("zyx", zyx, degrees=False).as_quat()
     return quat
 
-def get_discretized_zyx_from_quat(quat: torch.Tensor, num_bins: int):
+def get_discretized_zyx_from_quat(quat: torch.Tensor, num_bins: int, return_unquantized=False):
     """
     Takes [N, 4] quat, xyzw and returns [N, 3] discretized zyx
     """
@@ -265,5 +265,9 @@ def get_discretized_zyx_from_quat(quat: torch.Tensor, num_bins: int):
     zyx[:, [0, 2]] = (zyx[:, [2, 0]] + np.pi) / (2 * np.pi) # Normalize from 0 to 1
     zyx[:, 1] = (zyx[:, 1] + np.pi / 2) / (np.pi)
     discretized_zyx = np.floor(zyx * num_bins).astype(int)
-    discretized_zyx = torch.clamp(torch.from_numpy(discretized_zyx).to(device), 0, num_bins-1)
+    discretized_zyx = torch.clamp(torch.from_numpy(discretized_zyx).to(device), 0, num_bins - 1)
+
+    if return_unquantized:
+        return discretized_zyx, torch.from_numpy(zyx * num_bins).to(dtype=torch.float, device=device)
+    
     return discretized_zyx
