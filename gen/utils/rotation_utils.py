@@ -241,33 +241,43 @@ def get_ortho6d_from_rotation_matrix(matrix):
     # rotation matrix: [ | , |,  | ]
     #                  [ a1, a2, a3]
     #                  [ | , |,  | ]
+    if isinstance(matrix, np.ndarray):
+        matrix = torch.from_numpy(matrix).float()
     ortho6d = matrix[:, :, :2].permute(0, 2, 1).flatten(-2)
     return ortho6d
 
 
-def get_quat_from_discretized_zyx(zyx: np.ndarray, num_bins: int):
+def get_quat_from_discretized_zyx(zyx: np.ndarray | torch.Tensor, num_bins: int):
     """
     Takes [N, 3] discretized zyx and returns [N, 4] quat, xyzw
     """
-    zyx = zyx / num_bins
-    zyx[:, [0, 2]] = (zyx[:, [2, 0]] * (2 * np.pi)) - np.pi
-    zyx[:, 1] = (zyx[:, 1] * (np.pi)) - np.pi / 2
+    if isinstance(zyx, torch.Tensor):
+        zyx = zyx.detach().float().cpu().numpy()
+
+    zyx = zyx / (num_bins - 1)
+    zyx[:, [0, 2]] = (zyx[:, [0, 2]] * (2 * np.pi)) - (np.pi)
+    zyx[:, 1] = (zyx[:, 1] * (np.pi)) - (np.pi / 2)
     quat = R.from_euler("zyx", zyx, degrees=False).as_quat()
     return quat
 
 def get_discretized_zyx_from_quat(quat: torch.Tensor, num_bins: int, return_unquantized=False):
     """
     Takes [N, 4] quat, xyzw and returns [N, 3] discretized zyx
+
+    From SciPy:
+    First angle belongs to [-180, 180] degrees (both inclusive)
+    Second angle belongs to: [-90, 90] degrees if all axes are different (like xyz)
+    Third angle belongs to [-180, 180] degrees (both inclusive)
     """
-    # pred_data.gt_rot_6d[pred_data.pred_mask] compute_rotation_matrix_from_ortho6d()
     device = quat.device
+    max_range = num_bins - 1
     zyx = R.from_quat(quat.float().cpu().numpy()).as_euler("zyx", degrees=False)
-    zyx[:, [0, 2]] = (zyx[:, [2, 0]] + np.pi) / (2 * np.pi) # Normalize from 0 to 1
-    zyx[:, 1] = (zyx[:, 1] + np.pi / 2) / (np.pi)
-    discretized_zyx = np.floor(zyx * num_bins).astype(int)
-    discretized_zyx = torch.clamp(torch.from_numpy(discretized_zyx).to(device), 0, num_bins - 1)
+    zyx[:, [0, 2]] = (zyx[:, [0, 2]] + np.pi) / (2 * np.pi) # Normalize from 0 to 1
+    zyx[:, 1] = (zyx[:, 1] + (np.pi / 2)) / (np.pi)
+    discretized_zyx = np.round(zyx * max_range).astype(int)
+    discretized_zyx = torch.clamp(torch.from_numpy(discretized_zyx).to(device), 0, max_range)
 
     if return_unquantized:
-        return discretized_zyx, torch.from_numpy(zyx * num_bins).to(dtype=torch.float, device=device)
+        return discretized_zyx, torch.from_numpy(zyx * max_range).to(dtype=torch.float, device=device)
     
     return discretized_zyx

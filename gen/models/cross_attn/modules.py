@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import defaultdict
 
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -9,6 +10,8 @@ from einx import rearrange, softmax
 import einops
 from gen.models.act3d.layers import ParallelAttention
 from gen.models.act3d.position_encodings import RotaryPositionEncoding3D
+from gen.models.cross_attn.losses import get_relative_rot_data
+from gen.models.cross_attn.rotation_decoder import SelfAttentionTransformer
 
 from gen.models.utils import _init_weights
 from gen.utils.logging_utils import log_info
@@ -226,26 +229,19 @@ class TokenMapper(nn.Module):
             self.cls_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
 
         if self.cfg.model.token_rot_pred_loss:
-            if self.cfg.model.token_rot_transformer_head:
-                self.rot_attention = ParallelAttention(
-                    num_layers=4,
-                    d_model=dim, n_heads=8,
-                    self_attention1=False, self_attention2=False,
-                    cross_attention1=True, cross_attention2=False,
-                    rotary_pe=True, use_adaln=True
-                )
-            elif self.cfg.model.discretize_rot_pred:
-                self.rot_mlp = Mlp(in_features=dim, hidden_features=dim // 2, out_features=(1 + self.cfg.model.discretize_rot_bins_per_axis) * 3, activation=nn.GELU())
-            elif self.cfg.model.use_orig_film:
-                self.rot_mlp = FilmMlp(in_features=6, cond_features=dim, out_features=6, activation=nn.GELU())
-            elif self.cfg.model.use_larger_film:
-                self.rot_mlp = FilmMlpv2(in_features=6, cond_features=dim, hidden_features=1024, out_features=6, activation=nn.GELU())
+            if self.cfg.model.discretize_rot_pred:
+                if self.cfg.model.predict_rotation_from_n_frames:
+                    self.rot_decoder = SelfAttentionTransformer(num_classes=(2 * self.cfg.model.discretize_rot_bins_per_axis) * 3, embed_dim=dim, num_heads=8)
+                else:
+                    self.rot_decoder = Mlp(in_features=dim, hidden_features=dim // 2, out_features=(2 * self.cfg.model.discretize_rot_bins_per_axis) * 3, activation=nn.GELU())
+            elif self.cfg.model.use_timestep_mask_film:
+                self.rot_decoder = FilmMlp(in_features=6, cond_features=dim, out_features=6, activation=nn.GELU())
             else:
-                self.rot_mlp = FilmMlpv2(in_features=6, cond_features=dim, hidden_features=256, out_features=6, activation=nn.GELU())
+                self.rot_decoder = FilmMlpv2(in_features=6, cond_features=dim, hidden_features=1024, out_features=6, activation=nn.GELU())
 
         self.apply(_init_weights)
 
-    def forward(self, cond: ConditioningData, pred_data: TokenPredData):
+    def forward(self, batch, cond: ConditioningData, pred_data: TokenPredData):
         mask_tokens = cond.mask_tokens
         if self.cfg.model.detach_mask_tokens_for_pred:
             mask_tokens = mask_tokens.detach()
@@ -255,24 +251,39 @@ class TokenMapper(nn.Module):
             pred_data.cls_pred = output
 
         if self.cfg.model.token_rot_pred_loss:
-            if self.cfg.model.token_rot_transformer_head:
-                # WIP
+            if self.cfg.model.token_rot_transformer_head: # WIP
                 seq1 = torch.zeros((2, 16, 768), requires_grad=True).cuda()
                 seq2 = torch.zeros((2, 32, 768), requires_grad=True).cuda()
                 seq1_key_padding_mask = torch.ones((2, 16), dtype=torch.bool).cuda()
                 self.relative_pe_layer = RotaryPositionEncoding3D(768)
                 seq1_pos = self.relative_pe_layer(seq1)
                 seq2_pos = self.relative_pe_layer(seq2)
-                rot_feats, test = self.rot_attention(
+                rot_feats, test = self.rot_decoder(
                     seq1=seq1, seq1_key_padding_mask=seq1_key_padding_mask, 
                     seq2=seq2, seq2_key_padding_mask=None,
                     seq1_pos=seq1_pos, seq2_pos=seq2_pos,
                 )
             elif self.cfg.model.discretize_rot_pred:
-                pred = self.rot_mlp(mask_tokens)
+                if self.cfg.model.predict_rotation_from_n_frames:
+                    group_size = self.cfg.model.predict_rotation_from_n_frames
+                    grouped_indices = []
+                    all_rot_data = get_relative_rot_data(cfg=self.cfg, batch=batch, cond=cond)
+                    for _, group_instance_data in all_rot_data.items():
+                        for _, instance_rot_data in group_instance_data.items():
+                            if len(instance_rot_data) == group_size:
+                                _, instance_indices = zip(*instance_rot_data)
+                                grouped_indices.extend(instance_indices)
+
+                    input_mask_tokens = rearrange("(masks group_size) d -> masks group_size d", mask_tokens[torch.tensor(grouped_indices)], group_size=group_size)
+
+                    pred = self.rot_decoder(input_mask_tokens)
+                    # We copy the prediction for all mask tokens in the group to make things easier
+                    pred = rearrange("b (axes d) -> (b group_size) (axes d)", pred, group_size=group_size)
+                else:
+                    pred = self.rot_decoder(mask_tokens)
                 pred = rearrange("b (axes d) -> b axes d", pred, axes=3)
             else:
-                pred = self.rot_mlp(pred_data.noised_rot_6d, pred_data.timesteps, mask_tokens)
+                pred = self.rot_decoder(pred_data.noised_rot_6d, pred_data.timesteps, mask_tokens)
             pred_data.pred_6d_rot = pred
 
         return pred_data

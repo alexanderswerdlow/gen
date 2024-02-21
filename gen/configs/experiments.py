@@ -140,7 +140,7 @@ def get_datasets():  # TODO: These do not need to be global configs
         dataset=dict(
             train_dataset=dict(
                 custom_split="train", 
-                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_crop=True, minimal_source_augmentation=True),
+                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True),
                 path=MOVI_MEDIUM_PATH,
                 num_objects=23,
                 num_frames=8,
@@ -183,9 +183,8 @@ def get_datasets():  # TODO: These do not need to be global configs
     )
 
     mode_store(
-        name="movi_medium_single_scene",
+        name="single_scene",
         dataset=dict(train_dataset=dict(subset=("000001",), fake_return_n=8), validation_dataset=dict(subset=("000001",), fake_return_n=8), overfit=True),
-        hydra_defaults=["movi_medium"],
     )
 
     mode_store(
@@ -229,7 +228,7 @@ def get_experiments():
     mode_store(
         name="small_gpu",
         dataset=dict(train_dataset=dict(batch_size=1, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
-        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False), single_fuser_layer=True, pretrained_model_name_or_path='runwayml/stable-diffusion-v1-5', token_embedding_dim=768),
+        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False), pretrained_model_name_or_path='runwayml/stable-diffusion-v1-5', token_embedding_dim=768),
         trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False, gradient_accumulation_steps=1),
         inference=dict(
             visualize_attention_map=False,
@@ -324,7 +323,7 @@ def get_experiments():
     mode_store(
         name="token_pred",
         model=dict(token_cls_pred_loss=True, token_rot_pred_loss=True),
-        trainer=dict(base_model_custom_validation_steps=100),
+        trainer=dict(custom_inference_every_n_steps=100),
         dataset=dict(train_dataset=dict(drop_last=False), validation_dataset=dict(drop_last=False)),
         hydra_defaults=["cur_exp"],
     )
@@ -335,28 +334,8 @@ def get_experiments():
             add_pos_emb=True, 
             decoder_transformer=dict(depth=2),
             unet=False,
-            rotation_diffusion_start_timestep=10,
-            num_conditioning_pairs=1
-        ),
-        trainer=dict(
-            learning_rate=1e-6,
-            lr_warmup_steps=100,
-            eval_every_n_steps=100,
-            base_model_custom_validation_steps=100,
-            eval_on_start=False,
-        ),
-        dataset=dict(
-            train_dataset=dict(batch_size=16, cache_in_memory=True, num_workers=4, num_subset=5),
-            validation_dataset=dict(cache_in_memory=True)
-        ),
-        hydra_defaults=["token_pred", "movi_medium_single_object", "no_movi_augmentation"],
-    )
-
-    mode_store(
-        name="debug_token_pred_v2",
-        model=dict(
             rotation_diffusion_start_timestep=100,
-            use_larger_film=True,
+            num_conditioning_pairs=1,
             per_layer_queries=True,
             feature_map_keys=(
                 "stage1",
@@ -364,34 +343,55 @@ def get_experiments():
             ),
         ),
         trainer=dict(
+            lr_warmup_steps=100,
             learning_rate=5e-6,
-            base_model_custom_validation_steps=250,
+            custom_inference_every_n_steps=250,
             eval_every_n_steps=250,
             eval_on_start=True,
         ),
         dataset=dict(
-            train_dataset=dict(num_subset=None, batch_size=24),
+            train_dataset=dict(batch_size=24, cache_in_memory=True, num_workers=4, num_subset=None),
+            validation_dataset=dict(cache_in_memory=True)
+        ),
+        hydra_defaults=["token_pred", "movi_medium_single_object", "no_movi_augmentation"],
+    )
+
+    mode_store(
+        name="debug_discrete_token_pred",
+        model=dict(
+            predict_rotation_from_n_frames=None,
+            training_mask_dropout=None,
+            discretize_rot_bins_per_axis=36,
+            discretize_rot_pred=True,
+        ),
+        dataset=dict(
+            train_dataset=dict(subset_size=None, num_subset=None, return_multiple_frames=None, fake_return_n=None, batch_size=36, num_workers=2, cache_instances_in_memory=False),
+            validation_dataset=dict(subset_size=None, return_multiple_frames=None, num_workers=2, cache_instances_in_memory=False),
+        ),
+        trainer=dict(
+            gradient_accumulation_steps=4, 
+            eval_every_n_steps=1000, 
+            custom_inference_every_n_steps=1000, 
+            learning_rate=2e-5,
+            custom_inference_batch_size=48, 
+            custom_inference_dataset_size=256,
+            custom_inference_fixed_shuffle=True, 
+            scale_lr_batch_size=False, 
+            lr_warmup_steps=1000,
+            eval_on_start=True,
         ),
         hydra_defaults=["debug_token_pred"],
     )
 
     mode_store(
-        name="debug_token_pred_discretized",
-        trainer=dict(
-            learning_rate=2e-6,
-            base_model_custom_validation_steps=100,
-            eval_every_n_steps=100,
-            eval_on_start=True,
+        name="relative_token_pred",
+        model=dict(
+            predict_rotation_from_n_frames=2,
         ),
         dataset=dict(
-            train_dataset=dict(num_subset=10, batch_size=24, num_workers=2, cache_instances_in_memory=False),
-            validation_dataset=dict(num_workers=2, cache_instances_in_memory=False),
+            train_dataset=dict(return_multiple_frames=2),
+            validation_dataset=dict(return_multiple_frames=2),
         ),
-        model=dict(
-            discretize_rot_pred=True,
-            discretize_rot_bins_per_axis=8
-        ),
-        hydra_defaults=["debug_token_pred_v2"],
     )
 
     mode_store(

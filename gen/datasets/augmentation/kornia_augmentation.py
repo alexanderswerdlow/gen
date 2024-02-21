@@ -67,17 +67,15 @@ class Augmentation:
         if not minimal_source_augmentation:
             source_transforms.append(RandAugment(n=2, m=10, policy=randaug_policy))
 
-        target_transforms = [K.Resize(size=(target_resolution, target_resolution))]
+        target_transforms = []
         if not source_only_augmentation:
-            target_transforms.append(
-                K.RandomHorizontalFlip(p=0.95),
-            )
+            target_transforms.extend([K.Resize(size=(target_resolution, target_resolution)), K.RandomHorizontalFlip(p=0.95)])
 
         self.source_transform = AugmentationSequential(*source_transforms) if len(source_transforms) > 0 else None
         self.target_transform = AugmentationSequential(*target_transforms) if len(target_transforms) > 0 else None
 
-    def set_validation(self):
-        pass
+    def kornia_augmentations_enabled(self) -> bool:
+        return self.source_transform is not None or self.target_transform is not None
 
     def __call__(self, source_data, target_data):
         if self.source_transform is not None:
@@ -97,11 +95,16 @@ class Augmentation:
         # However, torchvision transforms are the defacto standard and this allows us to directly take the normalization from e.g., timm
         # The below code applies the same transform to the segmentation mask (generally a resize and crop) and skips the normalization but is not ideal
         for transform_ in self.source_normalization.transforms:
-            if transform_.__class__.__name__ != "Normalize":
+            import torchvision.transforms.v2 as transforms
+            if transform_.__class__.__name__ == "Resize":
+                source_data.segmentation = transforms.Resize(size=transform_.size, max_size=transform_.max_size, antialias=transform_.antialias, interpolation=transforms.InterpolationMode.NEAREST)(source_data.segmentation)
+            elif transform_.__class__.__name__ != "Normalize":
                 source_data.segmentation = transform_(source_data.segmentation)
 
         for transform_ in self.target_normalization.transforms:
-            if transform_.__class__.__name__ != "Normalize":
+            if transform_.__class__.__name__ == "Resize":
+                target_data.segmentation = transforms.Resize(size=transform_.size, max_size=transform_.max_size, antialias=transform_.antialias, interpolation=transforms.InterpolationMode.NEAREST)(target_data.segmentation)
+            elif transform_.__class__.__name__ != "Normalize":
                 target_data.segmentation = transform_(target_data.segmentation)
 
         return source_data, target_data
