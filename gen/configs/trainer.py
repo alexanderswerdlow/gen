@@ -56,8 +56,12 @@ class TrainerConfig:
     finetune_learning_rate: Optional[float] = None
     detect_anomaly: bool = False
     find_unused_parameters: bool = False
-    base_model_custom_validation_steps: Optional[int] = None
     validate_training_dataset: bool = False # Whether to also run inference on the training dataset after the validation dataset
+
+    custom_inference_every_n_steps: Optional[int] = None
+    custom_inference_fixed_shuffle: bool = False
+    custom_inference_batch_size: Optional[int] = None
+    custom_inference_dataset_size: Optional[int] = 512
 
     # Set in code
     num_gpus: Optional[int] = None

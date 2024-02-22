@@ -242,9 +242,7 @@ def main(cfg: BaseConfig):
             log_info("Exception...")
             import sys
             import traceback
-
             import ipdb
-
             traceback.print_exc()
             ipdb.post_mortem(e.__traceback__)
             sys.exit(1)

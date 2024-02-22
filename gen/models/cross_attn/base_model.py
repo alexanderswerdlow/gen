@@ -48,6 +48,8 @@ class InputData(TypedDict):
     state: Optional[TrainingState]
     dtype: Optional[torch.dtype]
     device: Optional[torch.device]
+    bs: Optional[int]
+    num_frames: Optional[int]
 
 
 @dataclass
@@ -77,6 +79,8 @@ class TokenPredData:
     pred_mask: Optional[Bool[Tensor, "n"]] = None
     denoise_history_6d_rot: Optional[Float[Tensor, "t n 6"]] = None
     denoise_history_timesteps: Optional[list[int]] = None
+    relative_rot_pred_mask: Optional[Bool[Tensor, "n"]] = None
+    raw_pred_rot_logits: Optional[Float[Tensor, "n ..."]] = None
 
 class AttentionMetadata(TypedDict):
     layer_idx: int
@@ -287,8 +291,6 @@ class BaseMapper(Trainable):
                     m.fuser.requires_grad_(True)
                     m.fuser.to(dtype=torch.float32)
                 m.fuser.train()
-                if md.single_fuser_layer:
-                    break
 
         if md.freeze_text_encoder:
             if set_grad:
@@ -492,20 +494,10 @@ class BaseMapper(Trainable):
             pred_data.timesteps = t[None].repeat(latents.shape[0])
 
             # predict the noise residual
-            pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
+            pred_data = self.token_mapper(batch=batch, cond=cond, pred_data=pred_data)
 
             if self.cfg.model.discretize_rot_pred:                
-                device = pred_data.gt_rot_6d.device
-                num_bins = self.cfg.model.discretize_rot_bins_per_axis
-
-                _, rot_pred_ = pred_data.pred_6d_rot[..., 1:].max(dim=-1) # [N, 3]
-                rot_pred_ = rot_pred_ + pred_data.pred_6d_rot[..., 0]
-                latents = get_quat_from_discretized_zyx(rot_pred_.float().cpu().numpy(), num_bins=num_bins)
-                latents = get_ortho6d_from_rotation_matrix(torch.from_numpy(R.from_quat(latents).as_matrix()).to(device))
-
-                gt_quat = torch.from_numpy(R.from_matrix(compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).float().cpu().numpy()).as_quat()).to(device)
-                gt_discretized_quat = get_quat_from_discretized_zyx(get_discretized_zyx_from_quat(gt_quat, num_bins=num_bins).float().cpu().numpy(), num_bins=num_bins)
-                pred_data.gt_rot_6d = get_ortho6d_from_rotation_matrix(torch.from_numpy(R.from_quat(gt_discretized_quat).as_matrix()).to(device))
+                latents = pred_data.pred_6d_rot
             else:
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = scheduler.step(pred_data.pred_6d_rot, t, latents).prev_sample
@@ -518,8 +510,10 @@ class BaseMapper(Trainable):
 
         pred_data.pred_6d_rot = latents
         pred_data.denoise_history_6d_rot = torch.stack(latent_history, dim=1)
+        token_rot_loss_data = token_rot_loss(self.cfg, batch, cond, pred_data)
+        token_rot_loss_data = {k:v for k, v in token_rot_loss_data.items() if isinstance(v, torch.Tensor)}
 
-        return pred_data
+        return pred_data, token_rot_loss_data
 
     def check_add_segmentation(self, batch: InputData):
         """
@@ -717,7 +711,6 @@ class BaseMapper(Trainable):
 
         cond.attn_dict["x"] = queries.to(self.dtype)
         pred_mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
-        cond.pred_mask_tokens = pred_mask_tokens
         cond.mask_tokens = pred_mask_tokens
 
         if self.cfg.model.per_layer_queries:
@@ -851,15 +844,22 @@ class BaseMapper(Trainable):
 
         assert "formatted_input_ids" not in batch
 
+        bs = batch["gen_pixel_values"].shape[0]
+        batch["num_frames"] = 1
+        batch["bs"] = bs
+
+        if self.cfg.model.predict_rotation_from_n_frames:
+            # We keep the tensor format as (bs, ...) even though it's really ((bs frames), ...) but specify num_frames
+            assert bs % self.cfg.model.predict_rotation_from_n_frames == 0
+            batch["num_frames"] = self.cfg.model.predict_rotation_from_n_frames
+
         batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
 
         # Sample a random timestep for each element in batch
-        bsz = batch["gen_pixel_values"].shape[0]
-        
         if self.cfg.model.use_inverted_noise_schedule:
             timesteps = ((torch.arccos(timesteps / self.noise_scheduler.config.num_train_timesteps) / (torch.pi / 2)) * self.noise_scheduler.config.num_train_timesteps).long()
         else:
-            timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=self.device).long()
+            timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bs,), device=self.device).long()
 
         cond = self.get_hidden_state(batch, add_conditioning=True)
 
@@ -869,14 +869,14 @@ class BaseMapper(Trainable):
             pred_data = TokenPredData()
             if self.cfg.model.token_rot_pred_loss:
                 max_timesteps = self.cfg.model.rotation_diffusion_start_timestep if self.cfg.model.rotation_diffusion_start_timestep else self.cfg.model.rotation_diffusion_timestep
-                rot_timesteps = torch.randint(0, max_timesteps, (bsz,), device=self.device).long()
+                rot_timesteps = torch.randint(0, max_timesteps, (bs,), device=self.device).long()
                 pred_data.timesteps = rot_timesteps[cond.mask_batch_idx]
                 pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
                 assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
                 pred_data.rot_6d_noise = torch.randn_like(pred_data.gt_rot_6d)
                 pred_data.noised_rot_6d = self.rotation_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, pred_data.timesteps)
             
-            pred_data = self.token_mapper(cond=cond, pred_data=pred_data)
+            pred_data = self.token_mapper(batch=batch, cond=cond, pred_data=pred_data)
 
         encoder_hidden_states = cond.encoder_hidden_states
 

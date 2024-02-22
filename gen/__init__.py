@@ -13,5 +13,5 @@ MOVI_MEDIUM_SINGLE_OBJECT_PATH = Path(os.getenv("MOVI_MEDIUM_SINGLE_OBJECT_PATH"
 IMAGENET_PATH = Path(os.getenv("IMAGENET_PATH", "/projects/katefgroup/datasets/ImageNet"))
 PLACEHOLDER_TOKEN: str = os.getenv("PLACEHOLDER_TOKEN", "masks")
 DEFAULT_PROMPT: str = os.getenv("DEFAULT_PROMPT", f"A photo of {PLACEHOLDER_TOKEN}")
-CONDA_ENV = Path(os.getenv("CONDA_ENV", "gen_nightly"))
+CONDA_ENV = Path(os.getenv("CONDA_ENV", "gen"))
 GSO_PCD_PATH = Path(os.getenv("GSO_PCD_PATH", "/projects/katefgroup/aswerdlo/gen/gso_pcd.npz"))

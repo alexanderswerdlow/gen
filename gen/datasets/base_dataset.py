@@ -52,7 +52,6 @@ class AbstractDataset(ABC):
         orig_dataset = self.get_dataset()
         if self.allow_subset and self.subset_size is not None:
             if self.random_subset:
-
                 dataset = Subset(orig_dataset, list(RandomSampler(orig_dataset, num_samples=self.subset_size, generator=generator)))
             else:
                 idxs = list(range(len(orig_dataset)))
@@ -72,6 +71,14 @@ class AbstractDataset(ABC):
         if self.drop_last:
             log_warn("Dropping last batch if it exists")
 
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=self.allow_shuffle and self.shuffle, collate_fn=self.collate_fn, num_workers=self.num_workers, pin_memory=pin_memory, drop_last=self.drop_last)
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=self.batch_size, 
+            shuffle=self.allow_shuffle and self.shuffle, 
+            collate_fn=self.collate_fn, 
+            num_workers=self.num_workers, 
+            pin_memory=pin_memory, 
+            drop_last=self.drop_last
+        )
         log_info(f"Dataset size: {len(orig_dataset)}, Dataset size after subset: {len(dataset)}, Combined dataloader size (all GPUs): {len(dataloader)}")
         return dataloader

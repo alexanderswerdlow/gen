@@ -84,7 +84,6 @@ class ModelConfig:
     token_cls_pred_loss: bool = False
     token_rot_pred_loss: bool = False
     num_token_cls: int = 17
-    single_fuser_layer: bool = False
     detach_mask_tokens_for_pred: bool = False
 
     # rotation denoising parameters
@@ -93,10 +92,11 @@ class ModelConfig:
     rotation_diffusion_start_timestep: Optional[int] = None
 
     # tmp params
-    use_orig_film: bool = False
-    use_larger_film: bool = False
+    use_timestep_mask_film: bool = False
     discretize_rot_bins_per_axis: int = 8
     discretize_rot_pred: bool = False
+    token_rot_transformer_head: bool = False # WIP
+    predict_rotation_from_n_frames: Optional[int] = None
 
 
 @dataclass

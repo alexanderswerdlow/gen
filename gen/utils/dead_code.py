@@ -381,3 +381,33 @@ def viz():
 #     return torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=device)
 
 #             scheduler = getattr(self, "scheduler") if hasattr(self, "scheduler") else self.pipeline.scheduler
+            # previously we quantized gt for inference metrics to try to make it more fair
+            # gt_quat = R.from_matrix(compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).float().cpu().numpy()).as_quat()
+            # gt_discretized_quat = get_quat_from_discretized_zyx(get_discretized_zyx_from_quat(gt_quat, num_bins=num_bins), num_bins=num_bins)
+            # pred_data.gt_rot_6d = get_ortho6d_from_rotation_matrix(torch.from_numpy(R.from_quat(gt_discretized_quat).as_matrix()).to(device))
+    
+        #     camera = rearrange('(b group_size) ... -> b group_size ...', batch["camera_quaternions"].detach().float().cpu().numpy(), group_size=group_size)
+        # object = rearrange('(b group_size) ... -> b group_size ...', batch["quaternions"].detach().float().cpu().numpy(), group_size=group_size)
+        # # valid = rearrange('(b group_size) ... -> b group_size ...', batch["valid"], group_size=group_size)
+        
+        # left_cam, right_cam = R.from_quat(camera[:, 0]), R.from_quat(camera[:, 1])
+        # camera_delta = (right_cam * left_cam.inv()).as_quat()
+
+        # left_object, right_object = R.from_quat(object[:, 0, 0]), R.from_quat(object[:, 1, 0])
+        # obj_delta = (right_object * left_object.inv()).as_quat()
+        # assert np.allclose(camera_delta, obj_delta, atol=1e-3)
+    
+            # if self.relative_val_on_train:
+            # # We only ever take the first 12 frames for train
+            # assert self.num_frames == 12
+            # left, right = zip(*permutation_pairs)
+            # permutation_pairs = list(zip([x + self.num_frames for x in left], right)) + list(zip(left, [x + self.num_frames for x in right]))
+
+                            # camera = rearrange('(b group_size) ... -> b group_size ...', batch["camera_quaternions"].detach().float().cpu().numpy(), group_size=group_size)
+                # object = rearrange('(b group_size) ... -> b group_size ...', batch["quaternions"].detach().float().cpu().numpy(), group_size=group_size)
+                # left_cam, right_cam = R.from_quat(camera[:, 0]), R.from_quat(camera[:, 1])
+                # camera_delta = (right_cam * left_cam.inv()).as_quat()
+                # left_object, right_object = R.from_quat(object[:, 0, 0]), R.from_quat(object[:, 1, 0])
+                # obj_delta = (right_object * left_object.inv()).as_quat()
+                # if not np.allclose(camera_delta, obj_delta, atol=1e-3):
+                #     log_warn(f"Camera and object rotations are not the same: {camera_delta - obj_delta}")

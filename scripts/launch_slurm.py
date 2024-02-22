@@ -216,7 +216,3 @@ def add_job(cfg: SlurmConfig):
 
 def watch():
     submitit.helpers.monitor_jobs(global_jobs)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -179,11 +179,12 @@ class Trainer:
     def validate(self, state: TrainingState):
         validation_start_time = time()
 
-        if self.cfg.dataset.reset_validation_dataset_every_epoch or self.cfg.trainer.base_model_custom_validation_steps:
+        if self.cfg.dataset.reset_validation_dataset_every_epoch or self.cfg.trainer.custom_inference_every_n_steps:
             if state.epoch == 0:
                 self.validation_dataset_holder.subset_size = self.cfg.trainer.num_gpus
             else:
-                self.validation_dataset_holder.subset_size = max(self.cfg.dataset.validation_dataset.subset_size, self.cfg.trainer.num_gpus)
+                self.validation_dataset_holder.subset_size = self.cfg.trainer.num_gpus
+                self.validation_dataset_holder.subset_size = max(self.cfg.dataset.validation_dataset.subset_size, self.validation_dataset_holder.subset_size) if self.cfg.dataset.validation_dataset.subset_size is not None else self.validation_dataset_holder.subset_size
 
             g = torch.Generator()
             g.manual_seed(state.global_step + get_rank())
@@ -242,11 +243,17 @@ class Trainer:
 
         unwrap(self.model).run_inference = types.MethodType(run_quantitative_inference, unwrap(self.model))
 
-        subset_size, batch_size = len(self.validation_dataset_holder), self.train_dataloader_holder.batch_size
+        g = torch.Generator()
+        g.manual_seed(0)
+        
+        subset_size = len(self.validation_dataset_holder)
+        subset_size = min(subset_size, self.cfg.dataset.validation_dataset.subset_size) if self.cfg.dataset.validation_dataset.subset_size is not None else subset_size
+        subset_size = min(subset_size, self.cfg.trainer.custom_inference_dataset_size) if self.cfg.trainer.custom_inference_dataset_size is not None else subset_size
+        batch_size = self.cfg.trainer.custom_inference_batch_size if self.cfg.trainer.custom_inference_batch_size is not None else self.train_dataloader_holder.batch_size
         self.validation_dataset_holder.subset_size = subset_size
-        self.train_dataloader_holder.random_subset = False
+        self.train_dataloader_holder.random_subset = self.cfg.trainer.custom_inference_fixed_shuffle
         self.validation_dataset_holder.batch_size = batch_size
-        self.validation_dataloader = self.validation_dataset_holder.get_dataloader(pin_memory=False)
+        self.validation_dataloader = self.validation_dataset_holder.get_dataloader(pin_memory=False, generator=g)
         self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
 
         run_inference_dataloader(
@@ -260,9 +267,9 @@ class Trainer:
         )
 
         self.train_dataloader_holder.subset_size = subset_size
-        self.train_dataloader_holder.random_subset = False
+        self.train_dataloader_holder.random_subset = self.cfg.trainer.custom_inference_fixed_shuffle
         self.train_dataloader_holder.batch_size = batch_size
-        self.train_dataloader = self.train_dataloader_holder.get_dataloader(pin_memory=False)
+        self.train_dataloader = self.train_dataloader_holder.get_dataloader(pin_memory=False, generator=g)
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
         run_inference_dataloader(
@@ -361,6 +368,7 @@ class Trainer:
         log_info(f"Train Dataloader Size on single GPU: {len(self.train_dataloader)}")
 
         global_step_metrics = defaultdict(float)
+        global_extra_wandb_metrics = dict()
         accumulate_steps = 0  # TODO: Figure out what happens if we end the dataloader between gradient update steps
         last_end_step_time = time()
         for epoch in range(first_epoch, tr.num_train_epochs):
@@ -385,7 +393,10 @@ class Trainer:
 
                     true_step += 1
                     for k, v in losses.items():
-                        global_step_metrics[k.removeprefix("metric_")] += v.detach().item()
+                        if isinstance(v, torch.Tensor):
+                            global_step_metrics[k.removeprefix("metric_")] += v.detach().item()
+                        else:
+                            global_extra_wandb_metrics[k.removeprefix("metric_")] = v
 
                     losses = dict(filter(lambda item: not item[0].startswith("metric_"), losses.items())) # Allow for custom metrics that are not losses
                     loss = sum(losses.values())
@@ -411,7 +422,7 @@ class Trainer:
                     ) or check_every_n_epochs(state, tr.eval_every_n_epochs, all_processes=True):
                         self.validate(state)
 
-                    if check_every_n_steps(state, tr.base_model_custom_validation_steps, run_first=tr.eval_on_start, all_processes=True):
+                    if check_every_n_steps(state, tr.custom_inference_every_n_steps, run_first=tr.eval_on_start, all_processes=True):
                         self.base_model_validate(state)
 
                     if self.cfg.model.unfreeze_unet_after_n_steps and global_step == self.cfg.model.unfreeze_unet_after_n_steps:
@@ -424,6 +435,7 @@ class Trainer:
                         "examples_seen": global_step * total_batch_size,
                         **{k: v / accumulate_steps for k, v in global_step_metrics.items()},
                         **{f"lr_{i}": lr for i, lr in enumerate(self.lr_scheduler.get_last_lr())},
+                        **global_extra_wandb_metrics
                     }
                     progress_bar.set_postfix(**logs)
                     self.accelerator.log(logs, step=global_step)

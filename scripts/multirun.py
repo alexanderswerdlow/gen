@@ -68,6 +68,7 @@ def main(
     env_vars = {var.split('=')[0]:var.split('=')[1] for var in env_var} if (env_var is not None and len(env_var) > 1) else {}
 
     # Generating and printing all combinations
+    num_jobs = 0
     for idx, combination in enumerate(itertools.product(*data.values())):
         if len(combination) == 0:
             prod_args = ""
@@ -111,15 +112,40 @@ def main(
                 f.write(f"Running: {repr(job)}\n")
 
             added_job = add_job(job)
-
+            num_jobs += 1
+        
+        print("\n\n\n")
         print(f"Running Job {idx}: ")
         pprint(job)
         print("\n")
         log_file = output_dir_ / f"{added_job.job_id}_{added_job.task_id}_log.out"
         print(f"Output file: {log_file}")
-        print("\n\n\n")
+        print(f"To view live output: tail -f {log_file}")
+        
+    if watch_run: 
+        if num_jobs == 1:
+            tail_log_file(log_file)
+        else:
+            watch()
 
-    if watch_run: watch()
+import time
+def tail_log_file(log_file_path):
+    max_retries = 60
+    retry_interval = 2
+
+    for _ in range(max_retries):
+        if os.path.exists(log_file_path):
+            proc = subprocess.Popen(['tail', '-f', "-n", "+1", log_file_path], stdout=subprocess.PIPE)
+            try:
+                for line in iter(proc.stdout.readline, b''):
+                    print(line.decode('utf-8'), end='')
+            except KeyboardInterrupt:
+                proc.terminate()
+            break
+        else:
+            time.sleep(retry_interval)
+
+    print(f"File not found: {log_file_path} after {max_retries * retry_interval} seconds...")
 
 if __name__ == "__main__":
     app()
