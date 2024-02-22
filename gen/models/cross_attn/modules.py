@@ -219,7 +219,8 @@ class TokenMapper(nn.Module):
         super().__init__()
         self.cfg = cfg
 
-        dim = self.cfg.model.token_embedding_dim * (self.cfg.model.num_conditioning_pairs if self.cfg.model.layer_specialization else 1)
+        # dim = self.cfg.model.token_embedding_dim * (self.cfg.model.num_conditioning_pairs if self.cfg.model.layer_specialization else 1)
+        dim = self.cfg.model.token_embedding_dim
         if self.cfg.model.token_cls_pred_loss:
             self.cls_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
 
@@ -236,7 +237,7 @@ class TokenMapper(nn.Module):
         self.apply(_init_weights)
 
     def forward(self, cond: ConditioningData, pred_data: TokenPredData):
-        mask_tokens = cond.mask_tokens
+        mask_tokens = cond.pred_mask_tokens
         if self.cfg.model.detach_mask_tokens_for_pred:
             mask_tokens = mask_tokens.detach()
 

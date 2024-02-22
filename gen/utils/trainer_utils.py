@@ -8,6 +8,7 @@ from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Any
 
+import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.state import PartialState
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
 
 
-def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module) -> int:
+def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, load_model: bool) -> int:
     if cfg.trainer.ckpt == "latest":
         # Get the most recent checkpoint
         dirs = os.listdir(cfg.checkpoint_dir)
@@ -40,10 +41,13 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module) 
         raise FileNotFoundError
     else:
         log_info(f"Resuming from checkpoint {path}")
-        if path.is_file() or cfg.trainer.load_weights_only_no_state:
-            load_checkpoint_in_model(model, str(path))
-        else:
-            accelerator.load_state(path)
+        # if path.is_file() or cfg.trainer.load_weights_only_no_state:
+        #     load_checkpoint_in_model(model, str(path))
+        # else:
+        #     accelerator.load_state(path)
+        if load_model:
+            state_dict = torch.load(path, map_location='cpu')
+            model.load_state_dict(state_dict, strict=True)
         try:
             if path.is_file():
                 global_step = int(path.parent.parent.name.split("_")[-1])

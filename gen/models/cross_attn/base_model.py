@@ -311,6 +311,8 @@ class BaseMapper(Trainable):
         else:
             if set_grad:
                 self.mapper.requires_grad_(True)
+            if not md.unet:
+                self.mapper.layer_specialization.requires_grad_(False)
             self.mapper.train()
 
         if md.controlnet:
@@ -377,16 +379,19 @@ class BaseMapper(Trainable):
         """
         params = []
         if self.cfg.model.clip_shift_scale_conditioning:
-            params.append(self.clip_proj_layers.parameters())
+            params.extend(self.clip_proj_layers.parameters())
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
-            params.append(self.token_mapper.parameters())
+            params.extend(self.token_mapper.parameters())
         
-        params.append(self.mapper.parameters())
+        params.extend(self.mapper.parameters())
 
-        return itertools.chain(*params)
+        # Add clip parameters
+        params.extend([p for p in self.clip.parameters() if p.requires_grad])
+
+        return params
 
     def get_unet_params(self):
-        is_unet_trainable = self.cfg.model.unet and self.cfg.model.freeze_unet
+        is_unet_trainable = self.cfg.model.unet and not self.cfg.model.freeze_unet
         return dict(self.unet.named_parameters()) if is_unet_trainable else dict()
     
     def get_param_groups(self):
@@ -711,7 +716,9 @@ class BaseMapper(Trainable):
         queries = rearrange("layers d -> (masks layers) d", self.mapper.learnable_token, masks=cond.mask_batch_idx.shape[0])
 
         cond.attn_dict["x"] = queries.to(self.dtype)
-        cond.mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
+        pred_mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
+        cond.pred_mask_tokens = pred_mask_tokens
+        cond.mask_tokens = pred_mask_tokens
 
         if self.cfg.model.per_layer_queries:
             # Break e.g., 1024 -> 16 x 64

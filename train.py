@@ -95,6 +95,8 @@ class Trainer:
             case ModelType.BASE_MAPPER:
                 model = get_model_from_cfg(self.cfg)
                 self.models.append(model)
+                if self.cfg.trainer.ckpt:
+                    _ = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=model, load_model=True)
                 self.model = self.accelerator.prepare(model)
                 self.tokenizer = unwrap(model).tokenizer
 
@@ -168,6 +170,7 @@ class Trainer:
 
     def checkpoint(self, state: TrainingState):
         prefix = "checkpoint"
+        self.cfg.checkpoint_dir.mkdir(exist_ok=True, parents=True)
         handle_checkpointing_dirs(self.cfg, prefix="checkpoint")
         save_path = self.cfg.checkpoint_dir / f"{prefix}_{state.global_step}"
         save_path.mkdir(exist_ok=True, parents=True)
@@ -339,7 +342,12 @@ class Trainer:
         first_epoch = 0
 
         # Potentially load in the weights and states from a previous save
-        initial_global_step = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=self.model) if tr.ckpt else 0
+        if tr.ckpt:
+            initial_global_step = load_from_ckpt(
+                cfg=self.cfg, accelerator=self.accelerator,
+                model=self.model, load_model=False)
+        else:
+            initial_global_step = 0
 
         if self.cfg.profile:
             profiler = Profiler(output_dir=self.cfg.output_dir, active_steps=tr.profiler_active_steps)
