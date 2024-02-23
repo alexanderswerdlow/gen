@@ -313,8 +313,6 @@ class BaseMapper(Trainable):
         else:
             if set_grad:
                 self.mapper.requires_grad_(True)
-            if not md.unet:
-                self.mapper.layer_specialization.requires_grad_(False)
             self.mapper.train()
 
         if md.controlnet:

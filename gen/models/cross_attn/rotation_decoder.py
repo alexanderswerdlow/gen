@@ -117,6 +117,7 @@ class SelfAttentionTransformer(nn.Module):
         fused_bias_fc=False,
         fused_mlp=False,
         fused_dropout_add_ln=False,
+        input_dim=None,
     ):
         """
         Args:
@@ -162,6 +163,8 @@ class SelfAttentionTransformer(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if class_token else None
         embed_len = seq_len
         self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim) * 0.02)
+
+        self.input_proj = nn.Linear(input_dim, embed_dim) if input_dim is not None else nn.Identity()
 
         dpr = [
             x.item() for x in torch.linspace(0, drop_path_rate, depth)
@@ -229,9 +232,9 @@ class SelfAttentionTransformer(nn.Module):
     def _pos_embed(self, x):
         # original timm, JAX, and deit vit impl
         # pos_embed has entry for class token, concat then add
+        x = x + self.pos_embed
         if self.cls_token is not None:
             x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
-        x = x + self.pos_embed
         return x
 
     def forward_features(self, x):
@@ -239,6 +242,8 @@ class SelfAttentionTransformer(nn.Module):
         If all_tokens==False and self.global_pool == 'token', we only return the features for the
         cls token.
         """
+        x = self.input_proj(x)
+
         hidden_states = self._pos_embed(x)
         residual = None
 
