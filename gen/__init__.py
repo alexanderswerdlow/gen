@@ -15,3 +15,5 @@ PLACEHOLDER_TOKEN: str = os.getenv("PLACEHOLDER_TOKEN", "masks")
 DEFAULT_PROMPT: str = os.getenv("DEFAULT_PROMPT", f"A photo of {PLACEHOLDER_TOKEN}")
 CONDA_ENV = Path(os.getenv("CONDA_ENV", "gen"))
 GSO_PCD_PATH = Path(os.getenv("GSO_PCD_PATH", "/projects/katefgroup/aswerdlo/gen/gso_pcd.npz"))
+
+os.environ["EINX_WARN_ON_RETRACE"] = "25"

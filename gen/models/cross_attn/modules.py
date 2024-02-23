@@ -232,7 +232,14 @@ class TokenMapper(nn.Module):
         if self.cfg.model.token_rot_pred_loss:
             if self.cfg.model.discretize_rot_pred:
                 if self.cfg.model.predict_rotation_from_n_frames:
-                    self.rot_decoder = SelfAttentionTransformer(num_classes=(2 * self.cfg.model.discretize_rot_bins_per_axis) * 3, embed_dim=dim, num_heads=8)
+                    self.rot_decoder = SelfAttentionTransformer(
+                        num_classes=(2 * self.cfg.model.discretize_rot_bins_per_axis) * 3, 
+                        embed_dim=dim, 
+                        num_heads=8, 
+                        depth=6, 
+                        fused_bias_fc=self.cfg.model.fused_bias_fc, 
+                        fused_mlp=self.cfg.model.fused_mlp
+                    )
                 else:
                     self.rot_decoder = Mlp(in_features=dim, hidden_features=dim // 2, out_features=(2 * self.cfg.model.discretize_rot_bins_per_axis) * 3, activation=nn.GELU())
             elif self.cfg.model.use_timestep_mask_film:
@@ -244,6 +251,7 @@ class TokenMapper(nn.Module):
 
     def forward(self, batch, cond: ConditioningData, pred_data: TokenPredData):
         mask_tokens = cond.mask_tokens
+
         if self.cfg.model.detach_mask_tokens_for_pred:
             mask_tokens = mask_tokens.detach()
 
@@ -252,6 +260,11 @@ class TokenMapper(nn.Module):
             pred_data.cls_pred = output
 
         if self.cfg.model.token_rot_pred_loss:
+            rot_mask_tokens = pred_data.mask_tokens
+
+            if self.cfg.model.detach_mask_tokens_for_pred:
+                rot_mask_tokens = rot_mask_tokens.detach()
+
             if self.cfg.model.token_rot_transformer_head: # WIP
                 seq1 = torch.zeros((2, 16, 768), requires_grad=True).cuda()
                 seq2 = torch.zeros((2, 32, 768), requires_grad=True).cuda()
@@ -267,24 +280,13 @@ class TokenMapper(nn.Module):
             elif self.cfg.model.discretize_rot_pred:
                 if self.cfg.model.predict_rotation_from_n_frames:
                     group_size = self.cfg.model.predict_rotation_from_n_frames
-                    grouped_indices = []
-                    all_rot_data = get_relative_rot_data(cfg=self.cfg, batch=batch, cond=cond)
-                    for _, group_instance_data in all_rot_data.items():
-                        for _, instance_rot_data in group_instance_data.items():
-                            if len(instance_rot_data) == group_size:
-                                _, instance_indices = zip(*instance_rot_data)
-                                grouped_indices.extend(instance_indices)
-
-                    input_mask_tokens = rearrange("(masks group_size) d -> masks group_size d", mask_tokens[torch.tensor(grouped_indices)], group_size=group_size)
-
+                    input_mask_tokens = rearrange("(masks group_size) d -> masks group_size d", rot_mask_tokens, group_size=group_size)
                     pred = self.rot_decoder(input_mask_tokens)
-                    # We copy the prediction for all mask tokens in the group to make things easier
-                    pred = rearrange("b (axes d) -> (b group_size) (axes d)", pred, group_size=group_size)
                 else:
-                    pred = self.rot_decoder(mask_tokens)
+                    pred = self.rot_decoder(rot_mask_tokens)
                 pred = rearrange("b (axes d) -> b axes d", pred, axes=3)
             else:
-                pred = self.rot_decoder(pred_data.noised_rot_6d, pred_data.timesteps, mask_tokens)
+                pred = self.rot_decoder(pred_data.noised_rot_6d.to(rot_mask_tokens), pred_data.timesteps, rot_mask_tokens)
             pred_data.pred_6d_rot = pred
 
         return pred_data

@@ -1,35 +1,28 @@
 import autoroot
 
+import io
 import os
-import warnings
 from functools import cached_property
 from itertools import chain, permutations
 from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-import open_clip
 import torch
 import torchvision
-import webdataset as wds
 from einops import rearrange
 from einx import roll
-from ipdb import set_trace as st
 from scipy.spatial.transform import Rotation as R
 from torch.utils.data import Dataset
 
-from gen import (DEFAULT_PROMPT, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH,
-                 MOVI_OVERFIT_DATASET_PATH)
+from gen import MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.base_dataset import AbstractDataset, Split
 from gen.utils.decoupled_utils import load_tensor_dict, save_tensor_dict
-
-torchvision.disable_beta_transforms_warning()
-import io
-
 from gen.utils.tokenization_utils import get_tokens
 
+torchvision.disable_beta_transforms_warning()
 
 @inherit_parent_args
 class MoviDataset(AbstractDataset, Dataset):
@@ -53,6 +46,7 @@ class MoviDataset(AbstractDataset, Dataset):
         cache_instances_in_memory: bool = False, # Cache each intermediate result after processing in memory in a compressed format
         num_subset: Optional[int] = None,
         return_multiple_frames: Optional[int] = None,
+        object_ignore_threshold: float = 0.1,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -67,6 +61,7 @@ class MoviDataset(AbstractDataset, Dataset):
         self.cache_in_memory = cache_in_memory
         self.cache_instances_in_memory = cache_instances_in_memory
         self.return_multiple_frames = return_multiple_frames
+        self.object_ignore_threshold = object_ignore_threshold
 
         if num_cameras > 1: assert multi_camera_format
 
@@ -157,24 +152,25 @@ class MoviDataset(AbstractDataset, Dataset):
             true_frame_idxs = self.get_frame_permutations[frame_idx]
             combined_frame_data = []
             for true_frame_idx in true_frame_idxs:
-                frame_data = self.fetch_data((file_idx, true_frame_idx // self.num_frames, true_frame_idx % self.num_frames), path=path, data=data)
+                frame_data = self.fetch_data((file_idx, true_frame_idx // self.num_frames, true_frame_idx % self.num_frames), path=path, data=data, index=index)
                 combined_frame_data.append(frame_data)
 
             return combined_frame_data
 
-        return self.fetch_data((file_idx, camera_idx, frame_idx), path=path, data=data)
+        return self.fetch_data((file_idx, camera_idx, frame_idx), path=path, data=data, index=index)
 
 
-    def fetch_data(self, combined_idx, path=None, data=None):
+    def fetch_data(self, combined_idx, path=None, data=None, index=None):
         file_idx, camera_idx, frame_idx = combined_idx
 
         ret = {
             "metadata": {
-                "id": str(path),
+                "scene_id": str(path),
                 "path": str(self.root_dir / path / "data.npz"),
                 "file_idx": file_idx,
                 "frame_idx": frame_idx,
-                "camera_idx": camera_idx
+                "camera_idx": camera_idx,
+                "index": index,
             },
         }
 
@@ -193,7 +189,7 @@ class MoviDataset(AbstractDataset, Dataset):
             instance = data["segment"][camera_idx, frame_idx]
 
             object_quaternions = data["quaternions"][camera_idx, frame_idx] # (23, 4)
-            object_quaternions = roll('objects [wxyz]', object_quaternions, shift=(-1,))
+            object_quaternions = roll('objects [wxyz]', object_quaternions, shift=(-1,)) # Convert from wxyz [Kubrics] to xyzw [SciPy]
             raw_object_quaternions = object_quaternions.copy()
             positions = data["positions"][camera_idx, frame_idx] # (23, 3)
             valid = data["valid"][camera_idx, :].squeeze(0) # (23, )
@@ -201,11 +197,12 @@ class MoviDataset(AbstractDataset, Dataset):
             asset_id = data["asset_ids"][camera_idx, :].squeeze(0)
 
             camera_quaternion = data['camera_quaternions'][camera_idx, frame_idx] # (4, )
-            camera_quaternion = roll('[wxyz]', camera_quaternion, shift=(-1,))
+            camera_quaternion = roll('[wxyz]', camera_quaternion, shift=(-1,)) # Convert from wxyz [Kubrics] to xyzw [SciPy]
             camera_quaternion = R.from_quat(camera_quaternion)
 
             object_quaternions[~valid] = 1 # Set invalid quaternions to 1 to avoid 0 norm.
             object_quaternions = R.from_quat(object_quaternions)
+            # Painfully obtained this transformation. It should be cam * obj_inv but Kubrics [Blender] must give inverse of the rotation we expect.
             object_quaternions = camera_quaternion.inv() * object_quaternions
             object_quaternions = object_quaternions.as_quat()
             object_quaternions[~valid] = 0
@@ -263,7 +260,7 @@ class MoviDataset(AbstractDataset, Dataset):
             source_data.segmentation = torch.ones_like(source_data.segmentation)[..., [0]]
             target_data.segmentation = torch.ones_like(target_data.segmentation)[..., [0]]
 
-        
+        ret['valid'] &= (torch.sum(source_data.segmentation[..., 1:], dim=[0, 1]) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2).numpy()
         ret.update({
             "gen_pixel_values": target_data.image,
             "gen_segmentation": target_data.segmentation,
@@ -274,6 +271,9 @@ class MoviDataset(AbstractDataset, Dataset):
 
         if source_data.grid is not None: ret["disc_grid"] = source_data.grid
         if target_data.grid is not None: ret["gen_grid"] = target_data.grid
+
+        # Required for memory pinning
+        ret = {k: torch.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in ret.items()}
 
         if self.cache_instances_in_memory:
             bytes_io = io.BytesIO()
@@ -309,12 +309,12 @@ if __name__ == "__main__":
         cfg=None,
         split=Split.TRAIN,
         num_workers=0,
-        batch_size=24,
+        batch_size=6,
         shuffle=True,
         subset_size=None,
         dataset="movi_e",
         tokenizer=tokenizer,
-        path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
+        path=MOVI_MEDIUM_PATH,
         num_objects=23,
         num_frames=8,
         num_cameras=2,
@@ -329,12 +329,11 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
     for batch in dataloader:
-        # from ipdb import set_trace as st; st()
         print(f'Time taken: {time.time() - start_time}')
         start_time = time.time()
-        # from image_utils import Im, get_layered_image_from_binary_mask
-        # gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'].squeeze(0))))
-        # disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][0] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'].squeeze(0))))
-        # print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][0, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][0, ..., 0].numel())
-        # Im.concat_horizontal(gen_, disc_).save(batch['metadata']['id'][0])
-
+        from image_utils import Im, get_layered_image_from_binary_mask
+        # for b in range(batch['gen_pixel_values'].shape[0]):            
+        #     gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][b].squeeze(0))))
+        #     disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'][b].squeeze(0))))
+        #     print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][b, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][b, ..., 0].numel())
+        #     Im.concat_horizontal(gen_, disc_).save(str(b)) # batch['metadata']['id'][b]

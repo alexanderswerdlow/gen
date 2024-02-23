@@ -13,6 +13,8 @@ from PIL import Image
 
 from image_utils import Im
 
+from gen.utils.pytorch3d_transforms import matrix_to_quaternion
+
 matplotlib.use("agg")
 matplotlib.rcParams["figure.dpi"] = 128
 
@@ -181,7 +183,7 @@ def visualize_rotations_pcds(ref, pred, pcd, legends=[], markers=[], save=False)
 
     fig.tight_layout()
     images = []
-    for elev, azim in zip([0, 20, 50], [0, 20, 50]):
+    for elev, azim in zip([0, 40, 15], [0, 30, 75]):
         ax.view_init(elev=elev, azim=azim, roll=0)
         canvas.draw()
         image_flat = np.frombuffer(canvas.tostring_rgb(), dtype="uint8")
@@ -255,9 +257,10 @@ def get_quat_from_discretized_zyx(zyx: np.ndarray | torch.Tensor, num_bins: int)
         zyx = zyx.detach().float().cpu().numpy()
 
     zyx = zyx / (num_bins - 1)
+    zyx %= 1 # Wraparound
     zyx[:, [0, 2]] = (zyx[:, [0, 2]] * (2 * np.pi)) - (np.pi)
     zyx[:, 1] = (zyx[:, 1] * (np.pi)) - (np.pi / 2)
-    quat = R.from_euler("zyx", zyx, degrees=False).as_quat()
+    quat = R.from_euler(seq="zyx", angles=zyx, degrees=False).as_quat()
     return quat
 
 def get_discretized_zyx_from_quat(quat: torch.Tensor, num_bins: int, return_unquantized=False):
@@ -271,7 +274,7 @@ def get_discretized_zyx_from_quat(quat: torch.Tensor, num_bins: int, return_unqu
     """
     device = quat.device
     max_range = num_bins - 1
-    zyx = R.from_quat(quat.float().cpu().numpy()).as_euler("zyx", degrees=False)
+    zyx = R.from_quat(quat.float().cpu().numpy()).as_euler(seq="zyx", degrees=False)
     zyx[:, [0, 2]] = (zyx[:, [0, 2]] + np.pi) / (2 * np.pi) # Normalize from 0 to 1
     zyx[:, 1] = (zyx[:, 1] + (np.pi / 2)) / (np.pi)
     discretized_zyx = np.round(zyx * max_range).astype(int)
@@ -281,3 +284,16 @@ def get_discretized_zyx_from_quat(quat: torch.Tensor, num_bins: int, return_unqu
         return discretized_zyx, torch.from_numpy(zyx * max_range).to(dtype=torch.float, device=device)
     
     return discretized_zyx
+
+def quat_l1_loss(rot1, rot2):
+    mat1 = compute_rotation_matrix_from_ortho6d(rot1)
+    quat1 = matrix_to_quaternion(mat1)
+
+    mat2 = compute_rotation_matrix_from_ortho6d(rot2)
+    quat2 = matrix_to_quaternion(mat2)
+
+    quat_l1 = (quat1 - quat2).abs().sum(-1)
+    quat_l1_ = (quat1 + quat2).abs().sum(-1)
+    select_mask = (quat_l1 < quat_l1_).float()
+    quat_l1 = select_mask * quat_l1 + (1 - select_mask) * quat_l1_
+    return quat_l1

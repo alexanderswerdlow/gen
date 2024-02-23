@@ -16,14 +16,13 @@ from torchvision import utils
 from gen import GSO_PCD_PATH
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
-from gen.models.cross_attn.losses import token_cls_loss, token_rot_loss
+from gen.models.cross_attn.losses import get_relative_rot_data, token_cls_loss, token_rot_loss
 from gen.utils.decoupled_utils import load_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
-from gen.utils.pytorch3d_transforms import matrix_to_quaternion
-from dataclasses import dataclass, asdict
+from dataclasses import asdict
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
@@ -40,6 +39,14 @@ def repeat_batch(batch, bs: int):
 
     return batch_
 
+def get_composited_mask(batch: dict, b: int, j: int):
+    orig_image = ((batch["gen_pixel_values"].squeeze(0) + 1) / 2)[b]
+    mask_image = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"][b, ..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+    mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
+    mask_alpha = (batch["gen_segmentation"][b, ..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+    composited_image = Im(orig_image).pil.copy().convert("RGBA")
+    composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
+    return Im(composited_image.convert("RGB"))
 
 new_prompts = [
     "A photo of a {}",
@@ -153,17 +160,14 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     if self.cfg.model.token_rot_pred_loss:
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
-            pred_data, rot_loss_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.rotation_scheduler)
-            ret.update({k:v.float().cpu() for k,v in rot_loss_data.items()})
-            R_ref = compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d)[pred_data.pred_mask].cpu().numpy()
+            pred_data, _ = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.rotation_scheduler)
+            R_ref = compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).cpu().numpy()
             
             try:
-                R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot)[pred_data.pred_mask].cpu().numpy()
+                R_pred = compute_rotation_matrix_from_ortho6d(pred_data.pred_6d_rot).cpu().numpy()
             except Exception as e:
                 print(e)
-                log_info(pred_data.pred_6d_rot.shape, pred_data.pred_mask.shape)
                 log_info(pred_data)
-                log_info(pred_data.pred_6d_rot[pred_data.pred_mask].v)
 
             assert R_ref.shape == R_pred.shape
 
@@ -173,66 +177,77 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 gso_pcds = np.load(GSO_PCD_PATH)
 
             bs = batch["gen_pixel_values"].shape[0]
-
-            # For relative rotation prediction we only look at the first mask token for each batch [group]
-            group_size = self.cfg.model.predict_rotation_from_n_frames if self.cfg.model.predict_rotation_from_n_frames is not None else 1
-            batch_indices = rearrange("(b group_size) -> b group_size", torch.arange(bs), group_size=group_size)[:, 0]
             
             all_imgs = []
             all_videos = []
-            for b in batch_indices:
-                mask_ = ((cond.mask_batch_idx == b) & pred_data.pred_mask).to(orig_image.device)
-                instance_idx = cond.mask_instance_idx[mask_]
-                gt_image_viz, pred_rot_viz = [], []
-                for j in instance_idx:
-                    mask_image = Im(
-                        get_layered_image_from_binary_mask(batch["gen_segmentation"][b, ..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8
-                    )
-                    mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
-                    mask_alpha = (batch["gen_segmentation"][b, ..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
-                    composited_image = Im(orig_image.torch[b]).pil.copy().convert("RGBA")
-                    composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
-                    gt_image_viz.append(Im(composited_image.convert("RGB")))
+            rot_pred_idx = 0
+            if self.cfg.model.predict_rotation_from_n_frames is None:
+                for b in range(bs):
+                    mask_ = ((cond.mask_batch_idx == b) & pred_data.token_output_mask).to(orig_image.device)
+                    instance_idx = cond.mask_instance_idx[mask_]
+                    pred_rot_viz = []
+                    for j in instance_idx:
+                        composited_image = get_composited_mask(batch, b, j)
+                        asset_id = batch["asset_id"][j - 1][b]
+                        pcd = gso_pcds[asset_id]
+                        if self.cfg.inference.visualize_rotation_denoising and pred_data.denoise_history_6d_rot.shape[1] > 1:
+                            # When we perform rotation classification (binning), denoise_history_6d_rot is not valid so we skip this visualization
+                            R_hist = compute_rotation_matrix_from_ortho6d(rearrange("m h ... -> (m h) ...", pred_data.denoise_history_6d_rot))
+                            R_hist = rearrange("(m h) ... -> m h ...", R_hist, m=pred_data.gt_rot_6d.shape[0]).cpu().numpy()
+                            def evenly_spaced_indices(n, percentage=0.1, minimum=3):
+                                num_elements = max(minimum, int(n * percentage))
+                                if num_elements <= minimum:
+                                    return [0, n // 2, n - 1]
+                                spacing = (n - 1) / (num_elements - 1)
+                                return np.round(np.arange(0, n, spacing)).astype(int)
 
-                    # Visualize rotations
-                    asset_id = batch["asset_id"][j - 1][b]
-                    pcd = gso_pcds[asset_id]
-                    rot_idx = len(pred_rot_viz)
-                    if self.cfg.inference.visualize_rotation_denoising and pred_data.denoise_history_6d_rot.shape[1] > 1:
-                        # When we perform rotation classification (binning), denoise_history_6d_rot is not valid so we skip this visualization
-                        R_hist = compute_rotation_matrix_from_ortho6d(rearrange("m h ... -> (m h) ...", pred_data.denoise_history_6d_rot))
-                        R_hist = rearrange("(m h) ... -> m h ...", R_hist, m=pred_data.gt_rot_6d.shape[0])[pred_data.pred_mask].cpu().numpy()
-                        def evenly_spaced_indices(n, percentage=0.1, minimum=3):
-                            num_elements = max(minimum, int(n * percentage))
-                            if num_elements <= minimum:
-                                return [0, n // 2, n - 1]
-                            spacing = (n - 1) / (num_elements - 1)
-                            return np.round(np.arange(0, n, spacing)).astype(int)
+                            img = []
+                            idx_ = evenly_spaced_indices(R_hist.shape[1])
+                            for t in idx_:
+                                img.append(Im.concat_horizontal(Im(visualize_rotations_pcds(R_ref[rot_pred_idx], R_hist[rot_pred_idx, t], pcd)).write_text(f"Timestep {pred_data.denoise_history_timesteps[t]}"), composited_image))
 
-                        img = []
-                        idx_ = evenly_spaced_indices(R_hist.shape[1])
-                        for t in idx_:
-                            img.append(Im.concat_horizontal(Im(visualize_rotations_pcds(R_ref[rot_idx], R_hist[rot_idx, t], pcd)).write_text(f"Timestep {pred_data.denoise_history_timesteps[t]}"), gt_image_viz[-1]))
+                            all_videos.append(Im(torch.stack([x.torch for x in img])).encode_video(fps=4))
+                            img = Im.concat_vertical(*img)
+                        else:
+                            img = Im(visualize_rotations_pcds(R_ref[rot_pred_idx], R_pred[rot_pred_idx], pcd))
 
-                        all_videos.append(Im(torch.stack([x.torch for x in img])).encode_video(fps=4))
-                        img = Im.concat_vertical(*img)
-                    else:
-                        img = Im(visualize_rotations_pcds(R_ref[rot_idx], R_pred[rot_idx], pcd))
+                        pred_rot_viz.append(Im.concat_vertical(img, composited_image))
+                        rot_pred_idx += 1
 
-                    
-                    pred_rot_viz.append(img)
+                    try:
+                        all_imgs.append(Im.concat_horizontal(*pred_rot_viz))
+                    except Exception as e:
+                        print(e)
 
-                top_img = Im.concat_horizontal(*pred_rot_viz)
-                bot_img = Im.concat_horizontal(*gt_image_viz)
-                try:
-                    all_imgs.append(Im.concat_vertical(top_img, bot_img))
-                except Exception as e:
-                    print(e)
-                    print(top_img)
-                    print(bot_img)
-                    all_imgs.append(top_img)
+            else:
+                assert pred_data.token_output_mask.sum().item() // 2 == R_pred.shape[0]
+                all_rot_data = get_relative_rot_data(self.cfg, cond, batch)
+                group_size = self.cfg.model.predict_rotation_from_n_frames
+                for group_idx, group_instance_data in all_rot_data.items():
+                    assert group_idx == 0
+                    pred_rot_viz = []
+                    for instance_idx, instance_rot_data in group_instance_data.items():
+                        if len(instance_rot_data) != group_size or instance_idx == 0:
+                            continue
+                        batch_indices, token_indices = zip(*instance_rot_data)
+                        instance_indices = cond.mask_instance_idx[[token_indices]]
+                        imgs_ = Im.concat_horizontal(*[get_composited_mask(batch, b, j) for b, j in zip(batch_indices, instance_indices)])
+        
+                        assert (cond.mask_instance_idx[[token_indices]] == cond.mask_instance_idx[token_indices[0]]).all().item()
+                        assert (batch["asset_id"][cond.mask_instance_idx[token_indices[0]] - 1][batch_indices[0]] == batch["asset_id"][cond.mask_instance_idx[token_indices[1]] - 1][batch_indices[1]])
 
-            ret["rotations"] = Im.concat_vertical(*all_imgs, spacing=30, fill=(128, 128, 128))
+                        # Visualize rotations
+                        asset_id = batch["asset_id"][cond.mask_instance_idx[token_indices[0]] - 1][batch_indices[0]]
+                        pcd = gso_pcds[asset_id]
+                        img = Im(visualize_rotations_pcds(R_ref[rot_pred_idx], R_pred[rot_pred_idx], pcd))
+                        pred_rot_viz.append(Im.concat_vertical(img, imgs_))
+                        rot_pred_idx += 1
+                    try:
+                        all_imgs.append(Im.concat_vertical(*pred_rot_viz, spacing=10, fill=(128, 128, 128)))
+                    except Exception as e:
+                        print(e)
+
+            ret["rotations"] = Im.concat_horizontal(*all_imgs, spacing=30, fill=(128, 128, 128))
             if len(all_videos) > 0: ret["rotation_videos"] = all_videos
 
     if batch["input_ids"].shape[0] > 1: return ret

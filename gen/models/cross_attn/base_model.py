@@ -39,6 +39,7 @@ from gen.utils.trainer_utils import Trainable, TrainingState
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers import DDIMScheduler
 from scipy.spatial.transform import Rotation as R
+import einops
 
 class InputData(TypedDict):
     gen_pixel_values: Float[Tensor, "b c h w"]
@@ -60,6 +61,7 @@ class ConditioningData:
     mask_tokens: Optional[Float[Tensor, "n d"]] = None
     mask_batch_idx: Optional[Integer[Tensor, "n"]] = None
     mask_instance_idx: Optional[Integer[Tensor, "n"]] = None
+    mask_dropout: Optional[Bool[Tensor, "n"]] = None
     batch_cond_dropout: Optional[Bool[Tensor, "b"]] = None
     input_prompt: Optional[list[str]] = None
     learnable_idxs: Optional[Any] = None
@@ -76,11 +78,12 @@ class TokenPredData:
     timesteps: Optional[Integer[Tensor, "b"]] = None
     cls_pred: Optional[Float[Tensor, "n classes"]] = None
     pred_6d_rot: Optional[Float[Tensor, "n 6"]] = None
-    pred_mask: Optional[Bool[Tensor, "n"]] = None
+    token_output_mask: Optional[Bool[Tensor, "n"]] = None
+    relative_rot_token_mask: Optional[Bool[Tensor, "n"]] = None
     denoise_history_6d_rot: Optional[Float[Tensor, "t n 6"]] = None
     denoise_history_timesteps: Optional[list[int]] = None
-    relative_rot_pred_mask: Optional[Bool[Tensor, "n"]] = None
     raw_pred_rot_logits: Optional[Float[Tensor, "n ..."]] = None
+    mask_tokens: Optional[Float[Tensor, "n d"]] = None
 
 class AttentionMetadata(TypedDict):
     layer_idx: int
@@ -219,9 +222,6 @@ class BaseMapper(Trainable):
             num_cross_attn_layers = register_layerwise_attention(self.unet)
             assert num_cross_attn_layers == (2 * self.cfg.model.num_conditioning_pairs * (2 if self.cfg.model.gated_cross_attn else 1))
    
-        if self.cfg.model.per_layer_queries:
-            assert self.cfg.model.layer_specialization
-
         if self.cfg.model.per_layer_queries:
             assert self.cfg.model.layer_specialization
 
@@ -475,7 +475,6 @@ class BaseMapper(Trainable):
     def denoise_rotation(self, batch: InputData, cond: ConditioningData, scheduler: DDPMScheduler):
         pred_data = TokenPredData()
         pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
-        assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
         
         scheduler.set_timesteps(num_inference_steps=self.cfg.model.rotation_diffusion_timestep, device=self.device)
         timesteps = scheduler.timesteps
@@ -508,7 +507,8 @@ class BaseMapper(Trainable):
 
         pred_data.pred_6d_rot = latents
         pred_data.denoise_history_6d_rot = torch.stack(latent_history, dim=1)
-        token_rot_loss_data = token_rot_loss(self.cfg, batch, cond, pred_data)
+        pred_data.rot_6d_noise = pred_data.gt_rot_6d # During inference we just set our epsilon loss [if enabled] to to be the final sample loss
+        token_rot_loss_data = token_rot_loss(self.cfg, pred_data, is_training=self.training)
         token_rot_loss_data = {k:v for k, v in token_rot_loss_data.items() if isinstance(v, torch.Tensor)}
 
         return pred_data, token_rot_loss_data
@@ -520,7 +520,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.use_dummy_mask:
             # Very hacky. We ignore masks with <= 32 pixels later on.
-            object_is_visible = (rearrange('b h w c -> b c (h w)', batch["gen_segmentation"]) > 0).sum(dim=-1) > 32
+            object_is_visible = (rearrange('b h w c -> b c (h w)', batch["gen_segmentation"]) > 0).sum(dim=-1) > 0
             rearrange('b h w c -> b c (h w)', batch["gen_segmentation"])[object_is_visible] = 1
             return batch
         elif self.cfg.model.use_dataset_segmentation:
@@ -618,6 +618,7 @@ class BaseMapper(Trainable):
         feature_map_masks = []
         mask_batch_idx = []
         mask_instance_idx = []
+        mask_dropout = []
 
         assert "gen_segmentation" in batch
         for i in range(bs):
@@ -629,7 +630,8 @@ class BaseMapper(Trainable):
                 continue
 
             # Remove empty masks. Because of flash attention bugs, we require a minimum of 32 pixels. 14 is too few.
-            non_empty_mask = torch.sum(one_hot_mask, dim=[1, 2]) > 32
+            non_empty_mask = torch.sum(one_hot_mask, dim=[1, 2]) > 0
+            non_empty_mask[1:] &= batch['valid'][i]
 
             if self.cfg.model.training_mask_dropout is not None and self.training:
                 dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), False, dtype=torch.bool)
@@ -663,12 +665,14 @@ class BaseMapper(Trainable):
             feature_map_masks.append(feature_map_mask_)
             mask_batch_idx.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
             mask_instance_idx.append(one_hot_idx)
+            mask_dropout.append(combined_mask)
 
         # If the 1st image has 5 masks and the 2nd has 3 masks, we will have an integer tensor of shape (total == 8,) for 8 different cross-attns. The sequence length for each is thus the number of valid "pixels" (KVs)
         feature_map_masks = torch.cat(feature_map_masks, dim=0)  # feature_map_mask is a boolean mask of (total, h, w)
-        feature_map_masks = rearrange("total h w -> total (h w)", feature_map_masks).to(device)
+        feature_map_masks = einops.rearrange(feature_map_masks, "total h w -> total (h w)").to(device)
         mask_batch_idx = torch.cat(mask_batch_idx, dim=0).to(device)
         mask_instance_idx = torch.cat(mask_instance_idx, dim=0).to(device)
+        mask_dropout = torch.stack(mask_dropout, dim=0).to(device)
 
         # In the simplest case, we have one query per mask, and a single feature map. However, we support multiple queries per mask 
         # [to generate tokens for different layers] and also support each query to have K/Vs  from different feature maps, as long as all feature maps 
@@ -676,13 +680,13 @@ class BaseMapper(Trainable):
         num_queries_per_mask = self.cfg.model.num_conditioning_pairs if self.cfg.model.per_layer_queries else 1
         num_feature_maps = clip_feature_map.shape[1]
         seqlens_k = feature_map_masks.sum(dim=-1) * num_feature_maps  # We sum the number of valid "pixels" in each mask
-        seqlens_k = rearrange('b -> (b layers)', seqlens_k, layers = num_queries_per_mask)
+        seqlens_k = einops.repeat(seqlens_k, 'b -> (b layers)', layers=num_queries_per_mask)
 
         max_seqlen_k = seqlens_k.max().item()
         cu_seqlens_k = F.pad(torch.cumsum(seqlens_k, dim=0, dtype=torch.torch.int32), (1, 0))
 
-        flat_features = rearrange("masks n (h w) d -> (masks layers n h w) d", clip_feature_map[mask_batch_idx], layers=num_queries_per_mask)
-        flat_mask = rearrange("masks (h w) -> (masks layers n h w)", feature_map_masks, layers=num_queries_per_mask, n=num_feature_maps) # Repeat mask over layers
+        flat_features = einops.repeat(clip_feature_map[mask_batch_idx], "masks n hw d -> (masks layers n hw) d", layers=num_queries_per_mask)
+        flat_mask = einops.repeat(feature_map_masks, "masks hw -> (masks layers n hw)", layers=num_queries_per_mask, n=num_feature_maps) # Repeat mask over layers
         k_features = flat_features[flat_mask]
 
         # The actual query is obtained from the mapper class (a learnable tokens)        
@@ -690,9 +694,9 @@ class BaseMapper(Trainable):
         max_seqlen_q = 1  # We are doing attention pooling so we have one query per mask
 
         cond.attn_dict = dict(x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
-
         cond.mask_batch_idx = mask_batch_idx
         cond.mask_instance_idx = mask_instance_idx
+        cond.mask_dropout = mask_dropout
         if self.cfg.model.clip_shift_scale_conditioning:
             forward_shift_scale(self, cond, clip_feature_map, latent_dim)
 
@@ -705,21 +709,19 @@ class BaseMapper(Trainable):
         batch = self.check_add_segmentation(batch)
         cond = self.add_cross_attn_params(batch, cond)
 
-        queries = rearrange("layers d -> (masks layers) d", self.mapper.learnable_token, masks=cond.mask_batch_idx.shape[0])
+        queries = einops.repeat(self.mapper.learnable_token, "layers d -> (masks layers) d", masks=cond.mask_batch_idx.shape[0])
 
         cond.attn_dict["x"] = queries.to(self.dtype)
         pred_mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
         cond.mask_tokens = pred_mask_tokens
 
-        if self.cfg.model.per_layer_queries:
-            # Break e.g., 1024 -> 16 x 64
-            cond.mask_tokens = rearrange("(masks layers) d -> masks (layers d)", cond.mask_tokens, masks=cond.mask_batch_idx.shape[0])
+        if self.cfg.model.per_layer_queries: # Break e.g., 1024 -> 16 x 64
+            cond.mask_tokens = einops.rearrange(cond.mask_tokens, "(masks layers) d -> masks (layers d)", masks=cond.mask_batch_idx.shape[0])
 
-        elif self.cfg.model.layer_specialization:
-            # Break e.g., 1024 -> 16 x 64
-            layerwise_mask_tokens = rearrange("b (l c) -> b l c", cond.mask_tokens, l=self.cfg.model.num_conditioning_pairs)
+        elif self.cfg.model.layer_specialization: # Break e.g., 1024 -> 16 x 64
+            layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_tokens, l=self.cfg.model.num_conditioning_pairs)
             layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens)  # Batched 64 -> 1024
-            cond.mask_tokens = rearrange("b l c -> b (l c)", layerwise_mask_tokens).to(self.dtype)
+            cond.mask_tokens = rearrange("b layers d -> b (layers d)", layerwise_mask_tokens).to(self.dtype)
 
         return cond
 
@@ -865,12 +867,13 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             pred_data = TokenPredData()
-            if self.cfg.model.token_rot_pred_loss:
+
+            # We must call this before rotation/cls prediction to properly setup the GT and choose which mask tokens to predict
+            # Make sure to also call token_rot_loss afterwards.
+            pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
+            if self.cfg.model.token_rot_pred_loss and not self.cfg.model.predict_rotation_from_n_frames:
                 max_timesteps = self.cfg.model.rotation_diffusion_start_timestep if self.cfg.model.rotation_diffusion_start_timestep else self.cfg.model.rotation_diffusion_timestep
-                rot_timesteps = torch.randint(0, max_timesteps, (bs,), device=self.device).long()
-                pred_data.timesteps = rot_timesteps[cond.mask_batch_idx]
-                pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
-                assert pred_data.gt_rot_6d.shape[0] == cond.mask_tokens.shape[0]
+                pred_data.timesteps = torch.randint(0, max_timesteps, (pred_data.mask_tokens.shape[0],), device=self.device).long()
                 pred_data.rot_6d_noise = torch.randn_like(pred_data.gt_rot_6d)
                 pred_data.noised_rot_6d = self.rotation_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, pred_data.timesteps)
             
@@ -934,6 +937,6 @@ class BaseMapper(Trainable):
             losses.update(token_cls_loss(cfg=self.cfg, batch=batch, cond=cond, pred_data=pred_data))
 
         if self.cfg.model.token_rot_pred_loss:
-            losses.update(token_rot_loss(cfg=self.cfg, batch=batch, cond=cond, pred_data=pred_data))
+            losses.update(token_rot_loss(cfg=self.cfg, pred_data=pred_data))
 
         return losses

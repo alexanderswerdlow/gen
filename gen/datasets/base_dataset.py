@@ -72,7 +72,7 @@ class AbstractDataset(ABC):
             log_warn("Dropping last batch if it exists")
 
         dataloader = DataLoader(
-            dataset, 
+            dataset,
             batch_size=self.batch_size, 
             shuffle=self.allow_shuffle and self.shuffle, 
             collate_fn=self.collate_fn, 

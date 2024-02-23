@@ -18,7 +18,7 @@ from gen.models.cross_attn.break_a_scene import AttentionStore, aggregate_attent
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.pytorch3d_transforms import matrix_to_quaternion
 from gen.utils.rotation_utils import (compute_rotation_matrix_from_ortho6d, get_discretized_zyx_from_quat, get_ortho6d_from_rotation_matrix,
-                                      get_quat_from_discretized_zyx)
+                                      get_quat_from_discretized_zyx, quat_l1_loss)
 from image_utils import Im
 import einops
 
@@ -164,7 +164,7 @@ def token_cls_loss(
             continue
 
         # We only compute loss on non-dropped out masks
-        instance_categories = batch["categories"][b][batch["valid"][b]]
+        instance_categories = batch["categories"][b]
 
         # We align the dataset instance indices with the flattened pred indices
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
@@ -225,8 +225,8 @@ def get_relative_rot_data(cfg: BaseConfig, cond: ConditioningData, batch: InputD
             mask_tokens_for_frame = cond.mask_batch_idx == batch_idx
             instance_indices = cond.mask_instance_idx[mask_tokens_for_frame]
             mask_token_indices = torch.arange(cond.mask_instance_idx.shape[0], device=mask_tokens_for_frame.device)[mask_tokens_for_frame]
-            for instance, idx in zip(instance_indices, mask_token_indices):
-                batch_instance_data[instance.item()].append((batch_idx, idx.item()))
+            for instance_idx, token_idx in zip(instance_indices, mask_token_indices):
+                batch_instance_data[instance_idx.item()].append((batch_idx, token_idx.item()))
 
         all_rot_data[group_idx] = batch_instance_data
 
@@ -237,7 +237,8 @@ def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_d
     bs = batch["gen_pixel_values"].shape[0]
     device = batch["gen_pixel_values"].device
     gt_quat = batch["quaternions"]
-    pred_data.relative_rot_pred_mask = torch.ones_like(cond.mask_instance_idx, dtype=torch.bool)
+    
+    
     if cfg.model.predict_rotation_from_n_frames:
         gt_quat = gt_quat.clone()
         """
@@ -245,66 +246,60 @@ def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_d
         num_groups is what we typically refer to as the batch_size and group_size is the number of frames we are using to predict rotation. [nominally 2]
 
         """
+        group_size = cfg.model.predict_rotation_from_n_frames
+        relative_rot_token_input_mask = []
+        gt_rot_6d = []
         all_rot_data = get_relative_rot_data(cfg, cond, batch)
         for group_idx, group_instance_data in all_rot_data.items():
             for instance_idx, instance_rot_data in group_instance_data.items():
-                if instance_idx == 0:
-                    continue
-                    
-                batch_indices, instance_indices = zip(*instance_rot_data)
-                group_size = cfg.model.predict_rotation_from_n_frames
-                if len(instance_rot_data) != group_size:
-                    pred_data.relative_rot_pred_mask[instance_indices] = False # TODO: Find a better way to handle this
+                batch_indices, token_indices = zip(*instance_rot_data)
+                if len(instance_rot_data) != group_size or instance_idx == 0:
                     continue
 
-                # Note that we take the difference between the rotations of the two objects. These rotations are relative to the canonical orientation relative to the camera [provided by the dataset]. Thus, with static objects, this is equivalent to simply taking the difference between the two camera rotations. However, this is more general and can handle moving objects.
-                first_rot = gt_quat[batch_indices[0]][batch["valid"][batch_indices[0]]][instance_idx - 1]
-                second_rot = gt_quat[batch_indices[1]][batch["valid"][batch_indices[1]]][instance_idx - 1]
-                delta_rot = (R.from_quat(second_rot.cpu().numpy()) * R.from_quat(first_rot.cpu().numpy()).inv()).as_quat()
-                gt_quat[batch_indices[0]][batch["valid"][batch_indices[0]]][instance_idx - 1] = torch.from_numpy(delta_rot).to(gt_quat)
-                gt_quat[batch_indices[1]][batch["valid"][batch_indices[1]]][instance_idx - 1] = torch.from_numpy(delta_rot).to(gt_quat)
-        
-    gt_rot_6d = []
-    for group_idx in range(bs):
-        # We only compute loss on non-dropped out masks
-        gt_rot_mat = R.from_quat(gt_quat[group_idx][batch["valid"][group_idx]].cpu()).as_matrix()
-        gt_rot_6d_ = get_ortho6d_from_rotation_matrix(torch.from_numpy(gt_rot_mat).to(device))
-        batch_instance_idxs = cond.mask_instance_idx[cond.mask_batch_idx == group_idx]
-        foreground_mask = batch_instance_idxs != 0
-        batch_object_idxs = batch_instance_idxs - 1 # Object data does not include the background
-        gt_rot_6d_ = gt_rot_6d_[batch_object_idxs[foreground_mask]]
-        if torch.any(~foreground_mask):
-            gt_rot_6d_ = torch.cat([gt_rot_6d_.new_zeros(1, 6), gt_rot_6d_], dim=0)
-        gt_rot_6d.append(gt_rot_6d_)
+                # Note that we take the difference between the rotations of the two objects. These rotations are relative to the canonical orientation relative to the camera [provided by the dataset]. 
+                # Thus, with static objects, this is equivalent to simply taking the difference between the two camera rotations. However, this is more general and can handle moving objects.
+                first_rot = gt_quat[batch_indices[0]][instance_idx - 1]
+                second_rot = gt_quat[batch_indices[1]][instance_idx - 1]
+                delta_rot = (R.from_quat(second_rot.cpu().numpy()) * R.from_quat(first_rot.cpu().numpy()).inv())
 
-    pred_data.gt_rot_6d = torch.cat(gt_rot_6d, dim=0)
-    pred_data.pred_mask = cond.mask_instance_idx != 0
+                gt_rot_6d.append(torch.from_numpy(delta_rot.as_matrix()[None]).to(device))
+                relative_rot_token_input_mask.extend(token_indices)
+
+        pred_data.gt_rot_6d = get_ortho6d_from_rotation_matrix(torch.cat(gt_rot_6d, dim=0))
+        pred_data.mask_tokens = cond.mask_tokens[[*relative_rot_token_input_mask]]
+        pred_data.token_output_mask = cond.mask_tokens.new_zeros((cond.mask_tokens.shape[0]), dtype=torch.bool)
+        pred_data.token_output_mask[[*relative_rot_token_input_mask]] = True
+    else:
+        gt_rot_6d = []
+        for group_idx in range(bs):
+            gt_quat_ = gt_quat[group_idx][cond.mask_dropout[group_idx, 1:]].cpu()
+            if gt_quat_.shape[0] == 0:
+                gt_rot_6d_ = torch.zeros(0, 6, device=device)
+            else:
+                gt_rot_mat = R.from_quat(gt_quat_).as_matrix()
+                gt_rot_6d_ = get_ortho6d_from_rotation_matrix(torch.from_numpy(gt_rot_mat).to(device))
+
+            if (cond.mask_instance_idx[cond.mask_batch_idx == group_idx] == 0).any():
+                # These are immediately removed by the mask below
+                gt_rot_6d_ = torch.cat([gt_rot_6d_.new_zeros(1, 6), gt_rot_6d_], dim=0)
+            
+            gt_rot_6d.append(gt_rot_6d_)
+
+        pred_data.token_output_mask = (cond.mask_instance_idx != 0)
+        pred_data.mask_tokens = cond.mask_tokens[pred_data.token_output_mask]
+        pred_data.gt_rot_6d = torch.cat(gt_rot_6d, dim=0)[pred_data.token_output_mask]
 
     return pred_data
 
 
-def quat_l1_loss(rot1, rot2):
-    mat1 = compute_rotation_matrix_from_ortho6d(rot1)
-    quat1 = matrix_to_quaternion(mat1)
-
-    mat2 = compute_rotation_matrix_from_ortho6d(rot2)
-    quat2 = matrix_to_quaternion(mat2)
-
-    quat_l1 = (quat1 - quat2).abs().sum(-1)
-    quat_l1_ = (quat1 + quat2).abs().sum(-1)
-    select_mask = (quat_l1 < quat_l1_).float()
-    quat_l1 = select_mask * quat_l1 + (1 - select_mask) * quat_l1_
-    return quat_l1
-
-
-def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pred_data: TokenPredData):
+def token_rot_loss(cfg: BaseConfig, pred_data: TokenPredData, is_training: bool = False):
     assert cfg.model.background_mask_idx == 0
 
     ret = {}
-    device = pred_data.pred_mask.device
+    device = pred_data.pred_6d_rot.device
     pred_data.raw_pred_rot_logits = pred_data.pred_6d_rot.clone().detach() # For inference we save this for debugging
     
-    if pred_data.pred_mask.sum() == 0:
+    if pred_data.pred_6d_rot.shape[0] == 0:
         ret['rot_pred_6d_l1_loss'] = torch.tensor(0.0, requires_grad=True, device=device)
     else:
         if cfg.model.discretize_rot_pred:
@@ -317,19 +312,12 @@ def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pr
             pred_quat = get_quat_from_discretized_zyx(quantized_rot_pred + pred_zyx_residual, num_bins=num_bins)
             pred_data.pred_6d_rot = get_ortho6d_from_rotation_matrix(R.from_quat(pred_quat).as_matrix()).to(device)
 
-            # We need everything in (b axes) for loss calculations.
-            num_valid_masks = pred_data.pred_mask.sum().item()
-            if pred_data.pred_mask[pred_data.relative_rot_pred_mask].sum().item() == 0 or pred_zyx_residual.shape[0] == 0 or pred_zyx_quant.shape[0] == 0 or quantized_rot_pred.shape[0] == 0:
-                ret['rot_pred_bin_ce_loss'] = torch.tensor(0.0, requires_grad=True, device=device)
-                log_warn(f"We have no mask tokens to predict, skipping this batch...", main_process_only=False)
-                return ret
-
-            combine = lambda *y: [rearrange("masks axes ... -> (masks axes) ... ", x[pred_data.pred_mask[pred_data.relative_rot_pred_mask]]) for x in y]
+            combine = lambda *y: [einops.rearrange(x, "masks axes ... -> (masks axes) ... ") for x in y]
             pred_zyx_residual, pred_zyx_quant, quantized_rot_pred = combine(pred_zyx_residual, pred_zyx_quant, quantized_rot_pred)
 
-            gt_quat = torch.from_numpy(R.from_matrix(compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d[pred_data.pred_mask & pred_data.relative_rot_pred_mask]).float().cpu().numpy()).as_quat()).to(device)
+            gt_quat = torch.from_numpy(R.from_matrix(compute_rotation_matrix_from_ortho6d(pred_data.gt_rot_6d).float().cpu().numpy()).as_quat()).to(device)
             gt_zyx_quant, gt_zyx_unquant = get_discretized_zyx_from_quat(gt_quat, num_bins=num_bins, return_unquantized=True)
-            gt_zyx_quant, gt_zyx_unquant = rearrange("masks axes -> (masks axes)", gt_zyx_quant), rearrange("masks axes -> (masks axes)", gt_zyx_unquant)
+            gt_zyx_quant, gt_zyx_unquant = einops.rearrange(gt_zyx_quant, "masks axes -> (masks axes)"), einops.rearrange(gt_zyx_unquant, "masks axes -> (masks axes)")
             zyx_residual = gt_zyx_unquant - gt_zyx_quant
             assert (-0.5 <= zyx_residual.min().item() <= zyx_residual.max().item() <= 0.5)
 
@@ -337,12 +325,12 @@ def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pr
             ret['rot_pred_residual_mse_loss'] = F.mse_loss(pred_zyx_residual, zyx_residual, reduction="mean")
 
             # We require that we correctly predict over *each* axis.
-            correct_predictions = rearrange('(masks axes) -> masks axes', quantized_rot_pred == gt_zyx_quant, axes=3).all(dim=-1).sum().item()
+            correct_predictions = einops.rearrange(quantized_rot_pred == gt_zyx_quant, '(masks axes) -> masks axes', axes=3).all(dim=-1).sum().item()
 
             _, topk_quantized_rot_pred = pred_zyx_quant.topk(k=3, dim=1)
-            correct_top3_predictions = rearrange('(masks axes) k -> masks axes k', gt_zyx_quant.view(-1, 1) == topk_quantized_rot_pred, axes=3).any(dim=-1).all(dim=-1).sum().item()
+            correct_top3_predictions = einops.rearrange(gt_zyx_quant.view(-1, 1) == topk_quantized_rot_pred, '(masks axes) k -> masks axes k', axes=3).any(dim=-1).all(dim=-1).sum().item()
 
-            total_instances = num_valid_masks
+            total_instances = pred_data.pred_6d_rot.shape[0]
 
             accuracy = (correct_predictions / total_instances) if total_instances > 0 else 0
             top3_accuracy = (correct_top3_predictions / total_instances) if total_instances > 0 else 0
@@ -353,13 +341,15 @@ def token_rot_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData, pr
             })
 
         elif cfg.model.rotation_diffusion_parameterization == "sample":
-            ret['rot_pred_6d_l1_loss'] = F.l1_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.gt_rot_6d[pred_data.pred_mask], reduction="mean")
+            ret['rot_pred_6d_l1_loss'] = F.l1_loss(pred_data.pred_6d_rot, pred_data.gt_rot_6d, reduction="mean")
         elif cfg.model.rotation_diffusion_parameterization == "epsilon":
-            ret['rot_pred_6d_l1_loss'] = F.l1_loss(pred_data.pred_6d_rot[pred_data.pred_mask], pred_data.rot_6d_noise[pred_data.pred_mask], reduction="mean")
+            ret['rot_pred_6d_l1_loss'] = F.l1_loss(pred_data.pred_6d_rot, pred_data.rot_6d_noise, reduction="mean")
         else:
             raise NotImplementedError
 
-        pred_loss = quat_l1_loss(pred_data.gt_rot_6d[pred_data.pred_mask & pred_data.relative_rot_pred_mask], pred_data.pred_6d_rot[pred_data.pred_mask[pred_data.relative_rot_pred_mask]])
+        # If training & denoising & using epsilon parameterization, we have a fake quat_l1_error
+        gt_data = pred_data.rot_6d_noise if is_training and (not cfg.model.discretize_rot_pred) and cfg.model.rotation_diffusion_parameterization == "epsilon" else pred_data.gt_rot_6d
+        pred_loss = quat_l1_loss(gt_data, pred_data.pred_6d_rot) # Not actually used as a loss, only an evaluation metric
         ret["metric_rot_pred_quat_l1_error"] = pred_loss.mean().float().cpu()
         ret["metric_rot_pred_quat_acc<0.025"] = (pred_loss < 0.025).float().cpu().sum() / pred_loss.shape[0]
         ret["metric_rot_pred_quat_acc<0.05"] = (pred_loss < 0.05).float().cpu().sum() / pred_loss.shape[0]

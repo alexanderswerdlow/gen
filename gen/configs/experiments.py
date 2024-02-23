@@ -1,6 +1,13 @@
 from hydra_zen import builds
 
-from gen import IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_OVERFIT_DATASET_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH
+from gen import (
+    IMAGENET_PATH,
+    MOVI_DATASET_PATH,
+    MOVI_MEDIUM_PATH,
+    MOVI_MEDIUM_SINGLE_OBJECT_PATH,
+    MOVI_OVERFIT_DATASET_PATH,
+    MOVI_MEDIUM_TWO_OBJECTS_PATH,
+)
 from gen.configs.utils import mode_store, store_child_config
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
 
@@ -139,13 +146,13 @@ def get_datasets():  # TODO: These do not need to be global configs
         name="movi_medium",
         dataset=dict(
             train_dataset=dict(
-                custom_split="train", 
+                custom_split="train",
                 augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True),
                 path=MOVI_MEDIUM_PATH,
                 num_objects=23,
                 num_frames=8,
                 num_cameras=2,
-                multi_camera_format=True
+                multi_camera_format=True,
             ),
             validation_dataset=dict(
                 custom_split="validation",
@@ -177,14 +184,14 @@ def get_datasets():  # TODO: These do not need to be global configs
                 path=MOVI_MEDIUM_TWO_OBJECTS_PATH,
             ),
         ),
-        hydra_defaults=[
-            "movi_medium"
-        ],
+        hydra_defaults=["movi_medium"],
     )
 
     mode_store(
         name="single_scene",
-        dataset=dict(train_dataset=dict(subset=("000001",), fake_return_n=8), validation_dataset=dict(subset=("000001",), fake_return_n=8), overfit=True),
+        dataset=dict(
+            train_dataset=dict(subset=("000001",), fake_return_n=8), validation_dataset=dict(subset=("000001",), fake_return_n=8), overfit=True
+        ),
     )
 
     mode_store(
@@ -201,9 +208,7 @@ def get_datasets():  # TODO: These do not need to be global configs
                 path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
             ),
         ),
-        hydra_defaults=[
-            "movi_medium"
-        ],
+        hydra_defaults=["movi_medium"],
     )
 
     mode_store(
@@ -228,7 +233,13 @@ def get_experiments():
     mode_store(
         name="small_gpu",
         dataset=dict(train_dataset=dict(batch_size=1, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
-        model=dict(decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False), pretrained_model_name_or_path='runwayml/stable-diffusion-v1-5', token_embedding_dim=768),
+        model=dict(
+            decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False),
+            pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5",
+            token_embedding_dim=768,
+            fused_mlp=False,
+            fused_bias_fc=False,
+        ),
         trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False, gradient_accumulation_steps=1),
         inference=dict(
             visualize_attention_map=False,
@@ -329,10 +340,14 @@ def get_experiments():
     )
 
     mode_store(
-        name="debug_token_pred",
+        name="discrete_token_pred",
         model=dict(
-            add_pos_emb=True, 
-            decoder_transformer=dict(depth=2),
+            discretize_rot_pred=True,
+            discretize_rot_bins_per_axis=36,
+            predict_rotation_from_n_frames=None,
+            training_mask_dropout=None,
+            add_pos_emb=True,
+            decoder_transformer=dict(depth=4),
             unet=False,
             rotation_diffusion_start_timestep=100,
             num_conditioning_pairs=1,
@@ -340,47 +355,37 @@ def get_experiments():
             feature_map_keys=(
                 "stage1",
                 "stage18",
+                "stage24",
+            ),
+        ),
+        dataset=dict(
+            train_dataset=dict(
+                subset_size=None,
+                cache_in_memory=True,
+                num_workers=2,
+                num_subset=None,
+                return_multiple_frames=None,
+                fake_return_n=None,
+                batch_size=24,
+                cache_instances_in_memory=False,
+            ),
+            validation_dataset=dict(
+                subset_size=None, return_multiple_frames=None, num_workers=2, cache_instances_in_memory=False, cache_in_memory=True
             ),
         ),
         trainer=dict(
-            lr_warmup_steps=100,
+            gradient_accumulation_steps=1,
+            eval_every_n_steps=1000,
+            custom_inference_every_n_steps=1000,
             learning_rate=5e-6,
-            custom_inference_every_n_steps=250,
-            eval_every_n_steps=250,
-            eval_on_start=True,
-        ),
-        dataset=dict(
-            train_dataset=dict(batch_size=24, cache_in_memory=True, num_workers=4, num_subset=None),
-            validation_dataset=dict(cache_in_memory=True)
-        ),
-        hydra_defaults=["token_pred", "movi_medium_single_object", "no_movi_augmentation"],
-    )
-
-    mode_store(
-        name="debug_discrete_token_pred",
-        model=dict(
-            predict_rotation_from_n_frames=None,
-            training_mask_dropout=None,
-            discretize_rot_bins_per_axis=36,
-            discretize_rot_pred=True,
-        ),
-        dataset=dict(
-            train_dataset=dict(subset_size=None, num_subset=None, return_multiple_frames=None, fake_return_n=None, batch_size=36, num_workers=2, cache_instances_in_memory=False),
-            validation_dataset=dict(subset_size=None, return_multiple_frames=None, num_workers=2, cache_instances_in_memory=False),
-        ),
-        trainer=dict(
-            gradient_accumulation_steps=4, 
-            eval_every_n_steps=1000, 
-            custom_inference_every_n_steps=1000, 
-            learning_rate=2e-5,
-            custom_inference_batch_size=48, 
+            custom_inference_batch_size=24,
             custom_inference_dataset_size=256,
-            custom_inference_fixed_shuffle=True, 
-            scale_lr_batch_size=False, 
+            custom_inference_fixed_shuffle=True,
+            scale_lr_batch_size=False,
             lr_warmup_steps=1000,
             eval_on_start=True,
         ),
-        hydra_defaults=["debug_token_pred"],
+        hydra_defaults=["token_pred", "movi_medium_single_object", "no_movi_augmentation"],
     )
 
     mode_store(
@@ -395,9 +400,26 @@ def get_experiments():
     )
 
     mode_store(
+        name="overfit_tokens",
+        dataset=dict(
+            overfit=True,
+            train_dataset=dict(
+                num_subset=None,
+                subset_size=200,
+                random_subset=False,
+            ),
+        ),
+        trainer=dict(
+            custom_inference_dataset_size=64,
+            eval_every_n_steps=1000,
+            custom_inference_every_n_steps=250,
+        ),
+    )
+
+    mode_store(
         name="vit_tiny_scratch",
         model=dict(
-            encoder=dict(model_name='vit_tiny_patch16_224'),
+            encoder=dict(model_name="vit_tiny_patch16_224"),
             encoder_dim=192,
             per_layer_queries=True,
             feature_map_keys=(
@@ -406,14 +428,50 @@ def get_experiments():
             ),
             freeze_clip=False,
         ),
-        hydra_defaults=["_self_", {"override /model": "basemapper_vit_scratch"},],
+        hydra_defaults=[
+            "_self_",
+            {"override /model": "basemapper_vit_scratch"},
+        ],
     )
 
     mode_store(
         name="vit_small_scratch",
         model=dict(
-            encoder=dict(model_name='vit_small_patch16_224'),
+            encoder=dict(
+                model_name="vit_small_patch16_224",
+                return_nodes={
+                    "blocks.0": "blocks.0",
+                    "blocks.6": "blocks.6",
+                    "norm": "norm",
+                },
+            ),
             encoder_dim=384,
+            feature_map_keys=(
+                "blocks.0",
+                "blocks.6",
+                "norm",
+            ),
         ),
         hydra_defaults=["vit_tiny_scratch"],
+    )
+
+    mode_store(
+        name="vit_base_scratch",
+        model=dict(
+            encoder=dict(
+                model_name="vit_base_patch16_224",
+                return_nodes={
+                    "blocks.0": "blocks.0",
+                    "blocks.6": "blocks.6",
+                    "norm": "norm",
+                },
+            ),
+            encoder_dim=768,
+            feature_map_keys=(
+                "blocks.0",
+                "blocks.6",
+                "norm",
+            ),
+        ),
+        hydra_defaults=["vit_small_scratch"],
     )
