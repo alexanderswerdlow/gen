@@ -3,6 +3,8 @@ import os
 import pickle
 import random
 import string
+import traceback
+import sys
 from pathlib import Path
 
 import cloudpickle
@@ -237,15 +239,11 @@ def main(cfg: BaseConfig):
             train.train()
 
     except Exception as e:
-        log_error(e)
-        if is_main_process():
-            log_info("Exception...")
-            import sys
-            import traceback
-            import ipdb
-            traceback.print_exc()
-            ipdb.post_mortem(e.__traceback__)
-            sys.exit(1)
+        log_error(e, main_process_only=False)
+        log_info("Exception...", main_process_only=False)
+        traceback.print_exc()
+        breakpoint(traceback=e.__traceback__)
+        sys.exit(1)
         raise
     finally:
         pass

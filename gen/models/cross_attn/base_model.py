@@ -404,11 +404,18 @@ class BaseMapper(Trainable):
                     del params[k]
                 return group
 
-            return [  # Order matters here
-                {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate * 2},
-                {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate},
-                {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
-            ]
+            if self.cfg.model.lr_finetune_version == 0:
+                return [  # Order matters here
+                    {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate * 2},
+                    {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate},
+                    {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
+                ]
+            elif self.cfg.model.lr_finetune_version == 1:
+                return [  # Order matters here
+                    {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate},
+                    {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate / 4},
+                    {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 8},
+                ]
         elif self.cfg.model.unfreeze_gated_cross_attn:
             unet_params = self.get_unet_params()
 
@@ -928,7 +935,7 @@ class BaseMapper(Trainable):
             if self.cfg.model.weighted_object_loss:
                 losses["diffusion_loss"] = evenly_weighted_mask_loss(cfg=self.cfg, batch=batch, cond=cond, pred=model_pred.float(), target=target.float())
             else:
-                losses["diffusion_loss"] = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+                losses["diffusion_loss"] = F.mse_loss(model_pred.float(), target.float(), reduction="mean") * self.cfg.model.diffusion_loss_weight
 
             if self.cfg.model.break_a_scene_cross_attn_loss:
                 losses["cross_attn_loss"] = break_a_scene_cross_attn_loss(cfg=self.cfg, batch=batch, controller=self.controller, cond=cond)

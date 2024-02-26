@@ -1,6 +1,7 @@
 import glob
 import hashlib
 from io import BytesIO
+import io
 import os
 import pickle
 import subprocess
@@ -357,15 +358,31 @@ def get_pdb():
     return import_module("pdb") if (any(["_pdbpp_path_hack" in p for p in sys.path]) or find_spec("ipdb") is None) else import_module("ipdb")
 
 
-def _breakpoint():
-    if is_main_process():
-        frame = sys._getframe()
-        log_func('Breakpoint triggered. You may need to type "up" to get to the correct frame')
-        get_pdb().set_trace(frame)
-
-    if use_dist():
+def _breakpoint(rank: Optional[int] = None, traceback: Optional[Any] = None):
+    if get_num_gpus() > 1:
+        if (is_main_process() if rank is None else get_rank() == rank):
+            old_stdin = None
+            if isinstance(sys.stdin, io.TextIOWrapper):
+                old_stdin = sys.stdin
+                sys.stdin = open(0)
+            try:
+                log_func('Breakpoint triggered. You may need to type "up" to get to the correct frame')
+                if traceback is not None:
+                    get_pdb().post_mortem(traceback)
+                else:
+                    get_pdb().set_trace()
+            finally:
+                if old_stdin is not None:
+                    sys.stdin.close()
+                    sys.stdin = old_stdin
         dist.barrier()
-
+    else:
+        if traceback is not None:
+            get_pdb().post_mortem(traceback)
+        else:
+            frame = sys._getframe()
+            log_func('Breakpoint triggered. You may need to type "up" to get to the correct frame')
+            get_pdb().set_trace(frame)
 
 def set_global_breakpoint():
     import builtins

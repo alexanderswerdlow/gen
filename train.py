@@ -401,8 +401,8 @@ class Trainer:
                     losses = dict(filter(lambda item: not item[0].startswith("metric_"), losses.items())) # Allow for custom metrics that are not losses
                     loss = sum(losses.values())
                     global_step_metrics["loss"] += loss.detach().item()  # Only on the main process to avoid syncing
-                    accumulate_steps += 1
-
+                    
+                    start_backward_time = time()
                     # The below lines may be silently skipped for gradient accumulation
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
@@ -411,6 +411,9 @@ class Trainer:
                     self.optimizer.step()
                     self.lr_scheduler.step()
                     self.optimizer.zero_grad(set_to_none=tr.set_grads_to_none)
+                    global_step_metrics["backward_pass_time"] += time() - start_backward_time
+
+                    accumulate_steps += 1
 
                 # Important: A single "global_step" is a single optimizer step. The accumulate decorator silently skips backward + optimizer to allow for gradient accumulation. A "true_step" counts the number of forward passes (on a per-GPU basis). The condition below should only happen immediately after a backward + optimizer step.
                 if self.accelerator.sync_gradients:
@@ -433,7 +436,7 @@ class Trainer:
                     logs = {
                         "gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
                         "examples_seen": global_step * total_batch_size,
-                        **{k: v / accumulate_steps for k, v in global_step_metrics.items()},
+                        **{k: (v / accumulate_steps if ('backward' not in k) else v) for k, v in global_step_metrics.items()},
                         **{f"lr_{i}": lr for i, lr in enumerate(self.lr_scheduler.get_last_lr())},
                         **global_extra_wandb_metrics
                     }

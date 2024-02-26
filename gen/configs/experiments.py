@@ -245,7 +245,7 @@ def get_experiments():
             visualize_attention_map=False,
             infer_new_prompts=False,
             max_batch_size=1,
-            num_masks_to_remove=None,
+            num_masks_to_remove=2,
             num_images_per_prompt=1,
             vary_cfg_plot=False,
         ),
@@ -384,6 +384,14 @@ def get_experiments():
             scale_lr_batch_size=False,
             lr_warmup_steps=1000,
             eval_on_start=True,
+            log_parameters=True,
+            log_gradients=1000,
+        ),
+        inference=dict(
+            num_images_per_prompt=1,
+            save_prompt_embeds=False,
+            infer_new_prompts=False,
+            vary_cfg_plot=False,
         ),
         hydra_defaults=["token_pred", "movi_medium_single_object", "no_movi_augmentation"],
     )
@@ -474,4 +482,29 @@ def get_experiments():
             ),
         ),
         hydra_defaults=["vit_small_scratch"],
+    )
+
+    mode_store(
+        name="large_model",
+        dataset=dict(train_dataset=dict(batch_size=8, cache_in_memory=False), validation_dataset=dict(cache_in_memory=False)),
+        model=dict(
+            num_conditioning_pairs=8,
+            diffusion_loss_weight=3.0,
+            lr_finetune_version=1,
+        ),
+        trainer=dict(
+            custom_inference_batch_size=None,
+            learning_rate=4e-6,
+        )
+    )
+
+    mode_store(
+        name="enable_reconstruction",
+        model=dict(
+            unet=True,
+            freeze_mapper=False,
+            freeze_unet=False,
+            unet_lora=False,
+            finetune_unet_with_different_lrs=True,
+        )
     )

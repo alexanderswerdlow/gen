@@ -163,6 +163,7 @@ class SelfAttentionTransformer(nn.Module):
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim)) if class_token else None
         embed_len = seq_len
         self.pos_embed = nn.Parameter(torch.randn(1, embed_len, embed_dim) * 0.02)
+        self.input_dim = input_dim
 
         self.input_proj = nn.Linear(input_dim, embed_dim) if input_dim is not None else nn.Identity()
 
@@ -232,9 +233,12 @@ class SelfAttentionTransformer(nn.Module):
     def _pos_embed(self, x):
         # original timm, JAX, and deit vit impl
         # pos_embed has entry for class token, concat then add
-        x = x + self.pos_embed
+        if self.input_dim is not None:
+            raise NotImplementedError("We may need to switch the order of x = x + self.pos_embed here.")
+        
         if self.cls_token is not None:
             x = torch.cat((self.cls_token.expand(x.shape[0], -1, -1), x), dim=1)
+        x = x + self.pos_embed
         return x
 
     def forward_features(self, x):

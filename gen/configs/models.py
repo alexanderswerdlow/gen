@@ -99,6 +99,9 @@ class ModelConfig:
     predict_rotation_from_n_frames: Optional[int] = None
     fused_mlp: bool = True
     fused_bias_fc: bool = True
+    token_head_dim: int = "${model.encoder_dim}"
+    lr_finetune_version: int = 0
+    diffusion_loss_weight: float = 1.0
 
 
 @dataclass

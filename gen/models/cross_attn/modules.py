@@ -224,8 +224,15 @@ class TokenMapper(nn.Module):
         super().__init__()
         self.cfg = cfg
 
-        # dim = self.cfg.model.token_embedding_dim * (self.cfg.model.num_conditioning_pairs if self.cfg.model.layer_specialization else 1)
-        dim = self.cfg.model.token_embedding_dim
+        input_dim = self.cfg.model.token_embedding_dim * (self.cfg.model.num_conditioning_pairs if self.cfg.model.layer_specialization else 1)
+        dim = self.cfg.model.token_head_dim
+        
+        # Tokens come from CrossAttn which has a Linear -> ReLU before this
+        self.token_proj = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(input_dim, dim),
+            nn.LayerNorm(dim),
+        )
         if self.cfg.model.token_cls_pred_loss:
             self.cls_mlp = Mlp(in_features=dim, hidden_features=dim // 4, out_features=self.cfg.model.num_token_cls, activation=nn.GELU())
 
@@ -255,6 +262,8 @@ class TokenMapper(nn.Module):
         if self.cfg.model.detach_mask_tokens_for_pred:
             mask_tokens = mask_tokens.detach()
 
+        mask_tokens = self.token_proj(mask_tokens)
+
         if self.cfg.model.token_cls_pred_loss:
             output = self.cls_mlp(mask_tokens)
             pred_data.cls_pred = output
@@ -264,6 +273,8 @@ class TokenMapper(nn.Module):
 
             if self.cfg.model.detach_mask_tokens_for_pred:
                 rot_mask_tokens = rot_mask_tokens.detach()
+
+            rot_mask_tokens = self.token_proj(rot_mask_tokens)
 
             if self.cfg.model.token_rot_transformer_head: # WIP
                 seq1 = torch.zeros((2, 16, 768), requires_grad=True).cuda()

@@ -62,6 +62,10 @@ Ideally, since we are using Hydra, we would use the submitit hydra plugin to lau
 
 Instead, we have `multirun.py` which generates a sequence of calls (through `os.system()`), each of which are a single training run. `launch_slurm.py` then runs a SLURM job.
 
-# Known issues
+## Known issues
 
 Segmentation maps when cropping sometime have false where it should be true
+
+## Misc
+
+To update submodules, run `git pull --recurse-submodules`
