@@ -18,7 +18,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer, CLIPTokenizer
 
 from gen.configs.base import BaseConfig
-from gen.datasets.base_dataset import AbstractDataset, Split
+from gen.datasets.abstract_dataset import AbstractDataset, Split
 from train import Trainer
 
 

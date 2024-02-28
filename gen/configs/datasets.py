@@ -5,11 +5,11 @@ from hydra_zen import builds
 
 from gen.configs.utils import auto_store, store_child_config
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
-from gen.datasets.base_dataset import AbstractDataset
-from gen.datasets.coco_captions import CocoCaptions
+from gen.datasets.abstract_dataset import AbstractDataset
 from gen.datasets.controlnet_dataset import ControlnetDataset
 from gen.datasets.imagenet_dataset import ImageNetCustomDataset
 from gen.datasets.kubrics.movi_dataset import MoviDataset
+from gen.datasets.coco.coco_panoptic import CocoPanoptic
 
 
 @dataclass
@@ -41,9 +41,6 @@ def get_override_dict(**kwargs):
 
 auto_store(DatasetConfig, train_dataset=get_dataset(ControlnetDataset), validation_dataset=get_dataset(ControlnetDataset), name="controlnet")
 
-auto_store(DatasetConfig, train_dataset=get_dataset(CocoCaptions), validation_dataset=get_dataset(CocoCaptions), name="coco_captions")
-
-store_child_config(DatasetConfig, "dataset", "coco_captions", "coco_captions_test")
 
 auto_store(
     DatasetConfig,
@@ -72,7 +69,8 @@ augmentation = builds(
     Augmentation,
     minimal_source_augmentation=True,
     source_only_augmentation=True,
-    target_resolution="${model.resolution}",
+    source_resolution="${model.encoder_resolution}",
+    target_resolution="${model.decoder_resolution}",
     # A little hacky but very useful. We instantiate the model to get the transforms, making sure
     # that we always have the right transform
     source_normalization="${get_transform:model}",
@@ -81,14 +79,19 @@ augmentation = builds(
 
 auto_store(
     DatasetConfig,
-    train_dataset=get_dataset(MoviDataset, augmentation=augmentation, resolution="${model.resolution}"),
-    validation_dataset=get_dataset(MoviDataset, augmentation=augmentation, resolution="${model.resolution}"),
+    train_dataset=get_dataset(MoviDataset, augmentation=augmentation),
+    validation_dataset=get_dataset(MoviDataset, augmentation=augmentation),
     name="movi_e",
 )
 
 auto_store(
     DatasetConfig,
-    train_dataset=get_dataset(ImageNetCustomDataset, augmentation=augmentation, resolution="${model.resolution}"),
-    validation_dataset=get_dataset(ImageNetCustomDataset, augmentation=augmentation, resolution="${model.resolution}"),
+    train_dataset=get_dataset(ImageNetCustomDataset, augmentation=augmentation),
+    validation_dataset=get_dataset(ImageNetCustomDataset, augmentation=augmentation),
     name="imagenet",
 )
+
+
+auto_store(DatasetConfig, train_dataset=get_dataset(CocoPanoptic, augmentation=augmentation, resolution="${model.decoder_resolution}"), validation_dataset=get_dataset(CocoPanoptic, augmentation=augmentation, resolution="${model.decoder_resolution}"), name="coco_panoptic")
+
+store_child_config(DatasetConfig, "dataset", "coco_panoptic", "coco_panoptic_test")

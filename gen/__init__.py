@@ -5,6 +5,8 @@ REPO_DIR = Path(__file__).parent.parent
 CHECKPOINT_DIR = Path(os.getenv("CHECKPOINT_DIR", "checkpoints"))
 
 COCO_CAPTIONS_FILES = os.getenv("COCO_CAPTIONS_PATH", "/projects/katefgroup/aswerdlo/mscoco/{00000..00059}.tar")
+COCO_DATASET_PATH = Path(os.getenv("COCO_DATASET_PATH", "/projects/katefgroup/datasets/coco"))
+COCO_TRAIN_ID_PATH = Path(os.getenv("COCO_TRAIN_ID_PATH", "/projects/katefgroup/aswerdlo/datasets/coco"))
 MOVI_DATASET_PATH = Path(os.getenv("MOVI_DATASET_PATH", "/projects/katefgroup/datasets/movi"))
 MOVI_OVERFIT_DATASET_PATH = Path(os.getenv("MOVI_OVERFIT_DATASET_PATH", "/projects/katefgroup/aswerdlo/movi"))
 MOVI_MEDIUM_PATH = Path(os.getenv("MOVI_MEDIUM_PATH", "/projects/katefgroup/aswerdlo/datasets/movi_medium"))

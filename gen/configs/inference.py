@@ -14,7 +14,7 @@ class InferenceConfig:
 
     num_denoising_steps: int = 50
     guidance_scale: float = 7.5
-    resolution: int = "${model.resolution}"
+    resolution: int = "${model.decoder_resolution}"
     
     num_images_per_prompt: int = 1 # Only applies to the primary generation
     num_masks_to_remove: Optional[int] = 4

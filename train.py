@@ -24,7 +24,7 @@ import wandb
 from diffusers.optimization import get_scheduler
 from diffusers.utils.import_utils import is_xformers_available
 from gen.configs import BaseConfig, ModelType
-from gen.datasets.base_dataset import AbstractDataset, Split
+from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import Profiler, get_rank, is_main_process, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn

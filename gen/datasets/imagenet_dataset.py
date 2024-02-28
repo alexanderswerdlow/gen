@@ -17,7 +17,7 @@ from torchvision.tv_tensors import Image
 from gen import DEFAULT_PROMPT, IMAGENET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
-from gen.datasets.base_dataset import AbstractDataset, Split
+from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.datasets.utils import (get_open_clip_transforms_v2,
                                 get_stable_diffusion_transforms)
 from gen.utils.logging_utils import log_info, log_warn

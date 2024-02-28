@@ -18,7 +18,7 @@ from torch.utils.data import Dataset
 from gen import MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_OVERFIT_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
-from gen.datasets.base_dataset import AbstractDataset, Split
+from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.utils.decoupled_utils import load_tensor_dict, save_tensor_dict
 from gen.utils.tokenization_utils import get_tokens
 
@@ -314,26 +314,28 @@ if __name__ == "__main__":
         subset_size=None,
         dataset="movi_e",
         tokenizer=tokenizer,
-        path=MOVI_MEDIUM_PATH,
+        path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
         num_objects=23,
-        num_frames=8,
-        num_cameras=2,
+        num_frames=24,
+        num_cameras=1,
         augmentation=Augmentation(target_resolution=256, minimal_source_augmentation=True, enable_crop=False, enable_horizontal_flip=False),
         multi_camera_format=True,
         cache_in_memory=True,
         cache_instances_in_memory=False,
         num_subset=None,
-        return_multiple_frames=2,
     )
-    dataloader = new_dataset.get_dataloader()
     import time
     start_time = time.time()
-    for batch in dataloader:
+    dataloader = new_dataset.get_dataloader()
+    for step, batch in enumerate(dataloader):
         print(f'Time taken: {time.time() - start_time}')
         start_time = time.time()
         from image_utils import Im, get_layered_image_from_binary_mask
-        # for b in range(batch['gen_pixel_values'].shape[0]):            
-        #     gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][b].squeeze(0))))
-        #     disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'][b].squeeze(0))))
-        #     print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][b, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][b, ..., 0].numel())
-        #     Im.concat_horizontal(gen_, disc_).save(str(b)) # batch['metadata']['id'][b]
+        for b in range(batch['gen_pixel_values'].shape[0]):            
+            gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][b].squeeze(0))))
+            disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'][b].squeeze(0))))
+            print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][b, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][b, ..., 0].numel())
+            Im.concat_horizontal(gen_, disc_).save(f'movi_{step}_{b}.png')
+
+        if step > 1:
+            break

@@ -4,6 +4,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Optional, TypedDict, Union
 
+import einops
 import hydra
 import numpy as np
 import torch
@@ -11,35 +12,35 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate import Accelerator
 from beartype import beartype
-from einx import add, rearrange, set_at, where
+from einx import add, rearrange, where
 from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
 from peft import LoraConfig
+from scipy.spatial.transform import Rotation as R
 from torch import Tensor
 from transformers import AutoTokenizer, CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
-import itertools
-from diffusers import AutoencoderKL, ControlNetModel, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline, UNet2DConditionModel
+
+from diffusers import (AutoencoderKL, ControlNetModel, DDIMScheduler, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline,
+                       UNet2DConditionModel)
 from diffusers.models.attention import BasicTransformerBlock
 from diffusers.training_utils import cast_training_params
+from diffusers.utils.torch_utils import randn_tensor
 from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
 from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale,
                                                       shift_scale_uncond_hidden_states)
-from gen.models.cross_attn.losses import break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, token_cls_loss, token_rot_loss, get_gt_rot
+from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, get_gt_rot,
+                                          token_cls_loss, token_rot_loss)
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
-from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, get_discretized_zyx_from_quat, get_ortho6d_from_rotation_matrix, get_quat_from_discretized_zyx
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
-from diffusers.utils.torch_utils import randn_tensor
-from diffusers import DDIMScheduler
-from scipy.spatial.transform import Rotation as R
-import einops
+
 
 class InputData(TypedDict):
     gen_pixel_values: Float[Tensor, "b c h w"]
@@ -59,6 +60,7 @@ class ConditioningData:
     attn_dict: Optional[dict[str, Tensor]] = None
     clip_feature_map: Optional[Float[Tensor, "b d h w"]] = None
     mask_tokens: Optional[Float[Tensor, "n d"]] = None
+    mask_head_tokens: Optional[Float[Tensor, "n d"]] = None # We sometimes need this if we want to have some mask tokens with detached gradients
     mask_batch_idx: Optional[Integer[Tensor, "n"]] = None
     mask_instance_idx: Optional[Integer[Tensor, "n"]] = None
     mask_dropout: Optional[Bool[Tensor, "n"]] = None
@@ -469,6 +471,8 @@ class BaseMapper(Trainable):
 
         cond = self.get_hidden_state(batch, add_conditioning=disable_conditioning is False, cond=cond)
 
+        if self.cfg.model.unet is False: return cond
+
         bs = batch["disc_pixel_values"].shape[0]
         cond.input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["formatted_input_ids"][y]) if "<|" not in x] for y in range(bs)]
 
@@ -716,19 +720,40 @@ class BaseMapper(Trainable):
         batch = self.check_add_segmentation(batch)
         cond = self.add_cross_attn_params(batch, cond)
 
-        queries = einops.repeat(self.mapper.learnable_token, "layers d -> (masks layers) d", masks=cond.mask_batch_idx.shape[0])
+        orig_queries = einops.repeat(self.mapper.learnable_token, "layers d -> (masks layers) d", masks=cond.mask_batch_idx.shape[0])
+        x_kv_orig = cond.attn_dict["x_kv"].clone()
 
-        cond.attn_dict["x"] = queries.to(self.dtype)
-        pred_mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
-        cond.mask_tokens = pred_mask_tokens
+        if self.cfg.model.unet:
+            queries = orig_queries.clone()
+            cond.attn_dict["x"] = queries.to(self.dtype)
+            cond.attn_dict["x_kv"] = x_kv_orig
+            cond.mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
+
+        if self.cfg.model.detach_features_before_cross_attn:
+            queries = orig_queries.clone().detach()
+            cond.attn_dict["x"] = queries.to(self.dtype)
+            cond.attn_dict["x_kv"] = x_kv_orig
+            cond.mask_head_tokens = self.mapper.cross_attn(cond).to(self.dtype)
+        else:
+            cond.mask_head_tokens = cond.mask_tokens
 
         if self.cfg.model.per_layer_queries: # Break e.g., 1024 -> 16 x 64
-            cond.mask_tokens = einops.rearrange(cond.mask_tokens, "(masks layers) d -> masks (layers d)", masks=cond.mask_batch_idx.shape[0])
+            if cond.mask_tokens is not None: 
+                cond.mask_tokens = einops.rearrange(cond.mask_tokens, "(masks layers) d -> masks (layers d)", masks=cond.mask_batch_idx.shape[0])
 
+            if cond.mask_head_tokens is not None:
+                cond.mask_head_tokens = einops.rearrange(cond.mask_head_tokens, "(masks layers) d -> masks (layers d)", masks=cond.mask_batch_idx.shape[0])
+            
         elif self.cfg.model.layer_specialization: # Break e.g., 1024 -> 16 x 64
-            layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_tokens, l=self.cfg.model.num_conditioning_pairs)
-            layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens)  # Batched 64 -> 1024
-            cond.mask_tokens = rearrange("b layers d -> b (layers d)", layerwise_mask_tokens).to(self.dtype)
+            if cond.mask_tokens is not None:
+                layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_tokens, l=self.cfg.model.num_conditioning_pairs)
+                layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens)  # Batched 64 -> 1024
+                cond.mask_tokens = rearrange("b layers d -> b (layers d)", layerwise_mask_tokens).to(self.dtype)
+
+            if cond.mask_head_tokens is not None:
+                layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_head_tokens, l=self.cfg.model.num_conditioning_pairs)
+                layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens)  # Batched 64 -> 1024
+                cond.mask_head_tokens = rearrange("b layers d -> b (layers d)", layerwise_mask_tokens).to(self.dtype)
 
         return cond
 
@@ -804,8 +829,9 @@ class BaseMapper(Trainable):
         if add_conditioning:
             if cond.mask_tokens is None or cond.mask_batch_idx is None:
                 cond = self.compute_mask_tokens(batch, cond)
-
-            cond = self.update_hidden_state_with_mask_tokens(batch, cond)
+            
+            if cond.mask_tokens is not None:
+                cond = self.update_hidden_state_with_mask_tokens(batch, cond)
 
             if self.cfg.model.attention_masking:
                 attention_masking(batch, cond)
@@ -865,6 +891,8 @@ class BaseMapper(Trainable):
         # Sample a random timestep for each element in batch
         if self.cfg.model.use_inverted_noise_schedule:
             timesteps = ((torch.arccos(timesteps / self.noise_scheduler.config.num_train_timesteps) / (torch.pi / 2)) * self.noise_scheduler.config.num_train_timesteps).long()
+        elif self.cfg.model.diffusion_timestep_range is not None:
+            timesteps = torch.randint(self.cfg.model.diffusion_timestep_range[0], self.cfg.model.diffusion_timestep_range[1], (bs,), device=self.device).long()
         else:
             timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bs,), device=self.device).long()
 
@@ -877,12 +905,13 @@ class BaseMapper(Trainable):
 
             # We must call this before rotation/cls prediction to properly setup the GT and choose which mask tokens to predict
             # Make sure to also call token_rot_loss afterwards.
-            pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
-            if self.cfg.model.token_rot_pred_loss and not self.cfg.model.predict_rotation_from_n_frames:
-                max_timesteps = self.cfg.model.rotation_diffusion_start_timestep if self.cfg.model.rotation_diffusion_start_timestep else self.cfg.model.rotation_diffusion_timestep
-                pred_data.timesteps = torch.randint(0, max_timesteps, (pred_data.mask_tokens.shape[0],), device=self.device).long()
-                pred_data.rot_6d_noise = torch.randn_like(pred_data.gt_rot_6d)
-                pred_data.noised_rot_6d = self.rotation_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, pred_data.timesteps)
+            if self.cfg.model.token_rot_pred_loss:
+                pred_data = get_gt_rot(self.cfg, cond, batch, pred_data)
+                if self.cfg.model.token_rot_pred_loss and not self.cfg.model.predict_rotation_from_n_frames:
+                    max_timesteps = self.cfg.model.rotation_diffusion_start_timestep if self.cfg.model.rotation_diffusion_start_timestep else self.cfg.model.rotation_diffusion_timestep
+                    pred_data.timesteps = torch.randint(0, max_timesteps, (pred_data.mask_tokens.shape[0],), device=self.device).long()
+                    pred_data.rot_6d_noise = torch.randn_like(pred_data.gt_rot_6d)
+                    pred_data.noised_rot_6d = self.rotation_scheduler.add_noise(pred_data.gt_rot_6d, pred_data.rot_6d_noise, pred_data.timesteps)
             
             pred_data = self.token_mapper(batch=batch, cond=cond, pred_data=pred_data)
 

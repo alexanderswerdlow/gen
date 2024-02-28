@@ -13,7 +13,7 @@ from torchvision import transforms
 
 from gen import COCO_CAPTIONS_FILES, DEFAULT_PROMPT
 from gen.configs.utils import inherit_parent_args
-from gen.datasets.base_dataset import AbstractDataset
+from gen.datasets.abstract_dataset import AbstractDataset
 
 @inherit_parent_args
 class CocoCaptions(AbstractDataset):

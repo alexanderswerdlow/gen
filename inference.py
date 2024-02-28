@@ -15,7 +15,7 @@ from tqdm import tqdm
 import torch
 import wandb
 from gen.configs.base import BaseConfig
-from gen.datasets.base_dataset import Split
+from gen.datasets.abstract_dataset import Split
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import all_gather, get_rank, is_main_process, sanitize_filename, save_tensor_dict
 from gen.utils.logging_utils import log_info

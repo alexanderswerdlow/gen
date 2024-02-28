@@ -10,7 +10,7 @@ import open_clip
 from gen import DEFAULT_PROMPT
 from gen.configs.utils import inherit_parent_args
 
-from gen.datasets.base_dataset import AbstractDataset, Split
+from gen.datasets.abstract_dataset import AbstractDataset, Split
 
 
 

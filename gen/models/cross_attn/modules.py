@@ -257,11 +257,7 @@ class TokenMapper(nn.Module):
         self.apply(_init_weights)
 
     def forward(self, batch, cond: ConditioningData, pred_data: TokenPredData):
-        mask_tokens = cond.mask_tokens
-
-        if self.cfg.model.detach_mask_tokens_for_pred:
-            mask_tokens = mask_tokens.detach()
-
+        mask_tokens = cond.mask_head_tokens
         mask_tokens = self.token_proj(mask_tokens)
 
         if self.cfg.model.token_cls_pred_loss:
@@ -270,9 +266,6 @@ class TokenMapper(nn.Module):
 
         if self.cfg.model.token_rot_pred_loss:
             rot_mask_tokens = pred_data.mask_tokens
-
-            if self.cfg.model.detach_mask_tokens_for_pred:
-                rot_mask_tokens = rot_mask_tokens.detach()
 
             rot_mask_tokens = self.token_proj(rot_mask_tokens)
 

@@ -122,9 +122,9 @@ def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: Condition
         if (
             cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item()
         ):  # We do not have conditioning for this entire sample so put loss on everything
-            max_masks.append(object_masks.new_ones((cfg.model.resolution, cfg.model.resolution)))
+            max_masks.append(object_masks.new_ones((cfg.model.decoder_resolution, cfg.model.decoder_resolution)))
         elif object_masks.shape[-1] == 0:
-            max_masks.append(object_masks.new_zeros((cfg.model.resolution, cfg.model.resolution)))  # Zero out loss if there are no masks
+            max_masks.append(object_masks.new_zeros((cfg.model.decoder_resolution, cfg.model.decoder_resolution)))  # Zero out loss if there are no masks
         else:
             max_masks.append(torch.max(object_masks, axis=-1).values)
 
@@ -156,7 +156,7 @@ def token_cls_loss(
 
     losses = []
     correct_predictions = 0
-    correct_top5_predictions = 0
+    correct_top3_predictions = 0
     total_instances = 0
 
     for b in range(bs):
@@ -181,26 +181,26 @@ def token_cls_loss(
 
         if instance_categories.shape[0] == 0:
             continue  # This can happen if we previously dropout all masks except the background
-
+        
         loss = F.cross_entropy(pred_, instance_categories.long())
         losses.append(loss)
 
         _, predicted_labels = pred_.max(dim=1)
         correct_predictions += (predicted_labels == instance_categories).sum().item()
 
-        _, top5_preds = pred_.topk(k=5, dim=1)
-        correct_top5_predictions += sum(instance_categories.view(-1, 1) == top5_preds).sum().item()
+        _, top3_preds = pred_.topk(k=3, dim=1)
+        correct_top3_predictions += sum(instance_categories.view(-1, 1) == top3_preds).sum().item()
 
         total_instances += instance_categories.size(0)
 
-    avg_loss = torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=device)
+    avg_loss = torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=device, requires_grad=True)
     accuracy = (correct_predictions / total_instances) if total_instances > 0 else 0
-    top5_accuracy = (correct_top5_predictions / total_instances) if total_instances > 0 else 0
+    top3_accuracy = (correct_top3_predictions / total_instances) if total_instances > 0 else 0
 
     return {
-        "cls_pred_loss": avg_loss * 0.1,
+        "cls_pred_loss": avg_loss * cfg.model.token_cls_loss_weight,
         "metric_cls_pred_acc": torch.tensor(accuracy, device=device),
-        "metric_cls_pred_top5_acc": torch.tensor(top5_accuracy, device=device),
+        "metric_cls_pred_top3_acc": torch.tensor(top3_accuracy, device=device),
     }
 
 def get_relative_rot_data(cfg: BaseConfig, cond: ConditioningData, batch: InputData):
@@ -266,8 +266,8 @@ def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_d
                 relative_rot_token_input_mask.extend(token_indices)
 
         pred_data.gt_rot_6d = get_ortho6d_from_rotation_matrix(torch.cat(gt_rot_6d, dim=0))
-        pred_data.mask_tokens = cond.mask_tokens[[*relative_rot_token_input_mask]]
-        pred_data.token_output_mask = cond.mask_tokens.new_zeros((cond.mask_tokens.shape[0]), dtype=torch.bool)
+        pred_data.mask_tokens = cond.mask_head_tokens[[*relative_rot_token_input_mask]]
+        pred_data.token_output_mask = cond.mask_head_tokens.new_zeros((cond.mask_head_tokens.shape[0]), dtype=torch.bool)
         pred_data.token_output_mask[[*relative_rot_token_input_mask]] = True
     else:
         gt_rot_6d = []
@@ -286,7 +286,8 @@ def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_d
             gt_rot_6d.append(gt_rot_6d_)
 
         pred_data.token_output_mask = (cond.mask_instance_idx != 0)
-        pred_data.mask_tokens = cond.mask_tokens[pred_data.token_output_mask]
+        pred_data.mask_tokens = cond.mask_head_tokens[pred_data.token_output_mask]
+        cond.mask_head_tokens = None
         pred_data.gt_rot_6d = torch.cat(gt_rot_6d, dim=0)[pred_data.token_output_mask]
 
     return pred_data

@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader, RandomSampler, Subset
 
 from gen.utils.logging_utils import log_info, log_warn
 from torch import Generator
+import torch
 
 class Split(Enum):
     TRAIN = 0
@@ -14,6 +15,11 @@ class Split(Enum):
 
 
 class AbstractDataset(ABC):
+    """
+    The name might be a little misleading but AbstractDataset is a class that sets up a dataset, including the dataloader.
+    A typical use-case involves inheriting from AbstractDataset as well as PyTorch's Dataset class. Children must implement the get_dataset method, in this case simply returning self.
+    However, this structure supports more complex datasets, including for the child to configure a dataset object defined in another library, etc. in a standardized format.
+    """
     def __init__(
             self,
             *,
@@ -44,9 +50,8 @@ class AbstractDataset(ABC):
     def get_dataset(self):
         pass
 
-    @abstractmethod
     def collate_fn(self, batch):
-        pass
+        return torch.utils.data.default_collate(batch)
 
     def get_dataloader(self, generator: Optional[Generator] = None, pin_memory: bool = True):
         orig_dataset = self.get_dataset()

@@ -23,7 +23,8 @@ class ModelConfig:
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     token_embedding_dim: int = 768
     latent_dim: int = 64  # Resolution after VAE [input to U-Net]. For SD at 512x512, this is 64 x 64
-    resolution: int = 512
+    encoder_resolution: int = 224
+    decoder_resolution: int = 512
 
     revision: Optional[str] = None
     variant: Optional[str] = None
@@ -84,7 +85,7 @@ class ModelConfig:
     token_cls_pred_loss: bool = False
     token_rot_pred_loss: bool = False
     num_token_cls: int = 17
-    detach_mask_tokens_for_pred: bool = False
+    detach_features_before_cross_attn: bool = False
 
     # rotation denoising parameters
     rotation_diffusion_timestep: int = 100
@@ -102,6 +103,8 @@ class ModelConfig:
     token_head_dim: int = "${model.encoder_dim}"
     lr_finetune_version: int = 0
     diffusion_loss_weight: float = 1.0
+    token_cls_loss_weight: float = 0.1
+    diffusion_timestep_range: Optional[tuple[int, int]] = None
 
 
 @dataclass

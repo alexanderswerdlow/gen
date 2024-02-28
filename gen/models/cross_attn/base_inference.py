@@ -22,6 +22,7 @@ from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
+from gen.datasets.coco.coco_panoptic import CocoPanoptic
 from dataclasses import asdict
 
 if TYPE_CHECKING:
@@ -39,9 +40,9 @@ def repeat_batch(batch, bs: int):
     return batch_
 
 def get_composited_mask(batch: dict, b: int, j: int):
-    orig_image = ((batch["gen_pixel_values"].squeeze(0) + 1) / 2)[b]
+    orig_image = ((batch["gen_pixel_values"] + 1) / 2)[b]
     mask_image = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"][b, ..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
-    mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
+    mask_rgb = np.full((mask_image.height, mask_image.width, 3), (255, 0, 0), dtype=np.uint8)
     mask_alpha = (batch["gen_segmentation"][b, ..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
     composited_image = Im(orig_image).pil.copy().convert("RGBA")
     composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
@@ -96,8 +97,8 @@ def infer_batch(
     if self.cfg.model.attention_masking:
         assert kwargs["guidance_scale"] > 1
 
-    kwargs["height"] = self.cfg.model.resolution
-    kwargs["width"] = self.cfg.model.resolution
+    kwargs["height"] = self.cfg.model.decoder_resolution
+    kwargs["width"] = self.cfg.model.decoder_resolution
 
     desired_context = torch.cuda.amp.autocast() if self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_gated_cross_attn else nullcontext()
     with desired_context:
@@ -123,9 +124,12 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
     if self.cfg.model.token_rot_pred_loss or self.cfg.model.token_cls_pred_loss:
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
+
+    pred_data = None
+    if self.cfg.model.token_rot_pred_loss:
+        with torch.cuda.amp.autocast():
             pred_data, rot_loss_data = self.denoise_rotation(batch=batch, cond=cond, scheduler=self.rotation_scheduler)
 
-    if self.cfg.model.token_rot_pred_loss:
         ret.update({k:v.float().cpu() for k,v in rot_loss_data.items()})
         ret["rot_data"] = {
             "quaternions": batch["quaternions"].float().cpu(),
@@ -136,6 +140,12 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
         }
 
     if self.cfg.model.token_cls_pred_loss:
+        if pred_data is None:
+            with torch.cuda.amp.autocast():
+                from gen.models.cross_attn.base_model import TokenPredData
+                pred_data = TokenPredData()
+                pred_data = self.token_mapper(batch=batch, cond=cond, pred_data=pred_data)
+                
         loss_ret = token_cls_loss(self.cfg, batch, cond, pred_data)
         for k in list(loss_ret.keys()):
             if isinstance(loss_ret[k], torch.Tensor):
@@ -144,6 +154,26 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
 
     return ret
 
+def label_to_color_image(label, colormap=None):
+    """Adds color defined by the dataset colormap to the label.
+    Args:
+        label: A 2D array with integer type, storing the segmentation label.
+        colormap: A colormap for visualizing segmentation results.
+    Returns:
+        result: A 2D array with floating type. The element of the array
+            is the color indexed by the corresponding element in the input label
+            to the dataset color map.
+    Raises:
+        ValueError: If label is not of rank 2 or its value is larger than color
+            map maximum entry.
+    """
+    if label.ndim != 2:
+        raise ValueError('Expect 2-D input label. Got {}'.format(label.shape))
+
+    if colormap is None:
+        raise ValueError('Expect a valid colormap.')
+
+    return colormap[label]
 
 @torch.no_grad()
 def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingState):
@@ -154,7 +184,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     assert batch["input_ids"].shape[0] == 1 or self.cfg.model.predict_rotation_from_n_frames is not None
 
     ret = {}
-    orig_image = Im((batch["gen_pixel_values"].squeeze(0) + 1) / 2)
+    orig_image = Im((batch["gen_pixel_values"] + 1) / 2)
 
     if self.cfg.model.token_rot_pred_loss:
         with torch.cuda.amp.autocast():
@@ -253,6 +283,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     if self.cfg.model.unet is False:
         return ret
+
 
     bs_ = batch["input_ids"].shape[0]
     gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], get_layered_image_from_binary_mask(batch["gen_segmentation"][b_])).write_text(text="GT") for b_ in range(bs_)])
@@ -409,7 +440,37 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         )
         ret["prompt_images"] = Im.concat_horizontal(orig_image, ret["prompt_images"], spacing=20)
 
+    img_ = []
+    for b in range(len(batch["gen_segmentation"])):
+        seg = batch["gen_segmentation"][b].argmax(dim=-1).data.cpu().numpy()
+        rgb_seg = label_to_color_image(seg, colormap=CocoPanoptic.create_label_colormap())
+        rgb_img = Image.fromarray((((batch["gen_pixel_values"][b] + 1) / 2).data.cpu().numpy() * 255).astype(np.uint8).transpose(1, 2, 0))
+        img_.append(Im.concat_vertical(rgb_seg, rgb_img))
+    ret["image_segmentation"] = Im.concat_horizontal(*img_)
+
     return ret
+
+
+def label_to_color_image(label, colormap=None):
+    """Adds color defined by the dataset colormap to the label.
+    Args:
+        label: A 2D array with integer type, storing the segmentation label.
+        colormap: A colormap for visualizing segmentation results.
+    Returns:
+        result: A 2D array with floating type. The element of the array
+            is the color indexed by the corresponding element in the input label
+            to the dataset color map.
+    Raises:
+        ValueError: If label is not of rank 2 or its value is larger than color
+            map maximum entry.
+    """
+    if label.ndim != 2:
+        raise ValueError('Expect 2-D input label. Got {}'.format(label.shape))
+
+    if colormap is None:
+        raise ValueError('Expect a valid colormap.')
+
+    return Image.fromarray(colormap[label])
 
 
 def take_from(slices: tuple[int, slice], data: tuple[dict]):

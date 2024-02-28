@@ -223,6 +223,19 @@ def get_datasets():  # TODO: These do not need to be global configs
         ],
     )
 
+    mode_store(
+        name="coco_panoptic",
+        dataset=dict(
+            train_dataset=dict(),
+            validation_dataset=dict(),
+        ),
+        hydra_defaults=[
+            "_self_",
+            {"override /dataset": "coco_panoptic"},
+        ],
+
+    )
+
 
 def get_experiments():
     get_datasets()
@@ -311,7 +324,7 @@ def get_experiments():
                 augmentation=dict(target_resolution=256),
             ),
         ),
-        model=dict(resolution=256, latent_dim=32),
+        model=dict(decoder_resolution=256, latent_dim=32),
     )
 
     mode_store(
@@ -489,13 +502,46 @@ def get_experiments():
         dataset=dict(train_dataset=dict(batch_size=8, cache_in_memory=False), validation_dataset=dict(cache_in_memory=False)),
         model=dict(
             num_conditioning_pairs=8,
-            diffusion_loss_weight=3.0,
+            diffusion_loss_weight=1.0,
             lr_finetune_version=1,
         ),
         trainer=dict(
             custom_inference_batch_size=None,
             learning_rate=4e-6,
-        )
+        ),
+        hydra_defaults=["discrete_token_pred"],
+    )
+
+    mode_store(
+        name="coco_debug",
+        model=dict(
+            token_rot_pred_loss=False,
+            num_token_cls=133, 
+            encoder_resolution=448, 
+            decoder_resolution=512,
+            latent_dim=64,
+            diffusion_timestep_range=(500, 1000),
+            training_mask_dropout=None,
+            training_layer_dropout=None,
+            training_cfg_dropout=None,
+            detach_features_before_cross_attn=True,
+        ),
+        dataset=dict(
+            train_dataset=dict(
+                batch_size=16, 
+                augmentation=dict(
+                    source_resolution="${model.encoder_resolution}", 
+                    target_resolution="${model.decoder_resolution}"
+                )
+            ),
+            validation_dataset=dict(
+                augmentation=dict(
+                    source_resolution="${model.encoder_resolution}",
+                    target_resolution="${model.decoder_resolution}"
+                )
+            )
+        ),
+        hydra_defaults=["large_model", "coco_panoptic"],
     )
 
     mode_store(
