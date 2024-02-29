@@ -82,7 +82,8 @@ class AbstractDataset(ABC):
             shuffle=self.allow_shuffle and self.shuffle, 
             collate_fn=self.collate_fn, 
             num_workers=self.num_workers, 
-            pin_memory=pin_memory, 
+            # pin_memory=pin_memory, 
+            pin_memory=False, 
             drop_last=self.drop_last
         )
         log_info(f"Dataset size: {len(orig_dataset)}, Dataset size after subset: {len(dataset)}, Combined dataloader size (all GPUs): {len(dataloader)}")

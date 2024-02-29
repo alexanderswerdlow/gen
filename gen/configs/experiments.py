@@ -368,7 +368,8 @@ def get_experiments():
             feature_map_keys=(
                 "stage1",
                 "stage18",
-                "stage24",
+                # "stage24",
+                "ln_post",
             ),
         ),
         dataset=dict(
@@ -529,12 +530,14 @@ def get_experiments():
         dataset=dict(
             train_dataset=dict(
                 batch_size=16, 
+                cache_in_memory=False,
                 augmentation=dict(
                     source_resolution="${model.encoder_resolution}", 
                     target_resolution="${model.decoder_resolution}"
                 )
             ),
             validation_dataset=dict(
+                cache_in_memory=False,
                 augmentation=dict(
                     source_resolution="${model.encoder_resolution}",
                     target_resolution="${model.decoder_resolution}"
@@ -545,6 +548,16 @@ def get_experiments():
     )
 
     mode_store(
+        name="disable_reconstruction",
+        model=dict(
+            unet=False,
+            freeze_mapper=False,
+            detach_features_before_cross_attn=False,
+            freeze_clip=True,
+        )
+    )
+
+    mode_store(
         name="enable_reconstruction",
         model=dict(
             unet=True,
@@ -552,5 +565,6 @@ def get_experiments():
             freeze_unet=False,
             unet_lora=False,
             finetune_unet_with_different_lrs=True,
+            freeze_clip=False,
         )
     )

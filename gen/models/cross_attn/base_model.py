@@ -723,16 +723,16 @@ class BaseMapper(Trainable):
         orig_queries = einops.repeat(self.mapper.learnable_token, "layers d -> (masks layers) d", masks=cond.mask_batch_idx.shape[0])
         x_kv_orig = cond.attn_dict["x_kv"].clone()
 
-        if self.cfg.model.unet:
-            queries = orig_queries.clone()
-            cond.attn_dict["x"] = queries.to(self.dtype)
-            cond.attn_dict["x_kv"] = x_kv_orig
-            cond.mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
+        # if self.cfg.model.unet:
+        queries = orig_queries.clone()
+        cond.attn_dict["x"] = queries.to(self.dtype)
+        cond.attn_dict["x_kv"] = x_kv_orig
+        cond.mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
 
         if self.cfg.model.detach_features_before_cross_attn:
-            queries = orig_queries.clone().detach()
-            cond.attn_dict["x"] = queries.to(self.dtype)
-            cond.attn_dict["x_kv"] = x_kv_orig
+            # queries = orig_queries.clone().detach()
+            cond.attn_dict["x"] = orig_queries.to(self.dtype)
+            cond.attn_dict["x_kv"] = x_kv_orig.detach() # mapper.position_embedding is frozen
             cond.mask_head_tokens = self.mapper.cross_attn(cond).to(self.dtype)
         else:
             cond.mask_head_tokens = cond.mask_tokens
