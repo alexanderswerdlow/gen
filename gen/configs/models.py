@@ -153,6 +153,7 @@ store_child_config(
         ViTFeatureExtractor,
         model_name="vit_tiny_patch16_224",
         num_classes=0,
+        img_size=None,
         return_only=None,
         pretrained=False,
         return_nodes={

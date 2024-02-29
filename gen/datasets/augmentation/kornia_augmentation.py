@@ -9,9 +9,11 @@ from image_utils import Im
 from kornia.augmentation.auto.base import SUBPLOLICY_CONFIG
 from kornia.augmentation.auto.rand_augment.rand_augment import RandAugment
 from kornia.augmentation.container import AugmentationSequential
+import torchvision.transforms.v2 as transforms
 
 from gen.datasets.augmentation.utils import get_keypoints, get_viz_keypoints, process_output_keypoints, process_output_segmentation, viz
 from gen.datasets.utils import get_open_clip_transforms_v2, get_simple_transform, get_stable_diffusion_transforms
+import warnings
 
 randaug_policy: List[SUBPLOLICY_CONFIG] = [
     [("auto_contrast", 0, 1)],
@@ -88,6 +90,12 @@ class Augmentation:
             target_params = self.target_transform.forward_parameters(batch_shape=target_data.image.shape)
             target_data = process(aug=self.target_transform, params=target_params, input_data=target_data)
 
+        if source_data.image.shape[-1] != self.source_normalization.transforms[0].size[-1]:
+            warnings.warn("Source image is being resized.")
+        
+        if target_data.image.shape[-1] != self.target_normalization.transforms[0].size[-1]:
+            warnings.warn("Target image is being resized.")
+        
         source_data.image = self.source_normalization(source_data.image)
         target_data.image = self.target_normalization(target_data.image)
 
@@ -95,7 +103,6 @@ class Augmentation:
         # However, torchvision transforms are the defacto standard and this allows us to directly take the normalization from e.g., timm
         # The below code applies the same transform to the segmentation mask (generally a resize and crop) and skips the normalization but is not ideal
         for transform_ in self.source_normalization.transforms:
-            import torchvision.transforms.v2 as transforms
             if transform_.__class__.__name__ == "Resize":
                 source_data.segmentation = transforms.Resize(size=transform_.size, max_size=transform_.max_size, antialias=transform_.antialias, interpolation=transforms.InterpolationMode.NEAREST)(source_data.segmentation)
             elif transform_.__class__.__name__ != "Normalize":

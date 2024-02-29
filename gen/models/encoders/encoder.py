@@ -77,7 +77,7 @@ class BaseModel(ABC, nn.Module):
             self.model = torch.compile(self.model, **compile_kwargs)
 
     def create_model_timm(self, model_name: str, pretrained: bool = True, **kwargs):
-        return timm.create_model(model_name, **kwargs)
+        return timm.create_model(model_name, pretrained=pretrained, **kwargs)
 
     @abstractmethod
     def create_model(self, **kwargs):
@@ -159,7 +159,7 @@ class DINOV2(TimmModel):
 
 
 class VIT(TimmModel):
-    def __init__(self, model_name: str = "vit_base_patch16_clip_384.laion2b_ft_in12k_in1k", img_size=(224, 224), **kwargs):
+    def __init__(self, model_name: Optional[str] = None, img_size: Optional[tuple[int, int]] = None, **kwargs):
         super().__init__(model_name=model_name, img_size=img_size, **kwargs)
 
     def pre_transform(self, image: ImArr, **kwargs):
@@ -329,13 +329,14 @@ class ViTFeatureExtractor(FeatureExtractorModel, VIT):
         model_name: str = "vit_base_patch14_reg4_dinov2",
         pretrained: bool = True,
         num_classes: Optional[int] = None,
+        img_size: Optional[int] = None,
         **kwargs,
     ):
         self.return_nodes = return_nodes
         self.return_only = return_only
         self.pretrained = pretrained
         self.num_classes = num_classes
-        super().__init__(model_name=model_name, **kwargs)
+        super().__init__(model_name=model_name, img_size=img_size, **kwargs)
 
     def create_model(self):
         create_kwargs = {}

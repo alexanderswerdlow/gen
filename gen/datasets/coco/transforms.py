@@ -8,8 +8,8 @@ import random
 
 import cv2
 import numpy as np
-from torchvision.transforms import functional as F
-
+from torchvision.transforms.v2 import functional as F
+import torch
 
 class Compose(object):
     """
@@ -39,7 +39,9 @@ class ToTensor(object):
     Converts image to torch Tensor.
     """
     def __call__(self, image, label):
-        return F.to_tensor(image), label
+        image = F.to_image(image)
+        image = F.to_dtype(image, dtype=torch.float32, scale=True)
+        return image, label
 
 
 class Normalize(object):

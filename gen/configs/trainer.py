@@ -1,11 +1,12 @@
 from dataclasses import dataclass
-from typing import ClassVar, Optional
+from typing import Any, ClassVar, Optional
 
 from accelerate.utils import PrecisionType
 from accelerate.utils.dataclasses import DynamoBackend, LoggerType
 
 from gen.configs.utils import auto_store
 import torch
+from torch.optim import Optimizer
 
 @dataclass
 class TrainerConfig:
@@ -29,13 +30,15 @@ class TrainerConfig:
     learning_rate: float = 5e-6
     scale_lr_batch_size: bool = False
     scale_lr_gpus_grad_accum: bool = True
+    optimizer_cls: Optimizer = torch.optim.AdamW
+    momentum: Optional[float] = None
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 500
     lr_num_cycles: int = 1
     lr_power: float = 1.0
     adam_beta1: float = 0.9
     adam_beta2: float = 0.999
-    adam_weight_decay: float = 1e-2
+    weight_decay: float = 1e-2
     adam_epsilon: float = 1e-08
     max_grad_norm: float = 1.0
     set_grads_to_none: bool = True

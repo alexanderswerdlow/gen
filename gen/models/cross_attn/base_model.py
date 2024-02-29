@@ -119,6 +119,20 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.unet: self.add_unet_adapters()
 
+        if self.cfg.trainer.compile:
+            print("Using torch.compile()...")
+            if hasattr(self, "clip"):
+                self.clip: ClipFeatureExtractor = torch.compile(self.clip, mode="reduce-overhead", fullgraph=True)
+            self.mapper = torch.compile(self.mapper, mode="reduce-overhead", fullgraph=True)
+            
+            # self.token_mapper = torch.compile(self.token_mapper, mode="reduce-overhead")
+            # TODO: Compile currently doesn't work with flash-attn apparently
+            # self.unet.to(memory_format=torch.channels_last)
+            # self.unet: UNet2DConditionModel = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
+            # if self.cfg.model.controlnet:
+            #     self.controlnet = self.controlnet.to(memory_format=torch.channels_last)
+            #     self.controlnet: ControlNetModel = torch.compile(self.controlnet, mode="reduce-overhead", fullgraph=True)
+
         from gen.models.cross_attn.base_inference import infer_batch
 
         BaseMapper.infer_batch = infer_batch
@@ -201,16 +215,6 @@ class BaseMapper(Trainable):
                 self.controlnet.enable_gradient_checkpointing()
             if self.cfg.model.freeze_text_encoder is False:
                 self.text_encoder.gradient_checkpointing_enable()
-
-        if self.cfg.trainer.compile:
-            self.clip: ClipFeatureExtractor = torch.compile(self.clip, mode="reduce-overhead", fullgraph=True)
-
-            # TODO: Compile currently doesn't work with flash-attn apparently
-            # self.unet.to(memory_format=torch.channels_last)
-            # self.unet: UNet2DConditionModel = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
-            # if self.cfg.model.controlnet:
-            #     self.controlnet = self.controlnet.to(memory_format=torch.channels_last)
-            #     self.controlnet: ControlNetModel = torch.compile(self.controlnet, mode="reduce-overhead", fullgraph=True)
 
         if self.cfg.model.break_a_scene_cross_attn_loss:
             from gen.models.cross_attn.break_a_scene import AttentionStore

@@ -244,6 +244,15 @@ def get_experiments():
     mode_store(name="resnet", model=dict(encoder=builds(ResNetFeatureExtractor, populate_full_signature=False), cross_attn_dim=256))
 
     mode_store(
+        name="sm",
+        model=dict(
+            decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False),
+            fused_mlp=False,
+            fused_bias_fc=False,
+        ),
+    )
+
+    mode_store(
         name="small_gpu",
         dataset=dict(train_dataset=dict(batch_size=1, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
         model=dict(
@@ -496,6 +505,40 @@ def get_experiments():
             ),
         ),
         hydra_defaults=["vit_small_scratch"],
+    )
+
+    mode_store(
+        name="debug_vit_base_scratch",
+        model=dict(
+            encoder_resolution=448,
+            encoder=dict(
+                model_name="vit_base_patch16_clip_384",
+                return_nodes={
+                    "blocks.0": "blocks.0",
+                    "blocks.6": "blocks.6",
+                    "norm": "norm",
+                },
+                img_size=448
+            ),
+            encoder_dim=768,
+            feature_map_keys=(
+                "blocks.0",
+                "blocks.6",
+                "norm",
+            ),
+        ),
+        hydra_defaults=["vit_base_scratch"],
+    )
+
+    mode_store(
+        name="debug_vit_base_clip",
+        model=dict(
+            encoder=dict(
+                model_name="vit_base_patch16_clip_384.laion2b_ft_in12k_in1k",
+                pretrained=True,
+            ),
+        ),
+        hydra_defaults=["debug_vit_base_scratch"],
     )
 
     mode_store(

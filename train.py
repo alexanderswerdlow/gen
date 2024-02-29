@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 from time import time
 from typing import Iterable, Union
-
+import importlib
 import hydra
 import torch
 import torch.nn as nn
@@ -127,14 +127,24 @@ class Trainer:
         self.validation_dataloader: DataLoader = self.validation_dataset_holder.get_dataloader()
         assert len(self.validation_dataloader) > 0
 
-    def init_optimizer(self):
-        optimizer_class = torch.optim.AdamW
+    def init_optimizer(self):        
+        kwargs = dict()
+        module_name, class_name = self.cfg.trainer.optimizer_cls.path.rsplit(".", 1)
+        optimizer_class = getattr(importlib.import_module(module_name), class_name)
+        if optimizer_class == torch.optim.AdamW:
+            kwargs['eps'] = self.cfg.trainer.adam_epsilon
+            kwargs['betas'] = (self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2)
+        
+        if self.cfg.trainer.momentum is not None:
+            kwargs['momentum'] = self.cfg.trainer.momentum
+
+        print(f"Using optimizer_class: {optimizer_class}")
+            
         self.optimizer = optimizer_class(
             get_named_params(self.models).values() if (params_ := unwrap(self.model).get_param_groups()) is None else params_,
             lr=self.cfg.trainer.learning_rate,
-            betas=(self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2),
-            weight_decay=self.cfg.trainer.adam_weight_decay,
-            eps=self.cfg.trainer.adam_epsilon,
+            weight_decay=self.cfg.trainer.weight_decay,
+            **kwargs
         )
 
     def init_lr_scheduler(self):
@@ -304,12 +314,12 @@ class Trainer:
         model_.unfreeze_unet()
         self.models.append(model_)
         del self.optimizer
-        optimizer_class = torch.optim.AdamW
+        optimizer_class = self.cfg.trainer.optimizer_cls
         self.optimizer = optimizer_class(
             get_named_params(self.models).values(),
             lr=self.cfg.trainer.finetune_learning_rate,
             betas=(self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2),
-            weight_decay=self.cfg.trainer.adam_weight_decay,
+            weight_decay=self.cfg.trainer.weight_decay,
             eps=self.cfg.trainer.adam_epsilon,
         )
         del self.lr_scheduler

@@ -411,3 +411,6 @@ def viz():
                 # obj_delta = (right_object * left_object.inv()).as_quat()
                 # if not np.allclose(camera_delta, obj_delta, atol=1e-3):
                 #     log_warn(f"Camera and object rotations are not the same: {camera_delta - obj_delta}")
+    
+        #     print(self.clip.model.norm.weight, self.clip.model.norm.bias)
+        # print(torch.all(self.clip.model.norm.weight == 1), torch.all(self.clip.model.norm.bias == 0))

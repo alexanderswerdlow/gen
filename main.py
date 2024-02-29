@@ -78,7 +78,7 @@ def main(cfg: BaseConfig):
     cfg.logging_dir = Path(cfg.output_dir, cfg.logging_dir)
     if is_main_process():
         if cfg.checkpoint_dir.is_absolute():
-            cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.output_dir.name
+            cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name
             if cfg.checkpoint_dir.exists() and not cfg.trainer.resume:
                 cfg.checkpoint_dir = cfg.checkpoint_dir / "".join(random.choices(string.ascii_letters, k=10))
             
