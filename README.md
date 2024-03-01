@@ -13,12 +13,14 @@ conda env remove -n gen
 conda create -n gen python=3.10
 conda activate gen
 
+export CUDA_HOME='/usr/local/cuda-11' # Adjust to your desired cuda location
 pip install 'torch==2.2.*' 'torchvision==0.17.*' --index-url https://download.pytorch.org/whl/cu118
-pip install -e diffusers; pip install -e 'image_utils[VIDEO]'
+pip install -e diffusers; pip install -e 'image_utils[ALL]'
 pip install pip install ninja wheel packaging
 pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
 
-pip install flash-attn --no-build-isolation
+git clone https://github.com/Dao-AILab/flash-attention && cd flash-attention
+MAX_JOBS=4 python setup.py install # Adjust MAX_JOBS higher if you have more RAM
 cd csrc/fused_dense_lib && pip install .
 
 pip install -r requirements.txt

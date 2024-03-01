@@ -76,6 +76,9 @@ class Augmentation:
         self.source_transform = AugmentationSequential(*source_transforms) if len(source_transforms) > 0 else None
         self.target_transform = AugmentationSequential(*target_transforms) if len(target_transforms) > 0 else None
 
+        warnings.warn(f"Source image is being resized to {self.source_normalization.transforms[0].size}")
+        warnings.warn(f"Target image is being resized to {self.target_normalization.transforms[0].size}")
+
     def kornia_augmentations_enabled(self) -> bool:
         return self.source_transform is not None or self.target_transform is not None
 
@@ -89,12 +92,6 @@ class Augmentation:
         if self.target_transform is not None:
             target_params = self.target_transform.forward_parameters(batch_shape=target_data.image.shape)
             target_data = process(aug=self.target_transform, params=target_params, input_data=target_data)
-
-        if source_data.image.shape[-1] != self.source_normalization.transforms[0].size[-1]:
-            warnings.warn("Source image is being resized.")
-        
-        if target_data.image.shape[-1] != self.target_normalization.transforms[0].size[-1]:
-            warnings.warn("Target image is being resized.")
         
         source_data.image = self.source_normalization(source_data.image)
         target_data.image = self.target_normalization(target_data.image)

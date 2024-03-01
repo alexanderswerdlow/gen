@@ -97,6 +97,10 @@ def infer_batch(
     if self.cfg.model.attention_masking:
         assert kwargs["guidance_scale"] > 1
 
+    if len(cond.unet_kwargs.get('cross_attention_kwargs', {}).get('attn_meta', {})) == 0:
+        if 'cross_attention_kwargs' in cond.unet_kwargs and 'attn_meta' in cond.unet_kwargs['cross_attention_kwargs']:
+            del cond.unet_kwargs['cross_attention_kwargs']['attn_meta']
+
     kwargs["height"] = self.cfg.model.decoder_resolution
     kwargs["width"] = self.cfg.model.decoder_resolution
 

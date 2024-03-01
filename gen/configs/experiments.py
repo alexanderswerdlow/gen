@@ -10,7 +10,7 @@ from gen import (
 )
 from gen.configs.utils import mode_store, store_child_config
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
-
+import torch
 
 def get_override_dict(**kwargs):
     return dict(
@@ -327,13 +327,19 @@ def get_experiments():
         name="low_res",
         dataset=dict(
             train_dataset=dict(
-                augmentation=dict(target_resolution=256),
+                augmentation=dict(
+                    source_resolution="${model.encoder_resolution}", 
+                    target_resolution="${model.decoder_resolution}"
+                )
             ),
             validation_dataset=dict(
-                augmentation=dict(target_resolution=256),
+                augmentation=dict(
+                    source_resolution="${model.encoder_resolution}", 
+                    target_resolution="${model.decoder_resolution}"
+                )
             ),
         ),
-        model=dict(decoder_resolution=256, latent_dim=32),
+        model=dict(encoder_resolution=224, decoder_resolution=256, latent_dim=32),
     )
 
     mode_store(
@@ -512,6 +518,7 @@ def get_experiments():
         model=dict(
             encoder_resolution=448,
             encoder=dict(
+                pretrained=False,
                 model_name="vit_base_patch16_clip_384",
                 return_nodes={
                     "blocks.0": "blocks.0",
@@ -554,6 +561,16 @@ def get_experiments():
             learning_rate=4e-6,
         ),
         hydra_defaults=["discrete_token_pred"],
+    )
+    
+    mode_store(
+        name="sgd",
+        trainer=dict(
+            optimizer_cls=torch.optim.SGD,
+            momentum=0.0,
+            weight_decay=0.0,
+            learning_rate=1e-6,
+        ),
     )
 
     mode_store(
@@ -610,4 +627,63 @@ def get_experiments():
             finetune_unet_with_different_lrs=True,
             freeze_clip=False,
         )
+    )
+
+    mode_store(
+        name="03_01_no_recon",
+        model=dict(
+            layer_specialization=False,
+            num_conditioning_pairs=1,
+            per_layer_queries=False,
+            diffusion_timestep_range=(250, 750),
+            detach_features_before_cross_attn=False,
+            gated_cross_attn=False,
+            unfreeze_gated_cross_attn=False,
+            unet=False,
+            freeze_mapper=False,
+            freeze_clip=False,
+            encoder=dict(
+                model_name="vit_small_patch16_384",
+            ),
+            encoder_dim=384,
+        ),
+        trainer=dict(
+            learning_rate=1e-6,
+            momentum=0.9,
+        ),
+        dataset=dict(
+            train_dataset=dict(batch_size=16),
+        ),
+        inference=dict(
+            visualize_attention_map=False
+        ),
+        hydra_defaults=["coco_debug", "debug_vit_base_scratch", "sgd"],
+    )
+
+    mode_store(
+        name="03_01_recon",
+        model=dict(unet=True, unet_lora=True, finetune_unet_with_different_lrs=False, lora_rank=256),
+        hydra_defaults=["03_01_no_recon"],
+    )
+
+    mode_store(
+        name="coco_recon_only",
+        model=dict(
+            layer_specialization=True,
+            num_conditioning_pairs=8,
+            per_layer_queries=True,
+            unet=True, 
+            unet_lora=True, 
+            lora_rank=256,
+            per_layer_queries=True,
+            encoder=dict(return_only=None),
+            feature_map_keys=(
+                "stage12",
+                "stage18",
+                "stage24",
+            ),
+        ),
+        dataset=dict(train_dataset=dict(batch_size=20)),
+        trainer=dict(learning_rate=1e-6),
+        hydra_defaults=["multiscale", "low_res", "coco_panoptic"],
     )

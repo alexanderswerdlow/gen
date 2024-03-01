@@ -929,6 +929,11 @@ class BaseMapper(Trainable):
 
             # Add noise to the latents according to the noise magnitude at each timestep
             noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+
+            if len(cond.unet_kwargs.get('cross_attention_kwargs', {}).get('attn_meta', {})) == 0:
+                if 'cross_attention_kwargs' in cond.unet_kwargs and 'attn_meta' in cond.unet_kwargs['cross_attention_kwargs']:
+                    del cond.unet_kwargs['cross_attention_kwargs']['attn_meta']
+
             if self.cfg.model.controlnet:
                 controlnet_image = self.get_controlnet_conditioning(batch)
                 down_block_res_samples, mid_block_res_sample = self.controlnet(
