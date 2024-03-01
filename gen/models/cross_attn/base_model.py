@@ -961,6 +961,13 @@ class BaseMapper(Trainable):
         
         losses = dict()
         if self.cfg.model.unet:
+            if "gen_pad_mask" in batch.keys():
+                loss_mask = rearrange("b h w -> b () h w ", ~batch["gen_pad_mask"])
+                loss_mask = F.interpolate(loss_mask.float(),
+                                        size=(self.cfg.model.latent_dim, self.cfg.model.latent_dim),
+                                        mode='nearest')
+                model_pred, target = model_pred * loss_mask, target * loss_mask
+
             if self.cfg.model.break_a_scene_masked_loss:
                 loss_mask = break_a_scene_masked_loss(cfg=self.cfg, batch=batch, cond=cond)
                 model_pred, target = model_pred * loss_mask, target * loss_mask

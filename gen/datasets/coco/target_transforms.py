@@ -69,6 +69,7 @@ class PanopticTargetGenerator(object):
         panoptic = self.rgb2id(panoptic)
         height, width = panoptic.shape[0], panoptic.shape[1]
         semantic = np.zeros_like(panoptic, dtype=np.uint8) + self.ignore_label
+        instance = np.zeros_like(panoptic, dtype=np.int32)
         foreground = np.zeros_like(panoptic, dtype=np.uint8)
         center = np.zeros((1, height, width), dtype=np.float32)
         center_pts = []
@@ -91,8 +92,10 @@ class PanopticTargetGenerator(object):
             if self.ignore_crowd_in_semantic:
                 if not seg['iscrowd']:
                     semantic[panoptic == seg["id"]] = cat_id
+                    instance[panoptic == seg["id"]] = instance.max() + 1
             else:
                 semantic[panoptic == seg["id"]] = cat_id
+                instance[panoptic == seg["id"]] = instance.max() + 1
             if cat_id in self.thing_list:
                 foreground[panoptic == seg["id"]] = 1
             if not seg['iscrowd']:
@@ -147,6 +150,7 @@ class PanopticTargetGenerator(object):
                 offset[offset_x_index] = center_x - x_coord[mask_index]
 
         return dict(
+            instance=torch.as_tensor(instance.astype('long')),
             semantic=torch.as_tensor(semantic.astype('long')),
             foreground=torch.as_tensor(foreground.astype('long')),
             center=torch.as_tensor(center.astype(np.float32)),

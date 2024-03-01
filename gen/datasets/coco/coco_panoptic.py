@@ -128,7 +128,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
 
         self.num_classes = _COCO_PANOPTIC_INFORMATION.num_classes
         self.ignore_label = _COCO_PANOPTIC_INFORMATION.ignore_label
-        self.label_pad_value = (0, 0, 0)
+        self.label_pad_value = (-1, -1, -1)
+        self.post_label_pad_value = (0, 0, 0)
 
         self.has_instance = True
         self.label_divisor = 256
@@ -285,6 +286,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
         # Apply data augmentation.
         if self.transform is not None:
             image, label = self.transform(image, label)
+        pad_mask = (label == np.array(self.label_pad_value).reshape(1, 1, 3)).all(axis=-1)
+        label[pad_mask] = self.post_label_pad_value
 
         dataset_dict['image'] = image
         if not self.has_instance:
@@ -305,13 +308,37 @@ class CocoPanoptic(AbstractDataset, Dataset):
         dataset_dict['semantic'][mask_] = 0
         
         rgb = dataset_dict['image']
-        instance = dataset_dict['semantic']
+
+        if 'instance' in dataset_dict.keys():
+            dataset_dict['instance'][mask_] = 0
+            instance = dataset_dict['instance']
+        else:
+            instance = dataset_dict['semantic']
+        semantic = dataset_dict['semantic']
+
+        # Aside from using rgb, we can represent panoptic labels in terms of
+        # semantic_label * label_divisor + instance_label
+        lab_divisor = instance.max() + 1
+        unique_panoptic = torch.unique(semantic * lab_divisor + instance)
+        unique_instance = unique_panoptic % lab_divisor
+        unique_semantic = unique_panoptic // lab_divisor
 
         # Very inefficient but works.
-        source_data, target_data = self.augmentation(
-            source_data=Data(image=rgb[None].float(), segmentation=instance[None].squeeze(-1).float()),
-            target_data=Data(image=rgb[None].float(), segmentation=instance[None].squeeze(-1).float()),
+        instance_with_pad_mask = torch.where(
+            torch.as_tensor(pad_mask), torch.zeros_like(instance), instance + 1
         )
+        source_data, target_data = self.augmentation(
+            source_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].squeeze(-1).float()),
+            target_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].squeeze(-1).float()),
+        )
+        source_pad_mask = source_data.segmentation == 0
+        source_data.segmentation = source_data.segmentation - 1
+        source_data.segmentation[source_pad_mask] = 0
+        source_pad_mask = source_pad_mask.squeeze(0)
+        target_pad_mask = target_data.segmentation == 0
+        target_data.segmentation = target_data.segmentation - 1
+        target_data.segmentation[target_pad_mask] = 0
+        target_pad_mask = target_pad_mask.squeeze(0)
 
         # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
         source_data.image = source_data.image.squeeze(0)
@@ -319,12 +346,17 @@ class CocoPanoptic(AbstractDataset, Dataset):
         target_data.image = target_data.image.squeeze(0)
         target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
 
-        valid = (torch.sum(source_data.segmentation[..., 1:], dim=[0, 1]) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2)
+        valid = (torch.sum(source_data.segmentation, dim=[0, 1]) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2)
         categories = torch.full((valid.shape), fill_value=-1)
-        categories[valid] = torch.arange(valid.shape[0])[valid]
+        categories[unique_instance] = unique_semantic - 1
+        categories[~valid] = -1
+        valid = valid[..., 1:]
+        categories = categories[..., 1:]
         ret = {
+            "gen_pad_mask": target_pad_mask,
             "gen_pixel_values": target_data.image,
             "gen_segmentation": target_data.segmentation,
+            "disc_pad_mask": source_pad_mask,
             "disc_pixel_values": source_data.image,
             "disc_segmentation": source_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
