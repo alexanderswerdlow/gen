@@ -54,10 +54,10 @@ def attention_masking(batch: InputData, cond: Optional[ConditioningData]):
     assert "cross_attention_kwargs" in cond.unet_kwargs
     assert "attn_meta" in cond.unet_kwargs["cross_attention_kwargs"]
 
-    batch_size: int = batch["disc_pixel_values"].shape[0]
-    device: torch.device = batch["disc_pixel_values"].device
-    gen_seg_ = rearrange(batch["gen_segmentation"], "b h w c -> b c () h w").float()
-    learnable_idxs = (batch["formatted_input_ids"] == cond.placeholder_token).nonzero(as_tuple=True)
+    batch_size: int = batch.disc_pixel_values.shape[0]
+    device: torch.device = batch.disc_pixel_values.device
+    gen_seg_ = rearrange(batch.gen_segmentation, "b h w c -> b c () h w").float()
+    learnable_idxs = (batch.formatted_input_ids == cond.placeholder_token).nonzero(as_tuple=True)
     h, w = 64, 64  # Max latent size in U-Net
 
     all_masks = []
@@ -67,7 +67,7 @@ def attention_masking(batch: InputData, cond: Optional[ConditioningData]):
         segmentation_indices = cond.mask_instance_idx[cur_batch_mask]
 
         GT_masks = F.interpolate(input=gen_seg_[batch_idx][segmentation_indices], size=(h, w)).squeeze(1) > 0.5
-        tensor_nhw = torch.zeros(batch["formatted_input_ids"].shape[-1], h, w, dtype=torch.bool)
+        tensor_nhw = torch.zeros(batch.formatted_input_ids.shape[-1], h, w, dtype=torch.bool)
 
         for i, d in enumerate(token_indices):
             tensor_nhw[d] = GT_masks[i]

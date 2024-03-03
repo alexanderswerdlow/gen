@@ -107,18 +107,21 @@ class Trainable(nn.Module, ABC):
     def set_inference_mode(self):
         ...
 
-    def on_sync_gradients(self):
-        pass
-
-    def get_param_groups(self) -> Optional[dict[str, Any]]:
-        return None
-
     @abstractmethod
     def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):
         ...
 
     def run_inference(self, batch: dict, state: TrainingState) -> dict[str, Im]:
         ...
+
+    def on_sync_gradients(self):
+        pass
+
+    def get_param_groups(self) -> Optional[dict[str, Any]]:
+        return None
+    
+    def process_input(self, batch: dict) -> Any:
+        return batch
 
 
 def check_every_n_steps(

@@ -24,7 +24,7 @@ from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visua
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
 from gen.datasets.coco.coco_panoptic import CocoPanoptic
-from dataclasses import asdict
+from dataclasses import asdict, fields
 
 if TYPE_CHECKING:
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
@@ -32,19 +32,20 @@ if TYPE_CHECKING:
 gso_pcds = None
 
 
-def repeat_batch(batch, bs: int):
-    batch_ = {}
-    for k, v in batch.items():
-        if isinstance(v, torch.Tensor):
-            batch_[k] = rearrange("old_bs ... -> (new_bs old_bs) ...", v, new_bs=bs)
+def repeat_batch(batch: InputData, bs: int):
+    from gen.models.cross_attn.base_model import InputData
+    batch_ = InputData()
+    for field in fields(batch):
+        if isinstance(getattr(batch, field.name), torch.Tensor):
+            setattr(batch_, field.name, rearrange("old_bs ... -> (new_bs old_bs) ...", getattr(batch, field.name), new_bs=bs))
 
     return batch_
 
 def get_composited_mask(batch: dict, b: int, j: int):
-    orig_image = ((batch["gen_pixel_values"] + 1) / 2)[b]
-    mask_image = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"][b, ..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+    orig_image = ((batch.gen_pixel_values + 1) / 2)[b]
+    mask_image = Im(get_layered_image_from_binary_mask(batch.gen_segmentation[b, ..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
     mask_rgb = np.full((mask_image.height, mask_image.width, 3), (255, 0, 0), dtype=np.uint8)
-    mask_alpha = (batch["gen_segmentation"][b, ..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+    mask_alpha = (batch.gen_segmentation[b, ..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
     composited_image = Im(orig_image).pil.copy().convert("RGBA")
     composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
     return Im(composited_image.convert("RGB"))
@@ -75,9 +76,9 @@ def infer_batch(
     cond: Optional[ConditioningData] = None,
     **kwargs,
 ) -> tuple[list[Any], dict, ConditioningData]:
-    if "input_ids" in batch:
-        orig_input_ids = batch["input_ids"].clone()
-        batch["input_ids"] = orig_input_ids.clone()
+    if batch.input_ids is not None:
+        orig_input_ids = batch.input_ids.clone()
+        batch.input_ids = orig_input_ids.clone()
 
     if cond is None or len(cond.unet_kwargs) == 0:
         with torch.cuda.amp.autocast():
@@ -109,8 +110,7 @@ def infer_batch(
     with desired_context:
         images = self.pipeline(**cond.unet_kwargs, **kwargs).images
 
-    if "formatted_input_ids" in batch:
-        del batch["formatted_input_ids"]
+    batch.formatted_input_ids = None
 
     if (
         "cross_attention_kwargs" in cond.unet_kwargs
@@ -123,7 +123,7 @@ def infer_batch(
 
 
 @torch.no_grad()
-def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingState):
+def run_quantitative_inference(self: BaseMapper, batch: InputData, state: TrainingState):
     ret = {}
 
     if self.cfg.model.token_rot_pred_loss or self.cfg.model.token_cls_pred_loss:
@@ -137,10 +137,10 @@ def run_quantitative_inference(self: BaseMapper, batch: dict, state: TrainingSta
 
         ret.update({k:v.float().cpu() for k,v in rot_loss_data.items()})
         ret["rot_data"] = {
-            "quaternions": batch["quaternions"].float().cpu(),
-            "raw_object_quaternions": batch["raw_object_quaternions"].float().cpu(),
-            "camera_quaternions": batch["camera_quaternions"].float().cpu(),
-            "metadata": batch["metadata"],
+            "quaternions": batch.quaternions.float().cpu(),
+            "raw_object_quaternions": batch.raw_object_quaternions.float().cpu(),
+            "camera_quaternions": batch.camera_quaternions.float().cpu(),
+            "metadata": batch.metadata,
             **{k:v.detach().float().cpu() for k,v in asdict(pred_data).items() if isinstance(v, torch.Tensor)}
         }
 
@@ -186,12 +186,10 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     TODO: Support batched inference at some point. Right now it is batched under the hood (for CFG and if num_images_per_prompt > 1) but we can likely do much better.
     """
 
-    assert batch["input_ids"].shape[0] == 1 or self.cfg.model.predict_rotation_from_n_frames is not None
-
-    batch = maybe_convert_to_one_hot(batch, self.cfg)
+    assert batch.input_ids.shape[0] == 1 or self.cfg.model.predict_rotation_from_n_frames is not None
 
     ret = {}
-    orig_image = Im((batch["gen_pixel_values"] + 1) / 2)
+    orig_image = Im((batch.gen_pixel_values + 1) / 2)
 
     if self.cfg.model.token_rot_pred_loss:
         with torch.cuda.amp.autocast():
@@ -211,7 +209,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 # Load all PCDs once. This is wasteful but good enough.
                 gso_pcds = np.load(GSO_PCD_PATH)
 
-            bs = batch["gen_pixel_values"].shape[0]
+            bs = batch.gen_pixel_values.shape[0]
             
             all_imgs = []
             all_videos = []
@@ -223,7 +221,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                     pred_rot_viz = []
                     for j in instance_idx:
                         composited_image = get_composited_mask(batch, b, j)
-                        asset_id = batch["asset_id"][j - 1][b]
+                        asset_id = batch.asset_id[j - 1][b]
                         pcd = gso_pcds[asset_id]
                         if self.cfg.inference.visualize_rotation_denoising and pred_data.denoise_history_6d_rot.shape[1] > 1:
                             # When we perform rotation classification (binning), denoise_history_6d_rot is not valid so we skip this visualization
@@ -272,10 +270,10 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                         imgs_ = Im.concat_horizontal(*[get_composited_mask(batch, b, j) for b, j in zip(batch_indices, instance_indices)])
         
                         assert (cond.mask_instance_idx[[token_indices]] == cond.mask_instance_idx[token_indices[0]]).all().item()
-                        assert (batch["asset_id"][cond.mask_instance_idx[token_indices[0]] - 1][batch_indices[0]] == batch["asset_id"][cond.mask_instance_idx[token_indices[1]] - 1][batch_indices[1]])
+                        assert (batch.asset_id[cond.mask_instance_idx[token_indices[0]] - 1][batch_indices[0]] == batch.asset_id[cond.mask_instance_idx[token_indices[1]] - 1][batch_indices[1]])
 
                         # Visualize rotations
-                        asset_id = batch["asset_id"][cond.mask_instance_idx[token_indices[0]] - 1][batch_indices[0]]
+                        asset_id = batch.asset_id[cond.mask_instance_idx[token_indices[0]] - 1][batch_indices[0]]
                         pcd = gso_pcds[asset_id]
                         img = Im(visualize_rotations_pcds(R_ref[rot_pred_idx], R_pred[rot_pred_idx], pcd))
                         pred_rot_viz.append(Im.concat_vertical(img, imgs_))
@@ -292,16 +290,15 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         return ret
 
 
-    bs_ = batch["input_ids"].shape[0]
-    gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], get_layered_image_from_binary_mask(batch["gen_segmentation"][b_])).write_text(text="GT") for b_ in range(bs_)])
+    bs_ = batch.input_ids.shape[0]
+    gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], get_layered_image_from_binary_mask(batch.gen_segmentation[b_])).write_text(text="GT") for b_ in range(bs_)])
     ret["validation"] = gt_info
 
     added_kwargs = dict()
     if self.cfg.inference.visualize_attention_map:
         added_kwargs["return_attn_probs"] = True
 
-    if "formatted_input_ids" in batch:
-        del batch["formatted_input_ids"]
+    batch.formatted_input_ids = None
 
     prompt_image, cond = self.infer_batch(batch=batch, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, **added_kwargs)
 
@@ -327,7 +324,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 continue
             tokens = rearrange("t (h w) -> t 3 h w", softmax("t [hw]", rearrange("t h w -> t (h w)", tokens)), h=tokens.shape[-1])
             tokens = (tokens - torch.min(tokens)) / (torch.max(tokens) - torch.min(tokens))
-            masks = Im(rearrange("h w masks -> masks 3 h w", batch["gen_segmentation"][b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
+            masks = Im(rearrange("h w masks -> masks 3 h w", batch.gen_segmentation[b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
             attn_imgs.append(Im.concat_vertical(Im.concat_horizontal(*tokens), Im.concat_horizontal(*masks.torch)))
 
         ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
@@ -338,14 +335,14 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         Im.concat_vertical(
             prompt_image_, 
             Im(get_layered_image_from_binary_mask(
-                batch["gen_segmentation"][i if use_idx else 0])
+                batch.gen_segmentation[i if use_idx else 0])
             )).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)
     )
     ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
 
     if self.cfg.inference.save_prompt_embeds:
         assert cond.mask_instance_idx.shape[0] == cond.mask_tokens.shape[0]
-        orig_gen_segmentation = batch["gen_segmentation"].clone()
+        orig_gen_segmentation = batch.gen_segmentation.clone()
         all_masks = []
         for j in cond.mask_instance_idx:
             composited_image = get_composited_mask(batch, 0, j)
@@ -372,7 +369,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             controller=self.controller, res=16, from_where=("up", "down"), is_cross=True, select=-1, batch_size=batch_size
         )
         attn_img_cond = Im(
-            save_cross_attention_vis(tokenizer=self.tokenizer, tokens=batch["formatted_input_ids"][0], attention_maps=agg_attn_cond)
+            save_cross_attention_vis(tokenizer=self.tokenizer, tokens=batch.formatted_input_ids[0], attention_maps=agg_attn_cond)
         ).write_text("Cond")
 
         agg_attn_uncond = aggregate_attention(
@@ -394,8 +391,8 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             self.controller.reset()
 
     if self.cfg.inference.num_masks_to_remove is not None:
-        orig_valid = batch['valid'].clone()
-        orig_gen_segmentation = batch["gen_segmentation"].clone()
+        orig_valid = batch.valid.clone()
+        orig_gen_segmentation = batch.gen_segmentation.clone()
 
         batched_valid = []
         idxs = list(range(orig_gen_segmentation.shape[-1])[: self.cfg.inference.num_masks_to_remove])[1:]
@@ -416,7 +413,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             
             removed_mask_imgs = []
             for idx_, j in enumerate(idxs):
-                bs_ = batch["input_ids"].shape[0]
+                bs_ = batch.input_ids.shape[0]
                 img_ = []
                 for b_ in range(bs_):
                     mask_image = Im(get_layered_image_from_binary_mask(orig_gen_segmentation[b_, ..., [j]]), channel_range=ChannelRange.UINT8)
@@ -425,7 +422,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 removed_mask_imgs.append(Im.concat_vertical(*img_))
 
             ret["validation"] = Im.concat_horizontal(ret["validation"], Im.concat_horizontal(*removed_mask_imgs), spacing=15)
-            batch["gen_segmentation"] = orig_gen_segmentation
+            batch.gen_segmentation = orig_gen_segmentation
 
     if self.cfg.inference.infer_new_prompts:
         prompts = [prompt.format(self.cfg.model.placeholder_token) for prompt in new_prompts]
@@ -451,10 +448,10 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         ret["prompt_images"] = Im.concat_horizontal(orig_image, ret["prompt_images"], spacing=20)
 
     img_ = []
-    for b in range(len(batch["gen_segmentation"])):
-        seg = batch["gen_segmentation"][b].argmax(dim=-1).data.cpu().numpy()
+    for b in range(len(batch.gen_segmentation)):
+        seg = batch.gen_segmentation[b].argmax(dim=-1).data.cpu().numpy()
         rgb_seg = label_to_color_image(seg, colormap=CocoPanoptic.create_label_colormap())
-        rgb_img = Image.fromarray((((batch["gen_pixel_values"][b] + 1) / 2).data.cpu().numpy() * 255).astype(np.uint8).transpose(1, 2, 0))
+        rgb_img = Image.fromarray((((batch.gen_pixel_values[b] + 1) / 2).data.cpu().numpy() * 255).astype(np.uint8).transpose(1, 2, 0))
         img_.append(Im.concat_vertical(rgb_seg, rgb_img))
     ret["image_segmentation"] = Im.concat_horizontal(*img_)
 
@@ -552,7 +549,7 @@ def lerp(a, b, ts):
 @torch.no_grad()
 def interpolate_latents(
     self: BaseMapper,
-    batch: dict,
+    batch: InputData,
     state: TrainingState,
     embed_path_1: Path,
     embed_path_2: Path,
@@ -590,11 +587,10 @@ def interpolate_latents(
 
         final_tokens = torch.cat(final_tokens, dim=0)
         mask_batch_idx = torch.cat(mask_batch_idx, dim=0)
-        if "formatted_input_ids" in batch:
-            del batch["formatted_input_ids"]
+        batch.formatted_input_ids = None
 
         batch_ = {}
-        batch_["input_ids"] = batch["input_ids"].repeat(steps, 1)
+        batch_["input_ids"] = batch.input_ids.repeat(steps, 1)
 
         for k, v in batch.items():
             if isinstance(v, torch.Tensor) and k not in batch_:

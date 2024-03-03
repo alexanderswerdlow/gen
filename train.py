@@ -391,13 +391,13 @@ class Trainer:
                     log_info(f"time to complete 1st step: {step_start_time - load_time} seconds")
 
                 with self.accelerator.accumulate(*filter(lambda x: isinstance(x, nn.Module), self.models)):
-                    global_step_metrics["examples_seen_per_gpu"] += batch["gen_pixel_values"].shape[0]
+                    global_step_metrics["examples_seen_per_gpu"] += len(next(iter(batch.values())))
                     state: TrainingState = TrainingState(
                         epoch_step=step, num_epoch_steps=len(self.train_dataloader), global_step=global_step, epoch=epoch, true_step=true_step
                     )
 
-                    batch["state"] = state
                     start_forward_time = time()
+                    batch = unwrap(self.model).process_input(batch, state)
                     match self.cfg.model.model_type:
                         case ModelType.BASE_MAPPER:
                             losses = self.model(batch)

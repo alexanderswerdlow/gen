@@ -1,5 +1,7 @@
+import dataclasses
+from importlib import metadata
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Optional, TypedDict, Union
@@ -41,18 +43,65 @@ from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
+from tensordict import tensorclass
 
-class InputData(TypedDict):
+@tensorclass
+class InputData:
     gen_pixel_values: Float[Tensor, "b c h w"]
     gen_segmentation: Integer[Tensor, "b h w c"]
     disc_pixel_values: Float[Tensor, "b c h w"]
+    disc_segmentation: Integer[Tensor, "b h w c"]
     input_ids: Integer[Tensor, "b l"]
     state: Optional[TrainingState]
     dtype: Optional[torch.dtype]
-    device: Optional[torch.device]
     bs: Optional[int]
     num_frames: Optional[int]
+    state: TrainingState
 
+    quaternions: Optional[Float] = None
+    raw_object_quaternions: Optional[Float] = None
+    camera_quaternions: Optional[Float] = None
+    positions: Optional[Float] = None
+    valid: Optional[Bool] = None
+    categories: Optional[Integer] = None
+    asset_id: Optional[Integer] = None
+    metadata: Optional[dict[str, Any]] = None
+    formatted_input_ids: Optional[Integer[Tensor, "b l"]] = None
+    gen_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
+    disc_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
+    
+    # device: Optional[torch.device]
+    # _extras: dict[str, Any] = field(init=False, repr=False)
+    # # Below is a hack
+    # def __init__(self, **kwargs):
+    #     object.__setattr__(self, '_extras', {})
+    #     predefined_fields = {f.name for f in fields(self)}
+    #     for key, value in kwargs.items():
+    #         if key in predefined_fields:
+    #             object.__setattr__(self, key, value)
+    #         else:
+    #             log_warn(f"Setting extra field {key} to {value}")
+    #             self._extras[key] = value
+
+    # def __setattr__(self, key, value):
+    #     self.__setitem__(key, value)
+    
+    # def __setitem__(self, key, value):
+    #     if hasattr(self, key):
+    #         object.__setattr__(self, key, value)
+    #     else:
+    #         self._extras[key] = value
+
+    # def __getitem__(self, item):
+    #     if item in self._extras:
+    #         return self._extras[item]
+    #     return getattr(self, item)
+
+    # def __delitem__(self, key):
+    #     if key in self._extras:
+    #         del self._extras[key]
+    #     else:
+    #         raise KeyError(f"{key} is not an extra field and cannot be deleted.")
 
 @dataclass
 class ConditioningData:
@@ -454,7 +503,8 @@ class BaseMapper(Trainable):
         # TODO: save_state/load_state saves everything from prepare() regardless of whether it's frozen
         # This is very inefficient but simpler for now.
         accelerator.save_state(path / "state", safe_serialization=False)
-        accelerator.save_model(self.mapper, save_directory=path / "model", safe_serialization=False)
+        if hasattr(self, 'mapper'):
+            accelerator.save_model(self.mapper, save_directory=path / "model", safe_serialization=False)
         if self.cfg.model.unet_lora:
             from peft.utils import get_peft_model_state_dict
 
@@ -475,6 +525,19 @@ class BaseMapper(Trainable):
         if self.cfg.model.unet and not self.cfg.model.freeze_unet and self.cfg.model.ema:
             self.ema_unet.step(self.unet.parameters())
 
+    def process_input(self, batch: dict, state: TrainingState):
+        batch = InputData(
+            num_frames=1,
+            batch_size=[batch["gen_pixel_values"].shape[0]],
+            bs=batch["gen_pixel_values"].shape[0],
+            device=self.device,
+            dtype=self.dtype,
+            state=state,
+            **batch,
+        )
+        batch = maybe_convert_to_one_hot(cfg=self.cfg, batch=batch)
+        return batch
+
     def get_standard_conditioning_for_inference(
         self,
         batch: InputData,
@@ -482,19 +545,19 @@ class BaseMapper(Trainable):
         cond: Optional[ConditioningData] = None,
     ):
         # Validate input
-        bs: int = batch["disc_pixel_values"].shape[0]
-        for k, v in batch.items():
-            if isinstance(v, torch.Tensor):
-                assert v.shape[0] == bs
+        bs: int = batch.disc_pixel_values.shape[0]
+        for field in dataclasses.fields(batch):
+            if isinstance(getattr(batch, field.name), torch.Tensor):
+                assert getattr(batch, field.name).shape[0] == bs
 
-        assert "formatted_input_ids" not in batch
+        assert batch.formatted_input_ids is None
 
         cond = self.get_hidden_state(batch, add_conditioning=disable_conditioning is False, cond=cond)
 
         if self.cfg.model.unet is False: return cond
 
-        bs = batch["disc_pixel_values"].shape[0]
-        cond.input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch["formatted_input_ids"][y]) if "<|" not in x] for y in range(bs)]
+        bs = batch.disc_pixel_values.shape[0]
+        cond.input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch.formatted_input_ids[y]) if "<|" not in x] for y in range(bs)]
 
         # passed to StableDiffusionPipeline/StableDiffusionControlNetPipeline
         cond.unet_kwargs["prompt_embeds"] = cond.encoder_hidden_states
@@ -551,16 +614,16 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.use_dummy_mask:
             # Very hacky. We ignore masks with <= 32 pixels later on.
-            object_is_visible = (rearrange('b h w c -> b c (h w)', batch["gen_segmentation"]) > 0).sum(dim=-1) > 0
-            rearrange('b h w c -> b c (h w)', batch["gen_segmentation"])[object_is_visible] = 1
+            object_is_visible = (rearrange('b h w c -> b c (h w)', batch.gen_segmentation) > 0).sum(dim=-1) > 0
+            rearrange('b h w c -> b c (h w)', batch.gen_segmentation)[object_is_visible] = 1
             return batch
         elif self.cfg.model.use_dataset_segmentation:
             return batch  # We already have segmentation
 
         # SAM requires NumPy [0, 255]
-        sam_input = rearrange("b c h w -> b h w c", (((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy())
+        sam_input = rearrange("b c h w -> b h w c", (((batch.gen_pixel_values + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy())
         sam_seg = []
-        bs: int = batch["disc_pixel_values"].shape[0]
+        bs: int = batch.disc_pixel_values.shape[0]
         max_masks = 4
 
         for i in range(bs):
@@ -571,7 +634,7 @@ class BaseMapper(Trainable):
 
             if original.shape[0] == 0:  # Make dummy mask with all ones
                 original = (
-                    batch["gen_segmentation"][i].new_ones((1, batch["gen_segmentation"][i].shape[0], batch["gen_segmentation"][i].shape[1])).cpu()
+                    batch.gen_segmentation[i].new_ones((1, batch.gen_segmentation[i].shape[0], batch.gen_segmentation[i].shape[1])).cpu()
                 )
             else:  # Add additional mask to capture any pixels that are not part of any mask
                 original = torch.cat(((~original.any(dim=0))[None], original), dim=0)
@@ -581,7 +644,7 @@ class BaseMapper(Trainable):
                 sam_seg.append(torch.nn.functional.pad(seg_, (0, (max_masks + 1) - seg_.shape[-1]), "constant", 0))
 
         if len(sam_seg) > 0:
-            batch["gen_segmentation"] = torch.stack(sam_seg, dim=0)
+            batch.gen_segmentation = torch.stack(sam_seg, dim=0)
 
         return batch
 
@@ -615,11 +678,11 @@ class BaseMapper(Trainable):
             - Gets CLIP features for K/V and flattens them
             - Updates our input tokens to be "A photo of mask_0 and mask_1" and so on
         """
-        bs: int = batch["disc_pixel_values"].shape[0]
-        device = batch["gen_pixel_values"].device
+        bs: int = batch.disc_pixel_values.shape[0]
+        device = batch.gen_pixel_values.device
         dtype = self.dtype
 
-        clip_feature_map = self.clip(batch["disc_pixel_values"].to(device=device, dtype=dtype))  # b (h w) d
+        clip_feature_map = self.clip(batch.disc_pixel_values.to(device=device, dtype=dtype))  # b (h w) d
 
         if isinstance(clip_feature_map, dict):
             for k in clip_feature_map.keys():
@@ -651,12 +714,9 @@ class BaseMapper(Trainable):
         mask_instance_idx = []
         mask_dropout = []
 
-        if batch['valid'].shape[-1] != self.cfg.model.num_token_cls + 1:
-            log_warn(f"Invalid shape for valid mask: {batch['valid'].shape[-1]}")
-
-        assert "gen_segmentation" in batch
+        assert batch.gen_segmentation is not None
         for i in range(bs):
-            one_hot_mask: Bool[Tensor, "d h w"] = batch["gen_segmentation"][i].permute(2, 0, 1).bool()
+            one_hot_mask: Bool[Tensor, "d h w"] = batch.gen_segmentation[i].permute(2, 0, 1).bool()
             one_hot_idx = torch.arange(one_hot_mask.shape[0], device=device)
 
             if one_hot_mask.shape[0] == 0:
@@ -665,7 +725,7 @@ class BaseMapper(Trainable):
 
             # Remove empty masks. Because of flash attention bugs, we require a minimum of 32 pixels. 14 is too few.
             non_empty_mask = torch.sum(one_hot_mask, dim=[1, 2]) > 0
-            non_empty_mask[1:] &= batch['valid'][i][:self.cfg.model.num_token_cls]
+            non_empty_mask[1:] &= batch.valid[i]
 
             if self.cfg.model.training_mask_dropout is not None and self.training:
                 dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), False, dtype=torch.bool)
@@ -695,7 +755,7 @@ class BaseMapper(Trainable):
                 log_warn("Dropped out all masks for this image!")
                 continue
 
-            assert batch["disc_pixel_values"].shape[-1] == batch["disc_pixel_values"].shape[-2]
+            assert batch.disc_pixel_values.shape[-1] == batch.disc_pixel_values.shape[-2]
             feature_map_mask_ = find_true_indices_batched(original=one_hot_mask, dh=latent_dim, dw=latent_dim)
             feature_map_masks.append(feature_map_mask_)
             mask_batch_idx.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
@@ -786,16 +846,16 @@ class BaseMapper(Trainable):
         batch: InputData,
         cond: ConditioningData,
     ):
-        bs = batch["input_ids"].shape[0]
+        bs = batch.input_ids.shape[0]
 
         if self.cfg.model.layer_specialization:
             cond.encoder_hidden_states = rearrange("b t d -> b t (n d)", cond.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
 
-        batch["formatted_input_ids"] = batch["input_ids"].clone()
+        batch.formatted_input_ids = batch.input_ids.clone()
         for b in range(bs):
-            cur_ids = batch["input_ids"][b]
+            cur_ids = batch.input_ids[b]
             token_is_padding = (cur_ids == self.pad_token_id).nonzero()  # Everything after EOS token should also be a pad token
-            assert (token_is_padding.shape[0] == (batch["input_ids"].shape[1] - token_is_padding[0])).item()
+            assert (token_is_padding.shape[0] == (batch.input_ids.shape[1] - token_is_padding[0])).item()
 
             mask_part_of_batch = (cond.mask_batch_idx == b).nonzero().squeeze(1)  # Figure out which masks we need to add
             masks_prompt = torch.tensor(self.mask_tokens_ids * mask_part_of_batch.shape[0])[:-1].to(self.device)
@@ -809,10 +869,10 @@ class BaseMapper(Trainable):
             end_of_prompt = cur_ids[placeholder_locs[0] + 1 :]
             eos_token = torch.tensor([self.eos_token_id]).to(self.device)
 
-            batch["formatted_input_ids"][b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, eos_token), dim=0)[:cur_ids.shape[0]]
+            batch.formatted_input_ids[b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, eos_token), dim=0)[:cur_ids.shape[0]]
 
         # Overwrite mask locations
-        cond.learnable_idxs = (batch["formatted_input_ids"] == self.placeholder_token_id).nonzero(as_tuple=True)
+        cond.learnable_idxs = (batch.formatted_input_ids == self.placeholder_token_id).nonzero(as_tuple=True)
         cond.encoder_hidden_states[cond.learnable_idxs[0], cond.learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
 
         if self.cfg.model.layer_specialization:
@@ -848,7 +908,7 @@ class BaseMapper(Trainable):
 
         cond.placeholder_token = self.placeholder_token_id
         with torch.no_grad():
-            cond.encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype)
+            cond.encoder_hidden_states = self.text_encoder(input_ids=batch.input_ids)[0].to(dtype=self.dtype)
 
         if add_conditioning and self.cfg.model.mask_token_conditioning:
             if cond.mask_tokens is None or cond.mask_batch_idx is None:
@@ -863,7 +923,7 @@ class BaseMapper(Trainable):
         return cond
 
     def get_controlnet_conditioning(self, batch):
-        return batch["gen_segmentation"].permute(0, 3, 1, 2).to(dtype=self.dtype)
+        return batch.gen_segmentation.permute(0, 3, 1, 2).to(dtype=self.dtype)
 
     def dropout_cfg(self, cond: ConditioningData):
         device: torch.device = cond.encoder_hidden_states.device
@@ -895,31 +955,22 @@ class BaseMapper(Trainable):
 
     @beartype
     def forward(self, batch: InputData):
-        batch = maybe_convert_to_one_hot(cfg=self.cfg, batch=batch)
-        batch = InputData(**batch)
-        batch["device"] = self.device
-        batch["dtype"] = self.dtype
-
-        assert "formatted_input_ids" not in batch
-
-        bs = batch["gen_pixel_values"].shape[0]
-        batch["num_frames"] = 1
-        batch["bs"] = bs
+        assert batch.formatted_input_ids is None
 
         if self.cfg.model.predict_rotation_from_n_frames:
             # We keep the tensor format as (bs, ...) even though it's really ((bs frames), ...) but specify num_frames
-            assert bs % self.cfg.model.predict_rotation_from_n_frames == 0
-            batch["num_frames"] = self.cfg.model.predict_rotation_from_n_frames
+            assert batch.bs % self.cfg.model.predict_rotation_from_n_frames == 0
+            batch.num_frames = self.cfg.model.predict_rotation_from_n_frames
 
-        batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
+        batch.gen_pixel_values = torch.clamp(batch.gen_pixel_values, -1, 1)
 
         # Sample a random timestep for each element in batch
         if self.cfg.model.use_inverted_noise_schedule:
             timesteps = ((torch.arccos(timesteps / self.noise_scheduler.config.num_train_timesteps) / (torch.pi / 2)) * self.noise_scheduler.config.num_train_timesteps).long()
         elif self.cfg.model.diffusion_timestep_range is not None:
-            timesteps = torch.randint(self.cfg.model.diffusion_timestep_range[0], self.cfg.model.diffusion_timestep_range[1], (bs,), device=self.device).long()
+            timesteps = torch.randint(self.cfg.model.diffusion_timestep_range[0], self.cfg.model.diffusion_timestep_range[1], (batch.bs,), device=self.device).long()
         else:
-            timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bs,), device=self.device).long()
+            timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (batch.bs,), device=self.device).long()
 
         cond = self.get_hidden_state(batch, add_conditioning=True)
 
@@ -943,7 +994,7 @@ class BaseMapper(Trainable):
         encoder_hidden_states = cond.encoder_hidden_states
 
         if self.cfg.model.unet:
-            latents = self.vae.encode(batch["gen_pixel_values"].to(dtype=self.dtype)).latent_dist.sample() # Convert images to latent space
+            latents = self.vae.encode(batch.gen_pixel_values.to(dtype=self.dtype)).latent_dist.sample() # Convert images to latent space
             latents = latents * self.vae.config.scaling_factor
 
             noise = torch.randn_like(latents) # Sample noise that we'll add to the latents
@@ -987,11 +1038,13 @@ class BaseMapper(Trainable):
         
         losses = dict()
         if self.cfg.model.unet:
-            if "gen_pad_mask" in batch.keys():
-                loss_mask = rearrange("b h w -> b () h w ", ~batch["gen_pad_mask"])
-                loss_mask = F.interpolate(loss_mask.float(),
-                                        size=(self.cfg.model.latent_dim, self.cfg.model.latent_dim),
-                                        mode='nearest')
+            if batch.gen_pad_mask is not None:
+                loss_mask = rearrange("b h w -> b () h w ", ~batch.gen_pad_mask)
+                loss_mask = F.interpolate(
+                    loss_mask.float(),
+                    size=(self.cfg.model.latent_dim, self.cfg.model.latent_dim),
+                    mode='nearest'
+                )
                 model_pred, target = model_pred * loss_mask, target * loss_mask
 
             if self.cfg.model.break_a_scene_masked_loss and self.cfg.model.mask_token_conditioning:

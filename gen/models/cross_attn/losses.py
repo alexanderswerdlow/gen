@@ -29,9 +29,9 @@ if TYPE_CHECKING:
 
 def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: InputData, controller: AttentionStore, cond: ConditioningData):
     attn_loss = 0
-    batch_size: int = batch["disc_pixel_values"].shape[0]
-    gen_seg_ = rearrange(batch["gen_segmentation"], "b h w c -> b c () h w").float()
-    learnable_idxs = (batch["formatted_input_ids"] == cond.placeholder_token).nonzero(as_tuple=True)
+    batch_size: int = batch.disc_pixel_values.shape[0]
+    gen_seg_ = rearrange(batch.gen_segmentation, "b h w c -> b c () h w").float()
+    learnable_idxs = (batch.formatted_input_ids == cond.placeholder_token).nonzero(as_tuple=True)
 
     for batch_idx in range(batch_size):
         GT_masks = F.interpolate(input=gen_seg_[batch_idx], size=(16, 16))  # We interpolate per mask separately
@@ -59,12 +59,12 @@ def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: InputData, controller:
                 torch.tensor(1.0).to(GT_masks.device),
             )
 
-        #     if batch["state"].true_step % 20 == 0:
+        #     if batch.state.true_step % 20 == 0:
         #         imgs.append(Im(Im.concat_horizontal(Im(GT_masks[mask_id, 0].float()[None, ..., None]), Im(asset_attn_mask[None, ..., None])).torch[0, ..., None]).pil)
 
-        # if batch["state"].true_step % 20 == 0:
-        #     Im.concat_vertical(*imgs).save(f'attn_{batch["state"].true_step}_{batch_idx}.png')
-        #     Im(agg_attn.permute(2, 0, 1)[..., None]).normalize(normalize_min_max=True).save(f'all_attn_{batch["state"].true_step}_{batch_idx}.png')
+        # if batch.state.true_step % 20 == 0:
+        #     Im.concat_vertical(*imgs).save(f'attn_{batch.state.true_step}_{batch_idx}.png')
+        #     Im(agg_attn.permute(2, 0, 1)[..., None]).normalize(normalize_min_max=True).save(f'all_attn_{batch.state.true_step}_{batch_idx}.png')
 
     attn_loss = cfg.model.break_a_scene_cross_attn_loss_weight * (attn_loss / batch_size)
     controller.reset()
@@ -88,13 +88,13 @@ def evenly_weighted_mask_loss(
 
     losses = []
 
-    for b in range(batch["gen_pixel_values"].shape[0]):
+    for b in range(batch.gen_pixel_values.shape[0]):
         if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item():
             losses.append(F.mse_loss(pred[b], target[b], reduction="mean"))
             continue
 
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
-        object_masks = batch["gen_segmentation"][b, ..., mask_idxs_for_batch]
+        object_masks = batch.gen_segmentation[b, ..., mask_idxs_for_batch]
 
         gt_masks = F.interpolate(rearrange(object_masks, "h w c -> c () h w").float(), size=(cfg.model.latent_dim, cfg.model.latent_dim)).squeeze(1)
         gt_masks = rearrange(gt_masks, "c h w -> c (h w)") > 0.5
@@ -116,9 +116,9 @@ def evenly_weighted_mask_loss(
 
 def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData):
     max_masks = []
-    for b in range(batch["gen_pixel_values"].shape[0]):
+    for b in range(batch.gen_pixel_values.shape[0]):
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
-        object_masks = batch["gen_segmentation"][b, ..., mask_idxs_for_batch]
+        object_masks = batch.gen_segmentation[b, ..., mask_idxs_for_batch]
         if (
             cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item()
         ):  # We do not have conditioning for this entire sample so put loss on everything
@@ -131,12 +131,12 @@ def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: Condition
     max_masks = torch.stack(max_masks, dim=0)[:, None]
     loss_mask = F.interpolate(input=max_masks.float(), size=(cfg.model.latent_dim, cfg.model.latent_dim))
 
-    if cfg.model.viz and batch["state"].true_step % 1 == 0:
+    if cfg.model.viz and batch.state.true_step % 1 == 0:
         from image_utils import Im
 
-        rgb_ = Im((batch["gen_pixel_values"] + 1) / 2)
+        rgb_ = Im((batch.gen_pixel_values + 1) / 2)
         mask_ = Im(loss_mask).resize(rgb_.height, rgb_.width)
-        Im.concat_horizontal(rgb_.grid(), mask_.grid()).save(f'rgb_{batch["state"].true_step}.png')
+        Im.concat_horizontal(rgb_.grid(), mask_.grid()).save(f'rgb_{batch.state.true_step}.png')
 
     return loss_mask
 
@@ -149,8 +149,8 @@ def token_cls_loss(
 ):
 
     cls_pred = pred_data.cls_pred
-    bs = batch["gen_pixel_values"].shape[0]
-    device = batch["gen_pixel_values"].device
+    bs = batch.gen_pixel_values.shape[0]
+    device = batch.gen_pixel_values.device
 
     assert cfg.model.background_mask_idx == 0
 
@@ -164,7 +164,7 @@ def token_cls_loss(
             continue
 
         # We only compute loss on non-dropped out masks
-        instance_categories = batch["categories"][b]
+        instance_categories = batch.categories[b]
 
         # We align the dataset instance indices with the flattened pred indices
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
@@ -212,7 +212,7 @@ def get_relative_rot_data(cfg: BaseConfig, cond: ConditioningData, batch: InputD
     """
     group_size = cfg.model.predict_rotation_from_n_frames
     assert group_size == 2, "Only 2 frames are supported for now"
-    bs = batch["gen_pixel_values"].shape[0]
+    bs = batch.gen_pixel_values.shape[0]
     num_groups = bs // group_size
     all_rot_data = {}
     for group_idx in range(num_groups):
@@ -234,9 +234,9 @@ def get_relative_rot_data(cfg: BaseConfig, cond: ConditioningData, batch: InputD
 
 
 def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_data: TokenPredData):
-    bs = batch["gen_pixel_values"].shape[0]
-    device = batch["gen_pixel_values"].device
-    gt_quat = batch["quaternions"]
+    bs = batch.gen_pixel_values.shape[0]
+    device = batch.gen_pixel_values.device
+    gt_quat = batch.quaternions
     
     
     if cfg.model.predict_rotation_from_n_frames:

@@ -64,6 +64,7 @@ def run_inference_dataloader(
             global_step=state.global_step,
             true_step=state.true_step,
         )
+        batch = unwrap(model).process_input(batch, state)
         output = unwrap(model).run_inference(batch=batch, state=inference_state)
         outputs.append(output)
 

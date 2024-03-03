@@ -1,4 +1,8 @@
 import torch
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gen.models.cross_attn.base_model import InputData
 
 def one_hot_to_integer(one_hot_mask):
     values, indices = one_hot_mask.max(dim=-1)
@@ -11,11 +15,11 @@ def integer_to_one_hot(int_tensor, num_classes):
     one_hot = torch.where(mask.unsqueeze(-1), one_hot, False)
     return one_hot
 
-def maybe_convert_to_one_hot(batch, cfg=None, num_classes=None):
+def maybe_convert_to_one_hot(batch: InputData, cfg=None, num_classes=None):
     num_classes = num_classes or cfg.model.num_token_cls + 1
-    if batch["gen_segmentation"].ndim == 3:
-        batch["gen_segmentation"] = integer_to_one_hot(batch["gen_segmentation"], num_classes)
-    if batch['disc_segmentation'].ndim == 3:
-        batch['disc_segmentation'] = integer_to_one_hot(batch['disc_segmentation'], num_classes)
+    if batch.gen_segmentation.ndim == 3:
+        batch.gen_segmentation = integer_to_one_hot(batch.gen_segmentation, num_classes)
+    if batch.disc_segmentation.ndim == 3:
+        batch.disc_segmentation = integer_to_one_hot(batch.disc_segmentation, num_classes)
 
     return batch
