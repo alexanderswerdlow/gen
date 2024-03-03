@@ -15,6 +15,7 @@ from scipy.spatial.transform import Rotation as R
 
 import wandb
 from gen.models.cross_attn.break_a_scene import AttentionStore, aggregate_attention
+from gen.utils.data_utils import get_one_hot_channels, integer_to_one_hot
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.pytorch3d_transforms import matrix_to_quaternion
 from gen.utils.rotation_utils import (compute_rotation_matrix_from_ortho6d, get_discretized_zyx_from_quat, get_ortho6d_from_rotation_matrix,
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
 def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: InputData, controller: AttentionStore, cond: ConditioningData):
     attn_loss = 0
     batch_size: int = batch.disc_pixel_values.shape[0]
-    gen_seg_ = rearrange(batch.gen_segmentation, "b h w c -> b c () h w").float()
+    gen_seg_ = rearrange(integer_to_one_hot(batch.gen_segmentation, cfg.model.segmentation_map_size), "b h w c -> b c () h w").float()
     learnable_idxs = (batch.formatted_input_ids == cond.placeholder_token).nonzero(as_tuple=True)
 
     for batch_idx in range(batch_size):
@@ -94,7 +95,7 @@ def evenly_weighted_mask_loss(
             continue
 
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
-        object_masks = batch.gen_segmentation[b, ..., mask_idxs_for_batch]
+        object_masks = get_one_hot_channels(batch.gen_segmentation[b], mask_idxs_for_batch)
 
         gt_masks = F.interpolate(rearrange(object_masks, "h w c -> c () h w").float(), size=(cfg.model.latent_dim, cfg.model.latent_dim)).squeeze(1)
         gt_masks = rearrange(gt_masks, "c h w -> c (h w)") > 0.5
@@ -118,7 +119,7 @@ def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: Condition
     max_masks = []
     for b in range(batch.gen_pixel_values.shape[0]):
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
-        object_masks = batch.gen_segmentation[b, ..., mask_idxs_for_batch]
+        object_masks = get_one_hot_channels(batch.gen_segmentation[b], mask_idxs_for_batch)
         if (
             cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item()
         ):  # We do not have conditioning for this entire sample so put loss on everything

@@ -108,6 +108,9 @@ class ModelConfig:
     diffusion_timestep_range: Optional[tuple[int, int]] = None
     ema: bool = False
     autoencoder_slicing: bool = True
+    # The dataset returns [H, W] int64 segmentation maps from -1 to N-1. -1 is ignored and 0 is the background.
+    # This value should equal N. In datasets with a maximum number of instances, this is then num_instances + 1
+    segmentation_map_size: int = -1
 
 
 @dataclass

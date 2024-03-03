@@ -75,6 +75,9 @@ def get_datasets():  # TODO: These do not need to be global configs
             train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False), multi_camera_format=False),
             validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False), multi_camera_format=False),
         ),
+        model=dict(
+            segmentation_map_size=24,
+        ),
         hydra_defaults=[
             "_self_",
             {"override /dataset": "movi_e"},
@@ -166,6 +169,9 @@ def get_datasets():  # TODO: These do not need to be global configs
                 augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True),
             ),
         ),
+        model=dict(
+                segmentation_map_size=24,
+        ),
         hydra_defaults=[
             "_self_",
             {"override /dataset": "movi_e"},
@@ -228,6 +234,9 @@ def get_datasets():  # TODO: These do not need to be global configs
         dataset=dict(
             train_dataset=dict(),
             validation_dataset=dict(),
+        ),
+        model=dict(
+            segmentation_map_size=134,
         ),
         hydra_defaults=[
             "_self_",
@@ -728,7 +737,7 @@ def get_experiments():
 
     mode_store(
         name="new_unet_lora",
-        model=dict(unet_lora=True, lora_rank=256),
+        model=dict(freeze_unet=True, unet_lora=True, lora_rank=256),
         trainer=dict(learning_rate=1e-6),
         dataset=dict(train_dataset=dict(batch_size=20)),
     )
@@ -744,5 +753,5 @@ def get_experiments():
         name="profiler",
         model=dict(layer_specialization=False, per_layer_queries=False, num_token_cls=2),
         trainer=dict(learning_rate=1e-4, eval_on_start=False, max_train_steps=10, gradient_accumulation_steps=1, enable_dynamic_grad_accum=False, profiler_active_steps=2),
-        hydra_defaults=["new_unet_finetune", "sd_15"],
+        hydra_defaults=["sd_15"],
     )

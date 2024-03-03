@@ -37,7 +37,7 @@ from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
-from gen.utils.data_utils import maybe_convert_to_one_hot
+from gen.utils.data_utils import get_one_hot_channels, integer_to_one_hot, maybe_convert_to_one_hot
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
@@ -48,9 +48,9 @@ from tensordict import tensorclass
 @tensorclass
 class InputData:
     gen_pixel_values: Float[Tensor, "b c h w"]
-    gen_segmentation: Integer[Tensor, "b h w c"]
+    gen_segmentation: Integer[Tensor, "b h w"]
     disc_pixel_values: Float[Tensor, "b c h w"]
-    disc_segmentation: Integer[Tensor, "b h w c"]
+    disc_segmentation: Integer[Tensor, "b h w"]
     input_ids: Integer[Tensor, "b l"]
     state: Optional[TrainingState]
     dtype: Optional[torch.dtype]
@@ -62,46 +62,14 @@ class InputData:
     raw_object_quaternions: Optional[Float] = None
     camera_quaternions: Optional[Float] = None
     positions: Optional[Float] = None
-    valid: Optional[Bool] = None
+    valid: Optional[Bool[Tensor, "b classes"]] = None
     categories: Optional[Integer] = None
     asset_id: Optional[Integer] = None
     metadata: Optional[dict[str, Any]] = None
     formatted_input_ids: Optional[Integer[Tensor, "b l"]] = None
     gen_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
     disc_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
-    
-    # device: Optional[torch.device]
-    # _extras: dict[str, Any] = field(init=False, repr=False)
-    # # Below is a hack
-    # def __init__(self, **kwargs):
-    #     object.__setattr__(self, '_extras', {})
-    #     predefined_fields = {f.name for f in fields(self)}
-    #     for key, value in kwargs.items():
-    #         if key in predefined_fields:
-    #             object.__setattr__(self, key, value)
-    #         else:
-    #             log_warn(f"Setting extra field {key} to {value}")
-    #             self._extras[key] = value
-
-    # def __setattr__(self, key, value):
-    #     self.__setitem__(key, value)
-    
-    # def __setitem__(self, key, value):
-    #     if hasattr(self, key):
-    #         object.__setattr__(self, key, value)
-    #     else:
-    #         self._extras[key] = value
-
-    # def __getitem__(self, item):
-    #     if item in self._extras:
-    #         return self._extras[item]
-    #     return getattr(self, item)
-
-    # def __delitem__(self, key):
-    #     if key in self._extras:
-    #         del self._extras[key]
-    #     else:
-    #         raise KeyError(f"{key} is not an extra field and cannot be deleted.")
+    one_hot_gen_segmentation: Optional[Integer[Tensor, "b h w c"]] = None
 
 @dataclass
 class ConditioningData:
@@ -535,7 +503,7 @@ class BaseMapper(Trainable):
             state=state,
             **batch,
         )
-        batch = maybe_convert_to_one_hot(cfg=self.cfg, batch=batch)
+        # batch = maybe_convert_to_one_hot(cfg=self.cfg, batch=batch)
         return batch
 
     def get_standard_conditioning_for_inference(
@@ -614,8 +582,8 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.use_dummy_mask:
             # Very hacky. We ignore masks with <= 32 pixels later on.
-            object_is_visible = (rearrange('b h w c -> b c (h w)', batch.gen_segmentation) > 0).sum(dim=-1) > 0
-            rearrange('b h w c -> b c (h w)', batch.gen_segmentation)[object_is_visible] = 1
+            object_is_visible = (rearrange('b h w c -> b c (h w)', batch.disc_segmentation) > 0).sum(dim=-1) > 0
+            rearrange('b h w c -> b c (h w)', batch.disc_segmentation)[object_is_visible] = 1
             return batch
         elif self.cfg.model.use_dataset_segmentation:
             return batch  # We already have segmentation
@@ -634,7 +602,7 @@ class BaseMapper(Trainable):
 
             if original.shape[0] == 0:  # Make dummy mask with all ones
                 original = (
-                    batch.gen_segmentation[i].new_ones((1, batch.gen_segmentation[i].shape[0], batch.gen_segmentation[i].shape[1])).cpu()
+                    batch.disc_segmentation[i].new_ones((1, batch.disc_segmentation[i].shape[0], batch.disc_segmentation[i].shape[1])).cpu()
                 )
             else:  # Add additional mask to capture any pixels that are not part of any mask
                 original = torch.cat(((~original.any(dim=0))[None], original), dim=0)
@@ -644,7 +612,7 @@ class BaseMapper(Trainable):
                 sam_seg.append(torch.nn.functional.pad(seg_, (0, (max_masks + 1) - seg_.shape[-1]), "constant", 0))
 
         if len(sam_seg) > 0:
-            batch.gen_segmentation = torch.stack(sam_seg, dim=0)
+            batch.disc_segmentation = torch.stack(sam_seg, dim=0)
 
         return batch
 
@@ -713,18 +681,17 @@ class BaseMapper(Trainable):
         mask_batch_idx = []
         mask_instance_idx = []
         mask_dropout = []
+        segmentation_map_size = self.cfg.model.segmentation_map_size
 
-        assert batch.gen_segmentation is not None
+        indices_ = batch.disc_segmentation.view(batch.bs, -1)
+        ones_ = torch.ones_like(indices_, dtype=torch.bool)
+        all_non_empty_mask = ones_.new_zeros((batch.bs, self.cfg.model.segmentation_map_size))
+        all_non_empty_mask.scatter_add_(1, indices_, ones_)  # Perform batched bincount
+
+        assert batch.disc_segmentation is not None
         for i in range(bs):
-            one_hot_mask: Bool[Tensor, "d h w"] = batch.gen_segmentation[i].permute(2, 0, 1).bool()
-            one_hot_idx = torch.arange(one_hot_mask.shape[0], device=device)
-
-            if one_hot_mask.shape[0] == 0:
-                log_warn("No masks found for this image")
-                continue
-
-            # Remove empty masks. Because of flash attention bugs, we require a minimum of 32 pixels. 14 is too few.
-            non_empty_mask = torch.sum(one_hot_mask, dim=[1, 2]) > 0
+            one_hot_idx = torch.arange(segmentation_map_size, device=device)
+            non_empty_mask = all_non_empty_mask[i] > 0
             non_empty_mask[1:] &= batch.valid[i]
 
             if self.cfg.model.training_mask_dropout is not None and self.training:
@@ -745,17 +712,17 @@ class BaseMapper(Trainable):
                     log_warn("We would have dropped all masks but instead we preserved the background", main_process_only=False)
                     dropout_mask[self.cfg.model.background_mask_idx] = True
             else:
-                dropout_mask = one_hot_mask.new_full((one_hot_mask.shape[0],), True, dtype=torch.bool)
+                dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), True, dtype=torch.bool)
 
             combined_mask = dropout_mask & non_empty_mask
-            one_hot_mask = one_hot_mask[combined_mask]
             one_hot_idx = one_hot_idx[combined_mask]
 
-            if one_hot_mask.shape[0] == 0:
+            if one_hot_idx.shape[0] == 0:
                 log_warn("Dropped out all masks for this image!")
                 continue
 
             assert batch.disc_pixel_values.shape[-1] == batch.disc_pixel_values.shape[-2]
+            one_hot_mask = get_one_hot_channels(batch.disc_segmentation[i], one_hot_idx).permute(2, 0, 1)
             feature_map_mask_ = find_true_indices_batched(original=one_hot_mask, dh=latent_dim, dw=latent_dim)
             feature_map_masks.append(feature_map_mask_)
             mask_batch_idx.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
@@ -923,7 +890,7 @@ class BaseMapper(Trainable):
         return cond
 
     def get_controlnet_conditioning(self, batch):
-        return batch.gen_segmentation.permute(0, 3, 1, 2).to(dtype=self.dtype)
+        return batch.disc_segmentation.permute(0, 3, 1, 2).to(dtype=self.dtype)
 
     def dropout_cfg(self, cond: ConditioningData):
         device: torch.device = cond.encoder_hidden_states.device

@@ -414,3 +414,35 @@ def viz():
     
         #     print(self.clip.model.norm.weight, self.clip.model.norm.bias)
         # print(torch.all(self.clip.model.norm.weight == 1), torch.all(self.clip.model.norm.bias == 0))
+        # device: Optional[torch.device]
+    # _extras: dict[str, Any] = field(init=False, repr=False)
+    # # Below is a hack
+    # def __init__(self, **kwargs):
+    #     object.__setattr__(self, '_extras', {})
+    #     predefined_fields = {f.name for f in fields(self)}
+    #     for key, value in kwargs.items():
+    #         if key in predefined_fields:
+    #             object.__setattr__(self, key, value)
+    #         else:
+    #             log_warn(f"Setting extra field {key} to {value}")
+    #             self._extras[key] = value
+
+    # def __setattr__(self, key, value):
+    #     self.__setitem__(key, value)
+    
+    # def __setitem__(self, key, value):
+    #     if hasattr(self, key):
+    #         object.__setattr__(self, key, value)
+    #     else:
+    #         self._extras[key] = value
+
+    # def __getitem__(self, item):
+    #     if item in self._extras:
+    #         return self._extras[item]
+    #     return getattr(self, item)
+
+    # def __delitem__(self, key):
+    #     if key in self._extras:
+    #         del self._extras[key]
+    #     else:
+    #         raise KeyError(f"{key} is not an extra field and cannot be deleted.")

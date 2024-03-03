@@ -19,6 +19,7 @@ from gen import MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_P
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.abstract_dataset import AbstractDataset, Split
+from gen.utils.data_utils import one_hot_to_integer
 from gen.utils.decoupled_utils import load_tensor_dict, save_tensor_dict
 from gen.utils.tokenization_utils import get_tokens
 
@@ -263,9 +264,9 @@ class MoviDataset(AbstractDataset, Dataset):
         ret['valid'] &= (torch.sum(source_data.segmentation[..., 1:], dim=[0, 1]) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2).numpy()
         ret.update({
             "gen_pixel_values": target_data.image,
-            "gen_segmentation": target_data.segmentation,
+            "gen_segmentation": one_hot_to_integer(target_data.segmentation),
             "disc_pixel_values": source_data.image,
-            "disc_segmentation": source_data.segmentation,
+            "disc_segmentation": one_hot_to_integer(source_data.segmentation),
             "input_ids": get_tokens(self.tokenizer),
         })
 

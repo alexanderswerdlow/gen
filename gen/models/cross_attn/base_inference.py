@@ -17,7 +17,7 @@ from gen import GSO_PCD_PATH
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
 from gen.models.cross_attn.losses import get_relative_rot_data, token_cls_loss, token_rot_loss
-from gen.utils.data_utils import maybe_convert_to_one_hot
+from gen.utils.data_utils import integer_to_one_hot, maybe_convert_to_one_hot
 from gen.utils.decoupled_utils import load_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
@@ -43,9 +43,9 @@ def repeat_batch(batch: InputData, bs: int):
 
 def get_composited_mask(batch: dict, b: int, j: int):
     orig_image = ((batch.gen_pixel_values + 1) / 2)[b]
-    mask_image = Im(get_layered_image_from_binary_mask(batch.gen_segmentation[b, ..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+    mask_image = Im(get_layered_image_from_binary_mask(batch.one_hot_gen_segmentation[b, ..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
     mask_rgb = np.full((mask_image.height, mask_image.width, 3), (255, 0, 0), dtype=np.uint8)
-    mask_alpha = (batch.gen_segmentation[b, ..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+    mask_alpha = (batch.one_hot_gen_segmentation[b, ..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
     composited_image = Im(orig_image).pil.copy().convert("RGBA")
     composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
     return Im(composited_image.convert("RGB"))
@@ -187,6 +187,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     """
 
     assert batch.input_ids.shape[0] == 1 or self.cfg.model.predict_rotation_from_n_frames is not None
+    batch.one_hot_gen_segmentation = integer_to_one_hot(batch.gen_segmentation, num_classes=self.cfg.model.segmentation_map_size)
 
     ret = {}
     orig_image = Im((batch.gen_pixel_values + 1) / 2)
@@ -291,7 +292,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
 
     bs_ = batch.input_ids.shape[0]
-    gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], get_layered_image_from_binary_mask(batch.gen_segmentation[b_])).write_text(text="GT") for b_ in range(bs_)])
+    gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], get_layered_image_from_binary_mask(batch.one_hot_gen_segmentation[b_])).write_text(text="GT") for b_ in range(bs_)])
     ret["validation"] = gt_info
 
     added_kwargs = dict()
@@ -324,7 +325,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 continue
             tokens = rearrange("t (h w) -> t 3 h w", softmax("t [hw]", rearrange("t h w -> t (h w)", tokens)), h=tokens.shape[-1])
             tokens = (tokens - torch.min(tokens)) / (torch.max(tokens) - torch.min(tokens))
-            masks = Im(rearrange("h w masks -> masks 3 h w", batch.gen_segmentation[b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
+            masks = Im(rearrange("h w masks -> masks 3 h w", batch.one_hot_gen_segmentation[b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
             attn_imgs.append(Im.concat_vertical(Im.concat_horizontal(*tokens), Im.concat_horizontal(*masks.torch)))
 
         ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
@@ -335,14 +336,14 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         Im.concat_vertical(
             prompt_image_, 
             Im(get_layered_image_from_binary_mask(
-                batch.gen_segmentation[i if use_idx else 0])
+                batch.one_hot_gen_segmentation[i if use_idx else 0])
             )).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)
     )
     ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
 
     if self.cfg.inference.save_prompt_embeds:
         assert cond.mask_instance_idx.shape[0] == cond.mask_tokens.shape[0]
-        orig_gen_segmentation = batch.gen_segmentation.clone()
+        orig_gen_segmentation = batch.one_hot_gen_segmentation.clone()
         all_masks = []
         for j in cond.mask_instance_idx:
             composited_image = get_composited_mask(batch, 0, j)
@@ -392,7 +393,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     if self.cfg.inference.num_masks_to_remove is not None:
         orig_valid = batch.valid.clone()
-        orig_gen_segmentation = batch.gen_segmentation.clone()
+        orig_gen_segmentation = batch.one_hot_gen_segmentation.clone()
 
         batched_valid = []
         idxs = list(range(orig_gen_segmentation.shape[-1])[: self.cfg.inference.num_masks_to_remove])[1:]
@@ -422,7 +423,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 removed_mask_imgs.append(Im.concat_vertical(*img_))
 
             ret["validation"] = Im.concat_horizontal(ret["validation"], Im.concat_horizontal(*removed_mask_imgs), spacing=15)
-            batch.gen_segmentation = orig_gen_segmentation
+            batch.one_hot_gen_segmentation = orig_gen_segmentation
 
     if self.cfg.inference.infer_new_prompts:
         prompts = [prompt.format(self.cfg.model.placeholder_token) for prompt in new_prompts]
@@ -448,8 +449,8 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         ret["prompt_images"] = Im.concat_horizontal(orig_image, ret["prompt_images"], spacing=20)
 
     img_ = []
-    for b in range(len(batch.gen_segmentation)):
-        seg = batch.gen_segmentation[b].argmax(dim=-1).data.cpu().numpy()
+    for b in range(len(batch.one_hot_gen_segmentation)):
+        seg = batch.one_hot_gen_segmentation[b].argmax(dim=-1).data.cpu().numpy()
         rgb_seg = label_to_color_image(seg, colormap=CocoPanoptic.create_label_colormap())
         rgb_img = Image.fromarray((((batch.gen_pixel_values[b] + 1) / 2).data.cpu().numpy() * 255).astype(np.uint8).transpose(1, 2, 0))
         img_.append(Im.concat_vertical(rgb_seg, rgb_img))
