@@ -33,13 +33,7 @@ gso_pcds = None
 
 
 def repeat_batch(batch: InputData, bs: int):
-    from gen.models.cross_attn.base_model import InputData
-    batch_ = InputData()
-    for field in fields(batch):
-        if isinstance(getattr(batch, field.name), torch.Tensor):
-            setattr(batch_, field.name, rearrange("old_bs ... -> (new_bs old_bs) ...", getattr(batch, field.name), new_bs=bs))
-
-    return batch_
+    return batch.clone().expand(bs)
 
 def get_composited_mask(batch: dict, b: int, j: int):
     orig_image = ((batch.gen_pixel_values + 1) / 2)[b]
@@ -315,21 +309,23 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             layer_attn = F.interpolate(layer_attn.to(dtype=torch.float32), size=target_size, mode="bilinear", align_corners=False).squeeze(1)
             all_attn.append(layer_attn)
 
-        all_attn = mean("[layers] (b tokens) h w -> b tokens h w", torch.stack(all_attn), b=bs)
-        attn_imgs = []
-        for b in range(bs):
-            attn_ = all_attn[b]
-            idx_mask = cond.learnable_idxs[1][cond.learnable_idxs[0] == b]
-            tokens = attn_[idx_mask.to(device=attn_.device)]
-            if tokens.shape[0] == 0:
-                continue
-            tokens = rearrange("t (h w) -> t 3 h w", softmax("t [hw]", rearrange("t h w -> t (h w)", tokens)), h=tokens.shape[-1])
-            tokens = (tokens - torch.min(tokens)) / (torch.max(tokens) - torch.min(tokens))
-            masks = Im(rearrange("h w masks -> masks 3 h w", batch.one_hot_gen_segmentation[b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
-            attn_imgs.append(Im.concat_vertical(Im.concat_horizontal(*tokens), Im.concat_horizontal(*masks.torch)))
+        try:
+            all_attn = mean("[layers] (b tokens) h w -> b tokens h w", torch.stack(all_attn), b=bs)
+            attn_imgs = []
+            for b in range(bs):
+                attn_ = all_attn[b]
+                idx_mask = cond.learnable_idxs[1][cond.learnable_idxs[0] == b]
+                tokens = attn_[idx_mask.to(device=attn_.device)]
+                if tokens.shape[0] == 0:
+                    continue
+                tokens = rearrange("t (h w) -> t 3 h w", softmax("t [hw]", rearrange("t h w -> t (h w)", tokens)), h=tokens.shape[-1])
+                tokens = (tokens - torch.min(tokens)) / (torch.max(tokens) - torch.min(tokens))
+                masks = Im(rearrange("h w masks -> masks 3 h w", batch.one_hot_gen_segmentation[b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
+                attn_imgs.append(Im.concat_vertical(Im.concat_horizontal(*tokens), Im.concat_horizontal(*masks.torch)))
 
-        ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
-
+            ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
+        except Exception as e:
+            print(e)
 
     use_idx = self.cfg.model.predict_rotation_from_n_frames is not None
     generated_images = Im.concat_vertical(
@@ -406,7 +402,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
         if batched_valid.sum().item() != 0:
             batch_ = repeat_batch(batch, bs=len(idxs))
-            batch_["valid"] = batched_valid
+            batch_.valid = batched_valid
 
             prompt_images, _ = self.infer_batch(batch=batch_)
             if self.cfg.model.break_a_scene_cross_attn_loss:
@@ -434,7 +430,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         input_ids_ = torch.cat(input_ids_, dim=0).to(self.device)
 
         batch_ = repeat_batch(batch, bs=len(input_ids_))
-        batch_["input_ids"] = input_ids_
+        batch_.input_ids = input_ids_
 
         prompt_images, _ = self.infer_batch(batch=batch_)
         if self.cfg.model.break_a_scene_cross_attn_loss:

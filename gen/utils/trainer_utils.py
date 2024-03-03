@@ -185,16 +185,6 @@ def unwrap(model):
         else:
             return model
 
-def start_timing(enable: bool, message: str):
-    if enable:
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_push(message)
-
-def end_timing(enable):
-    if enable:
-        torch.cuda.synchronize()
-        torch.cuda.nvtx.range_pop()
-
 if __name__ == "__main__":
     # assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10)
     # assert not check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10, run_first=True)

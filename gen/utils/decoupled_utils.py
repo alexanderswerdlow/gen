@@ -1,3 +1,4 @@
+from functools import partial
 import glob
 import hashlib
 from io import BytesIO
@@ -405,6 +406,24 @@ def set_global_breakpoint():
     builtins.st = ipdb.set_trace  # We import st everywhere
     builtins.ug = lambda: globals().update(locals())
 
+def set_timing_builtins(enable: bool = False, sync: bool = False):
+    import builtins
+    builtins.start_timing = partial(start_timing, builtin=True, enable=False, sync=False)
+    builtins.end_timing = partial(end_timing, builtin=True, enable=False, sync=False)
+    builtins.ENABLE_TIMING = enable
+    builtins.ENABLE_TIMING_SYNC = sync
+
+def start_timing(message: str, enable: bool = False, sync: bool = False, builtin: bool = False):
+    if (builtin and ENABLE_TIMING) or enable:
+        if (builtin and ENABLE_TIMING_SYNC) or sync:
+            torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push(message)
+
+def end_timing(enable: bool = False, sync: bool = False, builtin: bool = False):
+    if enable:
+        if sync:
+            torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
 def write_to_file(path: Path, text: str):
     try:

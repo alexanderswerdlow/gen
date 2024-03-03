@@ -74,6 +74,9 @@ class TrainerConfig:
     custom_inference_batch_size: Optional[int] = None
     custom_inference_dataset_size: Optional[int] = 512
 
+    enable_timing: bool = False
+    enable_timing_sync: bool = True
+
     # Set in code
     num_gpus: Optional[int] = None
     dtype: Optional[str] = None

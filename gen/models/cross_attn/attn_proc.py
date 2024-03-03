@@ -85,7 +85,10 @@ class XFormersAttnProcessor:
                 # This makes it easier for e.g., inference so we don't need to reset the counter, but is pretty hacky.
                 is_trainable_cross_attn = True
                 cur_idx = attn_meta["layer_idx"] % attn_meta["num_layers"]
-                cond_idx = min(cur_idx, (attn_meta["num_layers"] - 1) - cur_idx)
+                if 'custom_map' in attn_meta:
+                    cond_idx = attn_meta['custom_map'][cur_idx]
+                else:
+                    cond_idx = min(cur_idx, (attn_meta["num_layers"] - 1) - cur_idx)
                 encoder_hidden_states = encoder_hidden_states.chunk(attn_meta["num_cond_vectors"], dim=-1)[cond_idx]
                 attn_meta["layer_idx"] = attn_meta["layer_idx"] + 1
                 

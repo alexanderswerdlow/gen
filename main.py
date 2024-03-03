@@ -25,7 +25,7 @@ from image_utils import library_ops  # This overrides repr() for tensors
 from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig
-from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint
+from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint, set_timing_builtins
 from gen.utils.logging_utils import log_error, log_info, log_warn, set_logger
 from inference import inference
 from train import Trainer
@@ -230,6 +230,8 @@ def main(cfg: BaseConfig):
 
     if cfg.profile and cfg.trainer.profiler_record_memory:
         torch.cuda.memory._record_memory_history()
+
+    set_timing_builtins(cfg.trainer.enable_timing, cfg.trainer.enable_timing_sync)
 
     try:
         if cfg.run_inference:

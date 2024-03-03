@@ -117,15 +117,16 @@ def evenly_weighted_mask_loss(
 
 def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData):
     max_masks = []
+    decoder_resolution = cfg.model.decoder_resolution
     for b in range(batch.gen_pixel_values.shape[0]):
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
         object_masks = get_one_hot_channels(batch.gen_segmentation[b], mask_idxs_for_batch)
         if (
             cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item()
         ):  # We do not have conditioning for this entire sample so put loss on everything
-            max_masks.append(object_masks.new_ones((cfg.model.decoder_resolution, cfg.model.decoder_resolution)))
+            max_masks.append(object_masks.new_ones((decoder_resolution, decoder_resolution)))
         elif object_masks.shape[-1] == 0:
-            max_masks.append(object_masks.new_zeros((cfg.model.decoder_resolution, cfg.model.decoder_resolution)))  # Zero out loss if there are no masks
+            max_masks.append(object_masks.new_zeros((decoder_resolution, decoder_resolution)))  # Zero out loss if there are no masks
         else:
             max_masks.append(torch.max(object_masks, axis=-1).values)
 

@@ -75,14 +75,17 @@ class Augmentation:
 
         self.source_transform = AugmentationSequential(*source_transforms) if len(source_transforms) > 0 else None
         self.target_transform = AugmentationSequential(*target_transforms) if len(target_transforms) > 0 else None
-
-        warnings.warn(f"Source image is being resized to {self.source_normalization.transforms[0].size}")
-        warnings.warn(f"Target image is being resized to {self.target_normalization.transforms[0].size}")
+        self.has_warned = False
 
     def kornia_augmentations_enabled(self) -> bool:
         return self.source_transform is not None or self.target_transform is not None
 
     def __call__(self, source_data, target_data):
+        if not self.has_warned:
+            warnings.warn(f"Source image is being resized to {self.source_normalization.transforms[0].size}")
+            warnings.warn(f"Target image is being resized to {self.target_normalization.transforms[0].size}")
+            self.has_warned = True
+
         if self.source_transform is not None:
             # When we augment the source we need to also augment the target
             source_params = self.source_transform.forward_parameters(batch_shape=source_data.image.shape)

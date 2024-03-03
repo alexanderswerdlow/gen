@@ -689,7 +689,8 @@ def get_experiments():
         model=dict(
             num_token_cls=133,
             layer_specialization=True,
-            num_conditioning_pairs=8,
+            num_conditioning_pairs=2,
+            custom_conditioning_map=True,
             per_layer_queries=True,
             unet=True, 
             gated_cross_attn=False,
@@ -705,9 +706,9 @@ def get_experiments():
             ),
         ),
         dataset=dict(
-            train_dataset=dict(batch_size=20),
+            train_dataset=dict(batch_size=192),
         ),
-        trainer=dict(learning_rate=1e-6),
+        trainer=dict(learning_rate=1e-4, scale_lr_gpus_grad_accum=False, scale_lr_batch_size=False),
         hydra_defaults=["no_movi_augmentation", "multiscale", "low_res", "coco_panoptic"],
     )
 
@@ -751,7 +752,6 @@ def get_experiments():
     )
     mode_store(
         name="profiler",
-        model=dict(layer_specialization=False, per_layer_queries=False, num_token_cls=2),
+        model=dict(layer_specialization=False, per_layer_queries=False),
         trainer=dict(learning_rate=1e-4, eval_on_start=False, max_train_steps=10, gradient_accumulation_steps=1, enable_dynamic_grad_accum=False, profiler_active_steps=2),
-        hydra_defaults=["sd_15"],
     )

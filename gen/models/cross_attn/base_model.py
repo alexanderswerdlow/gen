@@ -249,7 +249,8 @@ class BaseMapper(Trainable):
             from gen.models.cross_attn.attn_proc import register_layerwise_attention
 
             num_cross_attn_layers = register_layerwise_attention(self.unet)
-            assert num_cross_attn_layers == (2 * self.cfg.model.num_conditioning_pairs * (2 if self.cfg.model.gated_cross_attn else 1))
+            if not self.cfg.model.custom_conditioning_map:
+                assert num_cross_attn_layers == (2 * self.cfg.model.num_conditioning_pairs * (2 if self.cfg.model.gated_cross_attn else 1))
    
         if self.cfg.model.per_layer_queries:
             assert self.cfg.model.layer_specialization
@@ -668,7 +669,7 @@ class BaseMapper(Trainable):
             if "dino" in self.clip.model_name and "reg" in self.clip.model_name:
                 clip_feature_map = clip_feature_map[:, :, 4:, :]
 
-        latent_dim = round(math.sqrt(clip_feature_map.shape[-2]))
+        latent_dim = 16
 
         if self.cfg.model.add_pos_emb:
             pos_emb = positionalencoding2d(clip_feature_map.shape[-1], latent_dim, latent_dim, device=clip_feature_map.device, dtype=clip_feature_map.dtype).to(clip_feature_map)
@@ -682,10 +683,14 @@ class BaseMapper(Trainable):
         mask_instance_idx = []
         mask_dropout = []
         segmentation_map_size = self.cfg.model.segmentation_map_size
+        training_mask_dropout = self.cfg.model.training_mask_dropout
+        dropout_foreground_only = self.cfg.model.dropout_foreground_only
+        dropout_background_only = self.cfg.model.dropout_background_only
+        background_mask_idx = self.cfg.model.background_mask_idx
 
-        indices_ = batch.disc_segmentation.view(batch.bs, -1)
+        indices_ = batch.disc_segmentation.view(batch.batch_size[0], -1)
         ones_ = torch.ones_like(indices_, dtype=torch.bool)
-        all_non_empty_mask = ones_.new_zeros((batch.bs, self.cfg.model.segmentation_map_size))
+        all_non_empty_mask = ones_.new_zeros((batch.batch_size[0], self.cfg.model.segmentation_map_size))
         all_non_empty_mask.scatter_add_(1, indices_, ones_)  # Perform batched bincount
 
         assert batch.disc_segmentation is not None
@@ -694,7 +699,7 @@ class BaseMapper(Trainable):
             non_empty_mask = all_non_empty_mask[i] > 0
             non_empty_mask[1:] &= batch.valid[i]
 
-            if self.cfg.model.training_mask_dropout is not None and self.training:
+            if training_mask_dropout is not None and self.training:
                 dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), False, dtype=torch.bool)
 
                 non_empty_idx = non_empty_mask.nonzero().squeeze(1)
@@ -703,14 +708,14 @@ class BaseMapper(Trainable):
                     selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
                     dropout_mask[selected_masks] = True
 
-                if self.cfg.model.dropout_foreground_only:
-                    dropout_mask[self.cfg.model.background_mask_idx] = True  # We always keep the background mask
-                elif self.cfg.model.dropout_background_only:
-                    dropout_mask[torch.arange(dropout_mask.shape[0]) != self.cfg.model.background_mask_idx] = True
+                if dropout_foreground_only:
+                    dropout_mask[background_mask_idx] = True  # We always keep the background mask
+                elif dropout_background_only:
+                    dropout_mask[torch.arange(dropout_mask.shape[0]) != background_mask_idx] = True
 
                 if dropout_mask.sum().item() == 0:
                     log_warn("We would have dropped all masks but instead we preserved the background", main_process_only=False)
-                    dropout_mask[self.cfg.model.background_mask_idx] = True
+                    dropout_mask[background_mask_idx] = True
             else:
                 dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), True, dtype=torch.bool)
 
@@ -743,6 +748,8 @@ class BaseMapper(Trainable):
         num_feature_maps = clip_feature_map.shape[1]
         seqlens_k = feature_map_masks.sum(dim=-1) * num_feature_maps  # We sum the number of valid "pixels" in each mask
         seqlens_k = einops.repeat(seqlens_k, 'b -> (b layers)', layers=num_queries_per_mask)
+
+        assert round(math.sqrt(clip_feature_map.shape[-2])) == latent_dim
 
         max_seqlen_k = seqlens_k.max().item()
         cu_seqlens_k = F.pad(torch.cumsum(seqlens_k, dim=0, dtype=torch.torch.int32), (1, 0))
@@ -845,10 +852,30 @@ class BaseMapper(Trainable):
         if self.cfg.model.layer_specialization:
             cond.unet_kwargs["cross_attention_kwargs"]['attn_meta'].update(dict(
                 layer_idx=0,
-                num_layers=self.cfg.model.num_conditioning_pairs * 2,
+                num_layers=(8 * 2) if self.cfg.model.custom_conditioning_map else (self.cfg.model.num_conditioning_pairs * 2),
                 num_cond_vectors=self.cfg.model.num_conditioning_pairs,
                 add_pos_emb=self.cfg.model.add_pos_emb,
             ))
+
+            if self.cfg.model.custom_conditioning_map:
+                cond.unet_kwargs["cross_attention_kwargs"]['attn_meta']['custom_map'] = {
+                    0: 0,
+                    1: 0,
+                    2: 0,
+                    3: 0,
+                    4: 1,
+                    5: 1,
+                    6: 1,
+                    7: 1,
+                    8: 1,
+                    9: 1,
+                    10: 1,
+                    11: 1,
+                    12: 0,
+                    13: 0,
+                    14: 0,
+                    15: 0,
+                }
 
             if self.cfg.model.gated_cross_attn:
                 cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["gate_scale"] = 1
