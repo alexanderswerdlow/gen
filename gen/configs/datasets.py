@@ -92,6 +92,33 @@ auto_store(
 )
 
 
-auto_store(DatasetConfig, train_dataset=get_dataset(CocoPanoptic, augmentation=augmentation, resolution="${model.decoder_resolution}"), validation_dataset=get_dataset(CocoPanoptic, augmentation=augmentation, resolution="${model.decoder_resolution}"), name="coco_panoptic")
+auto_store(DatasetConfig, 
+           train_dataset=get_dataset(
+                CocoPanoptic,
+                augmentation=augmentation,
+                resolution="${model.decoder_resolution}",
+                max_resize_value="${model.decoder_resolution}",
+                min_resize_value="${model.decoder_resolution}",
+                crop_size=("${model.decoder_resolution}", "${model.decoder_resolution}"),
+                min_scale=1.0,
+                max_scale=2.0,
+                resize_factor=None,
+                scale_step_size=0.1,
+            ), 
+           validation_dataset=get_dataset(
+                CocoPanoptic,
+                augmentation=augmentation,
+                resolution="${model.decoder_resolution}",
+                max_resize_value="${model.decoder_resolution}",
+                min_resize_value="${model.decoder_resolution}",
+                crop_size=("${model.decoder_resolution}", "${model.decoder_resolution}"),
+                min_scale=1.0,
+                max_scale=1.5,
+                resize_factor=None,
+                scale_step_size=0.1,
+                enable_train_augmentation=False
+            ), 
+           name="coco_panoptic"
+)
 
 store_child_config(DatasetConfig, "dataset", "coco_panoptic", "coco_panoptic_test")

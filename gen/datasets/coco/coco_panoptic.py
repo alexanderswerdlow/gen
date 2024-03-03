@@ -18,6 +18,7 @@ from gen.datasets.coco.build import build_transforms
 from gen.datasets.coco.coco_utils import _COCO_PANOPTIC_INFORMATION, _COCO_PANOPTIC_THING_LIST, _COCO_PANOPTIC_TRAIN_ID_TO_EVAL_ID, COCO_CATEGORIES
 from gen.datasets.coco.pre_augmentation_transforms import Resize
 from gen.datasets.coco.target_transforms import PanopticTargetGenerator, SemanticTargetGenerator
+from gen.utils.data_utils import maybe_convert_to_one_hot, one_hot_to_integer
 from gen.utils.tokenization_utils import get_tokens
 
 torchvision.disable_beta_transforms_warning()
@@ -64,6 +65,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
             small_instance_weight=1,
             augmentation: Optional[Augmentation] = Augmentation(),
             enable_train_augmentation: bool = True,
+            disable_all_aug: bool = False,
             tokenizer=None,
             object_ignore_threshold: float = 0.1,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
@@ -139,6 +141,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         self.augmentation = augmentation
         self.tokenizer = tokenizer
         self.object_ignore_threshold = object_ignore_threshold
+        self.disable_all_aug = disable_all_aug
         assert self.augmentation.kornia_augmentations_enabled() is False
 
         # Get image and annotation list.
@@ -171,8 +174,10 @@ class CocoPanoptic(AbstractDataset, Dataset):
 
         assert len(self) == _COCO_PANOPTIC_INFORMATION.splits_to_sizes[self.coco_split]
 
-        self.pre_augmentation_transform = Resize(min_resize_value, max_resize_value, resize_factor)
-        self.transform = build_transforms(self, self.is_train and augmentation)
+        if not self.disable_all_aug:
+            self.pre_augmentation_transform = Resize(min_resize_value, max_resize_value, resize_factor)
+            self.transform = build_transforms(self, self.is_train and augmentation)
+
         if semantic_only:
             self.target_transform = SemanticTargetGenerator(self.ignore_label, self.rgb2id)
         else:
@@ -300,13 +305,16 @@ class CocoPanoptic(AbstractDataset, Dataset):
             for key in label_dict.keys():
                 dataset_dict[key] = label_dict[key]
 
+        # for key in dataset_dict.keys():
+        #     if (key == 'semantic' or key == 'image') and isinstance(dataset_dict[key], np.ndarray):
+        #         dataset_dict[key] = torch.from_numpy(dataset_dict[key].copy())
+
         # At this point, we have 133 categories. For some reason the range is 0-132 + 255
         # 0-132 are valid [e.g., 0 is person]. 255 is invalid/ignore. We treat this as background. The convention in this codebase is that the 0th segmentation mask is the background.
         # However, the class category remains unchanged (internally we always do seg_idx + 1 == cls_idx)
         mask_ = dataset_dict['semantic'] == 255
         dataset_dict['semantic'] += 1
         dataset_dict['semantic'][mask_] = 0
-        
         rgb = dataset_dict['image']
 
         if 'instance' in dataset_dict.keys():
@@ -327,6 +335,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         instance_with_pad_mask = torch.where(
             torch.as_tensor(pad_mask), torch.zeros_like(instance), instance + 1
         )
+
         source_data, target_data = self.augmentation(
             source_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].squeeze(-1).float()),
             target_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].squeeze(-1).float()),
@@ -342,16 +351,28 @@ class CocoPanoptic(AbstractDataset, Dataset):
 
         # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
         source_data.image = source_data.image.squeeze(0)
-        source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        source_data.segmentation = source_data.segmentation.squeeze(0).long()
         target_data.image = target_data.image.squeeze(0)
-        target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
-
-        valid = (torch.sum(source_data.segmentation, dim=[0, 1]) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2)
+        target_data.segmentation = target_data.segmentation.squeeze(0).long()
+        valid = torch.bincount(source_data.segmentation.squeeze(0).long().view(-1), minlength=self.num_classes + 1) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2
         categories = torch.full((valid.shape), fill_value=-1)
         categories[unique_instance] = unique_semantic - 1
         categories[~valid] = -1
         valid = valid[..., 1:]
         categories = categories[..., 1:]
+
+        # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
+        # source_data.image = source_data.image.squeeze(0)
+        # source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        # target_data.image = target_data.image.squeeze(0)
+        # target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        # valid = (torch.sum(source_data.segmentation, dim=[0, 1]) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2)
+        # categories = torch.full((valid.shape), fill_value=-1)
+        # categories[unique_instance] = unique_semantic - 1
+        # categories[~valid] = -1
+        # valid = valid[..., 1:]
+        # categories = categories[..., 1:]
+
         ret = {
             "gen_pad_mask": target_pad_mask,
             "gen_pixel_values": target_data.image,
@@ -377,32 +398,36 @@ if __name__ == "__main__":
     dataset = CocoPanoptic(
         cfg=None,
         split=Split.TRAIN,
-        num_workers=0,
-        batch_size=4,
+        num_workers=2,
+        batch_size=20,
         shuffle=True,
-        max_resize_value=512,
-        min_resize_value=512,
+        min_scale=1.0,
+        max_scale=2.0,
+        max_resize_value=256,
+        min_resize_value=256,
         resize_factor=None,
-        crop_size=(512, 512),
+        crop_size=(256, 256),
         scale_step_size=0.1,
         ignore_stuff_in_offset=True,
         tokenizer=tokenizer,
-        resolution=512,
+        resolution=256,
         augmentation=Augmentation(minimal_source_augmentation=True, enable_crop=False, enable_horizontal_flip=False),
+        # disable_all_aug=True
     )
 
     import time
     start_time = time.time()
     dataloader = dataset.get_dataloader()
     for step, batch in enumerate(dataloader):
+        batch = maybe_convert_to_one_hot(batch, num_classes=134)
         print(f'Time taken: {time.time() - start_time}')
         start_time = time.time()
         from image_utils import Im, get_layered_image_from_binary_mask
         for b in range(batch['gen_pixel_values'].shape[0]):            
-            gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][b].squeeze(0))))
+            gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch["gen_segmentation"][b].squeeze(0))))
             disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'][b].squeeze(0))))
-            print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][b, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][b, ..., 0].numel())
+            print(batch["gen_segmentation"].sum() / batch["gen_segmentation"][b, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][b, ..., 0].numel())
             Im.concat_horizontal(gen_, disc_).save(f'coco_{step}_{b}.png')
 
-        if step > 1:
+        if step > 10:
             break

@@ -285,19 +285,23 @@ def tensorboard_trace_handler(dir_name: str, record_memory: bool = False, worker
 
         print(f"Exporting to {os.path.join(dir_name, file_name)}")
         prof.export_chrome_trace(os.path.join(dir_name, file_name))
-        if record_memory:
-            prof.export_memory_timeline(os.path.join(dir_name, "memory_timeline.html"))
-        prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=100)
+        if is_main_process() and record_memory:
+            try:
+                prof.export_memory_timeline(os.path.join(dir_name, "memory_timeline.html"))
+            except Exception as e:
+                print(f"Failed to export memory timeline: {e}")
+        
+            prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=100)
 
     return handler_fn
 
 
 class Profiler:
-    def __init__(self, output_dir, active_steps: int = 2, record_memory: bool = False):
+    def __init__(self, output_dir, warmup_steps: int = 5, active_steps: int = 3, record_memory: bool = False):
         self.record_memory = record_memory
         self.profile_dir = Path(output_dir) / "profile"
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        wait, warmup, active, repeat = 0, 1, active_steps, 0
+        wait, warmup, active, repeat = 0, warmup_steps, active_steps, 0
         self.total_steps = (wait + warmup + active) * (1 + repeat)
         schedule = torch.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat)
         self.profiler = torch.profiler.profile(
@@ -317,21 +321,31 @@ class Profiler:
 
     def finish(self):
         self.profiler.stop()
-        traces = glob.glob(f"{self.profile_dir}/*.pt.trace.json*")
-        for trace in traces:
-            log_func(f"Adding {trace}")
-            wandb.save(trace, base_path=self.profile_dir, policy="now")
+        if use_dist():
+            torch.distributed.barrier()
+        if is_main_process():
+            traces = glob.glob(f"{self.profile_dir}/*.pt.trace.json*")
+            for trace in traces:
+                log_func(f"Adding {trace}")
+                wandb.save(trace, base_path=self.profile_dir, policy="now")
 
-        if self.record_memory:
-            torch.cuda.memory._dump_snapshot(f"{self.profile_dir}/memory_snapshot.pickle")
-            torch.cuda.memory._record_memory_history(enabled=None)
-            os.system(
-                f"python -m torch.cuda._memory_viz trace_plot {self.profile_dir}/memory_snapshot.pickle -o {self.profile_dir}/memory_snapshot.html"
-            )
+            if self.record_memory:
+                torch.cuda.memory._save_segment_usage(f"{self.profile_dir}/segment.svg")
+                torch.cuda.memory._save_memory_usage(f"{self.profile_dir}/memory.svg") 
+                torch.cuda.memory._dump_snapshot(f"{self.profile_dir}/memory_snapshot.pickle")
+                torch.cuda.memory._record_memory_history(enabled=None)
+                os.system(
+                    f"python -m torch.cuda._memory_viz trace_plot {self.profile_dir}/memory_snapshot.pickle -o {self.profile_dir}/memory_snapshot.html"
+                )
 
-            log_func(f"Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle")
-            log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008")
+                log_func(f"Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle")
+                log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008")
 
+                wandb.log({'profile': wandb.Html(f"{self.profile_dir}/memory_snapshot.html")})
+                wandb.log({'profile': wandb.Html(f"{self.profile_dir}/memory_timeline.html")})
+
+        if use_dist():
+            torch.distributed.barrier()
 
 def use_dist():
     return dist.is_available() and dist.is_initialized()

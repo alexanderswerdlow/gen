@@ -17,6 +17,7 @@ from gen import GSO_PCD_PATH
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
 from gen.models.cross_attn.losses import get_relative_rot_data, token_cls_loss, token_rot_loss
+from gen.utils.data_utils import maybe_convert_to_one_hot
 from gen.utils.decoupled_utils import load_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
@@ -186,6 +187,8 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     """
 
     assert batch["input_ids"].shape[0] == 1 or self.cfg.model.predict_rotation_from_n_frames is not None
+
+    batch = maybe_convert_to_one_hot(batch, self.cfg)
 
     ret = {}
     orig_image = Im((batch["gen_pixel_values"] + 1) / 2)
@@ -442,6 +445,9 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         ret["prompt_images"] = Im.concat_horizontal(
             Im(prompt_image).write_text(prompt, size=3.2) for prompt_image, prompt in zip(prompt_images, prompts)
         )
+        if ret["prompt_images"].torch.ndim == 3:
+            ret["prompt_images"] = ret["prompt_images"][None]
+
         ret["prompt_images"] = Im.concat_horizontal(orig_image, ret["prompt_images"], spacing=20)
 
     img_ = []

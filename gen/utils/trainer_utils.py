@@ -107,6 +107,9 @@ class Trainable(nn.Module, ABC):
     def set_inference_mode(self):
         ...
 
+    def on_sync_gradients(self):
+        pass
+
     def get_param_groups(self) -> Optional[dict[str, Any]]:
         return None
 
@@ -179,6 +182,15 @@ def unwrap(model):
         else:
             return model
 
+def start_timing(enable: bool, message: str):
+    if enable:
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_push(message)
+
+def end_timing(enable):
+    if enable:
+        torch.cuda.synchronize()
+        torch.cuda.nvtx.range_pop()
 
 if __name__ == "__main__":
     # assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10)

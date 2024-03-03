@@ -191,9 +191,9 @@ class Trainer:
 
         if self.cfg.dataset.reset_validation_dataset_every_epoch or self.cfg.trainer.custom_inference_every_n_steps:
             if state.epoch == 0:
-                self.validation_dataset_holder.subset_size = self.cfg.trainer.num_gpus
+                self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus, self.cfg.dataset.validation_dataset.batch_size)
             else:
-                self.validation_dataset_holder.subset_size = self.cfg.trainer.num_gpus
+                self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus, self.cfg.dataset.validation_dataset.batch_size)
                 self.validation_dataset_holder.subset_size = max(self.cfg.dataset.validation_dataset.subset_size, self.validation_dataset_holder.subset_size) if self.cfg.dataset.validation_dataset.subset_size is not None else self.validation_dataset_holder.subset_size
 
             g = torch.Generator()
@@ -228,6 +228,7 @@ class Trainer:
         self.train_dataloader_holder.subset_size = self.validation_dataset_holder.subset_size
         self.train_dataloader_holder.random_subset = self.validation_dataset_holder.random_subset
         self.train_dataloader_holder.batch_size = self.validation_dataset_holder.batch_size
+        self.train_dataloader_holder.repeat_dataset_n_times = None
         self.train_dataloader = self.train_dataloader_holder.get_dataloader(pin_memory=False)
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
@@ -243,6 +244,7 @@ class Trainer:
         self.train_dataloader_holder.subset_size = self.cfg.dataset.train_dataset.subset_size
         self.train_dataloader_holder.random_subset = self.cfg.dataset.train_dataset.random_subset
         self.train_dataloader_holder.batch_size = self.cfg.dataset.train_dataset.batch_size
+        self.train_dataloader_holder.repeat_dataset_n_times = self.cfg.dataset.train_dataset.repeat_dataset_n_times
         self.train_dataloader = self.train_dataloader_holder.get_dataloader()
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
@@ -367,7 +369,7 @@ class Trainer:
             initial_global_step = 0
 
         if self.cfg.profile:
-            profiler = Profiler(output_dir=self.cfg.output_dir, active_steps=tr.profiler_active_steps)
+            profiler = Profiler(output_dir=self.cfg.output_dir, warmup_steps=tr.profiler_warmup_steps, active_steps=tr.profiler_active_steps, record_memory=tr.profiler_record_memory)
 
         progress_bar = tqdm(range(0, tr.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False)
 
@@ -420,13 +422,24 @@ class Trainer:
 
                     self.optimizer.step()
                     self.lr_scheduler.step()
-                    self.optimizer.zero_grad(set_to_none=tr.set_grads_to_none)
+
+                    zero_grad_kwargs = dict()
+                    if 'apex' not in self.cfg.trainer.optimizer_cls.path:
+                        zero_grad_kwargs['set_to_none'] = tr.set_grads_to_none
+                    self.optimizer.zero_grad(**zero_grad_kwargs)
+
                     global_step_metrics["backward_pass_time"] += time() - start_backward_time
 
                     accumulate_steps += 1
 
                 # Important: A single "global_step" is a single optimizer step. The accumulate decorator silently skips backward + optimizer to allow for gradient accumulation. A "true_step" counts the number of forward passes (on a per-GPU basis). The condition below should only happen immediately after a backward + optimizer step.
                 if self.accelerator.sync_gradients:
+                    unwrap(self.model).on_sync_gradients(state)
+
+                    if self.cfg.profile and profiler.step(global_step):
+                        log_info(f"Profiling finished at step: {global_step}")
+                        break
+
                     if check_every_n_steps(state, tr.checkpointing_steps, run_first=False, all_processes=False):
                         self.checkpoint(state)
 
@@ -458,20 +471,18 @@ class Trainer:
                 if global_step >= tr.max_train_steps:
                     break
 
-                elif self.cfg.profile and profiler.step(global_step):
-                    assert tr.gradient_accumulation_steps == 1
-                    log_info(f"Profiling finished at step: {global_step}")
-                    break
-
                 last_end_step_time = time()
 
         # Create the pipeline using using the trained modules and save it.
         self.accelerator.wait_for_everyone()
-        if is_main_process():
-            if self.cfg.profile:
-                profiler.finish()
-                exit()
+        print(f"Before at rank {get_rank()}")
 
-            self.checkpoint(state)
+        if self.cfg.profile:
+            profiler.finish()
+            exit()
+
+        if is_main_process():
+            if global_step >= 10:
+                self.checkpoint(state)
 
         self.accelerator.end_training()

@@ -14,13 +14,15 @@ conda create -n gen python=3.10
 conda activate gen
 
 export CUDA_HOME='/usr/local/cuda-11' # Adjust to your desired cuda location
+export MAX_JOBS=4 # This can be increased given more system RAM
+
 pip install 'torch==2.2.*' 'torchvision==0.17.*' --index-url https://download.pytorch.org/whl/cu118
 pip install -e diffusers; pip install -e 'image_utils[ALL]'
 pip install pip install ninja wheel packaging
 pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers
 
 git clone https://github.com/Dao-AILab/flash-attention && cd flash-attention
-MAX_JOBS=4 python setup.py install # Adjust MAX_JOBS higher if you have more RAM
+python setup.py install # Adjust MAX_JOBS higher if you have more RAM
 cd csrc/fused_dense_lib && pip install .
 
 pip install -r requirements.txt
@@ -71,3 +73,11 @@ Segmentation maps when cropping sometime have false where it should be true
 ## Misc
 
 To update submodules, run `git pull --recurse-submodules`
+
+# Profiling 
+
+```
+nsys profile -w true -t cuda,nvtx,osrt,cudnn,cublas -s cpu -o $timestamp --force-overwrite=true --cudabacktrace=true --osrt-threshold=10000 -x true --capture-range=cudaProfilerApi
+
+# To Profile everything, just remove: --capture-range=cudaProfilerApi --stop-on-range-end=true
+```

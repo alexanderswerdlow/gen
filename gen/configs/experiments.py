@@ -250,6 +250,7 @@ def get_experiments():
             fused_mlp=False,
             fused_bias_fc=False,
         ),
+        dataset=dict(train_dataset=dict(batch_size=2, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
     )
 
     mode_store(
@@ -272,6 +273,14 @@ def get_experiments():
             vary_cfg_plot=False,
         ),
         debug=True,
+    )
+
+    mode_store(
+        name="sd_15",
+        model=dict(
+            pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5",
+            token_embedding_dim=768,
+        )
     )
 
     mode_store(
@@ -669,13 +678,16 @@ def get_experiments():
     mode_store(
         name="coco_recon_only",
         model=dict(
+            num_token_cls=133,
             layer_specialization=True,
             num_conditioning_pairs=8,
             per_layer_queries=True,
             unet=True, 
-            unet_lora=True, 
-            lora_rank=256,
-            per_layer_queries=True,
+            gated_cross_attn=False,
+            unfreeze_gated_cross_attn=False,
+            unet_lora=True,
+            lora_rank=512,
+            freeze_unet=True,
             encoder=dict(return_only=None),
             feature_map_keys=(
                 "stage12",
@@ -683,7 +695,54 @@ def get_experiments():
                 "stage24",
             ),
         ),
-        dataset=dict(train_dataset=dict(batch_size=20)),
+        dataset=dict(
+            train_dataset=dict(batch_size=20),
+        ),
         trainer=dict(learning_rate=1e-6),
-        hydra_defaults=["multiscale", "low_res", "coco_panoptic"],
+        hydra_defaults=["no_movi_augmentation", "multiscale", "low_res", "coco_panoptic"],
+    )
+
+    mode_store(
+        name="overfit_coco",
+        dataset=dict(
+            overfit=False,
+            train_dataset=dict(
+                subset_size=10,
+                random_subset=False,
+                repeat_dataset_n_times=100,
+            ),
+        ),
+        trainer=dict(
+            eval_every_n_steps=100,
+            validate_training_dataset=True
+        ),
+        hydra_defaults=["coco_recon_only"],
+    )
+
+    mode_store(
+        name="new_unet_finetune",
+        dataset=dict(train_dataset=dict(batch_size=9)),
+        trainer=dict(learning_rate=1e-7),
+        model=dict(freeze_unet=False, unet_lora=False),
+    )
+
+    mode_store(
+        name="new_unet_lora",
+        model=dict(unet_lora=True, lora_rank=256),
+        trainer=dict(learning_rate=1e-6),
+        dataset=dict(train_dataset=dict(batch_size=20)),
+    )
+
+    mode_store(
+        name="disable_all_cond",
+        model=dict(layer_specialization=False, per_layer_queries=False, mask_token_conditioning=False, freeze_clip=False, num_token_cls=2),
+        trainer=dict(learning_rate=1e-4, eval_on_start=False, max_train_steps=10, gradient_accumulation_steps=1, enable_dynamic_grad_accum=False, profiler_active_steps=2),
+        dataset=dict(train_dataset=dict(batch_size=2)),
+        hydra_defaults=["new_unet_lora", "sd_15"],
+    )
+    mode_store(
+        name="profiler",
+        model=dict(layer_specialization=False, per_layer_queries=False, num_token_cls=2),
+        trainer=dict(learning_rate=1e-4, eval_on_start=False, max_train_steps=10, gradient_accumulation_steps=1, enable_dynamic_grad_accum=False, profiler_active_steps=2),
+        hydra_defaults=["new_unet_finetune", "sd_15"],
     )

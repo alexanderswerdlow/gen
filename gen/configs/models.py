@@ -31,7 +31,8 @@ class ModelConfig:
     model_type: Optional[ModelType] = None
 
     model_type: ModelType = ModelType.BASE_MAPPER
-
+    
+    mask_token_conditioning: bool = True  # Whether to condition the U-Net with mask tokens
     unet: bool = True  # Allow not loading a U-Net [e.g., for comparison exps without diffusion]
     controlnet: bool = False  # Add a controlnet on top of the main U-Net
     freeze_unet: bool = True
@@ -105,6 +106,8 @@ class ModelConfig:
     diffusion_loss_weight: float = 1.0
     token_cls_loss_weight: float = 0.1
     diffusion_timestep_range: Optional[tuple[int, int]] = None
+    ema: bool = False
+    autoencoder_slicing: bool = True
 
 
 @dataclass

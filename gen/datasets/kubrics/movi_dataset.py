@@ -332,9 +332,9 @@ if __name__ == "__main__":
         start_time = time.time()
         from image_utils import Im, get_layered_image_from_binary_mask
         for b in range(batch['gen_pixel_values'].shape[0]):            
-            gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['gen_segmentation'][b].squeeze(0))))
+            gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch["gen_segmentation"][b].squeeze(0))))
             disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'][b].squeeze(0))))
-            print(batch['gen_segmentation'].sum() / batch['gen_segmentation'][b, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][b, ..., 0].numel())
+            print(batch["gen_segmentation"].sum() / batch["gen_segmentation"][b, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][b, ..., 0].numel())
             Im.concat_horizontal(gen_, disc_).save(f'movi_{step}_{b}.png')
 
         if step > 1:

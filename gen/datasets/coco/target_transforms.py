@@ -71,22 +71,26 @@ class PanopticTargetGenerator(object):
         semantic = np.zeros_like(panoptic, dtype=np.uint8) + self.ignore_label
         instance = np.zeros_like(panoptic, dtype=np.int32)
         foreground = np.zeros_like(panoptic, dtype=np.uint8)
-        center = np.zeros((1, height, width), dtype=np.float32)
-        center_pts = []
-        offset = np.zeros((2, height, width), dtype=np.float32)
-        y_coord = np.ones_like(panoptic, dtype=np.float32)
-        x_coord = np.ones_like(panoptic, dtype=np.float32)
-        y_coord = np.cumsum(y_coord, axis=0) - 1
-        x_coord = np.cumsum(x_coord, axis=1) - 1
-        # Generate pixel-wise loss weights
-        semantic_weights = np.ones_like(panoptic, dtype=np.uint8)
-        # 0: ignore, 1: has instance
-        # three conditions for a region to be ignored for instance branches:
-        # (1) It is labeled as `ignore_label`
-        # (2) It is crowd region (iscrowd=1)
-        # (3) (Optional) It is stuff region (for offset branch)
-        center_weights = np.zeros_like(panoptic, dtype=np.uint8)
-        offset_weights = np.zeros_like(panoptic, dtype=np.uint8)
+        return_offset = False
+        if return_offset:
+            center = np.zeros((1, height, width), dtype=np.float32)
+            center_pts = []
+            offset = np.zeros((2, height, width), dtype=np.float32)
+            y_coord = np.ones_like(panoptic, dtype=np.float32)
+            x_coord = np.ones_like(panoptic, dtype=np.float32)
+            y_coord = np.cumsum(y_coord, axis=0) - 1
+            x_coord = np.cumsum(x_coord, axis=1) - 1
+        
+            # Generate pixel-wise loss weights
+            semantic_weights = np.ones_like(panoptic, dtype=np.uint8)
+            # 0: ignore, 1: has instance
+            # three conditions for a region to be ignored for instance branches:
+            # (1) It is labeled as `ignore_label`
+            # (2) It is crowd region (iscrowd=1)
+            # (3) (Optional) It is stuff region (for offset branch)
+            center_weights = np.zeros_like(panoptic, dtype=np.uint8)
+            offset_weights = np.zeros_like(panoptic, dtype=np.uint8)
+        
         for seg in segments:
             cat_id = seg["category_id"]
             if self.ignore_crowd_in_semantic:
@@ -98,7 +102,7 @@ class PanopticTargetGenerator(object):
                 instance[panoptic == seg["id"]] = instance.max() + 1
             if cat_id in self.thing_list:
                 foreground[panoptic == seg["id"]] = 1
-            if not seg['iscrowd']:
+            if return_offset and not seg['iscrowd']:
                 # Ignored regions are not in `segments`.
                 # Handle crowd region.
                 center_weights[panoptic == seg["id"]] = 1
@@ -108,7 +112,7 @@ class PanopticTargetGenerator(object):
                         offset_weights[panoptic == seg["id"]] = 1
                 else:
                     offset_weights[panoptic == seg["id"]] = 1
-            if cat_id in self.thing_list:
+            if return_offset and cat_id in self.thing_list:
                 # find instance center
                 mask_index = np.where(panoptic == seg["id"])
                 if len(mask_index[0]) == 0:
@@ -149,16 +153,23 @@ class PanopticTargetGenerator(object):
                 offset[offset_y_index] = center_y - y_coord[mask_index]
                 offset[offset_x_index] = center_x - x_coord[mask_index]
 
+        if return_offset:
+            offset_data=dict(
+                offset=torch.as_tensor(offset.astype(np.float32)),
+                offset_weights=torch.as_tensor(offset_weights.astype(np.float32)),
+                semantic_weights=torch.as_tensor(semantic_weights.astype(np.float32)),
+                center_weights=torch.as_tensor(center_weights.astype(np.float32)),
+                center=torch.as_tensor(center.astype(np.float32)),
+                center_points=center_pts,
+            )
+        else:
+            offset_data = dict()
+
         return dict(
             instance=torch.as_tensor(instance.astype('long')),
             semantic=torch.as_tensor(semantic.astype('long')),
             foreground=torch.as_tensor(foreground.astype('long')),
-            center=torch.as_tensor(center.astype(np.float32)),
-            center_points=center_pts,
-            offset=torch.as_tensor(offset.astype(np.float32)),
-            semantic_weights=torch.as_tensor(semantic_weights.astype(np.float32)),
-            center_weights=torch.as_tensor(center_weights.astype(np.float32)),
-            offset_weights=torch.as_tensor(offset_weights.astype(np.float32))
+            **offset_data
         )
 
 

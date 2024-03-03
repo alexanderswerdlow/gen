@@ -7,6 +7,12 @@ from accelerate.utils.dataclasses import DynamoBackend, LoggerType
 from gen.configs.utils import auto_store
 import torch
 from torch.optim import Optimizer
+from importlib.util import find_spec
+
+default_optimizer_cls = torch.optim.AdamW
+if find_spec("apex"):
+    from apex.optimizers import FusedAdam
+    default_optimizer_cls = FusedAdam
 
 @dataclass
 class TrainerConfig:
@@ -30,7 +36,7 @@ class TrainerConfig:
     learning_rate: float = 5e-6
     scale_lr_batch_size: bool = False
     scale_lr_gpus_grad_accum: bool = True
-    optimizer_cls: Optimizer = torch.optim.AdamW
+    optimizer_cls: Optimizer = default_optimizer_cls
     momentum: Optional[float] = None
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 500
@@ -48,6 +54,8 @@ class TrainerConfig:
     enable_xformers_memory_efficient_attention: bool = True
     compile: bool = False
     profiler_active_steps: int = 2
+    profiler_warmup_steps: int = 5
+    profiler_record_memory: bool = True
     log_gradients: Optional[int] = None
     log_parameters: bool = False
 

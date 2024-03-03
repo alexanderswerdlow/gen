@@ -170,7 +170,7 @@ def main(cfg: BaseConfig):
         gradient_accumulation_plugin=gradient_accumulation_plugin,
         kwargs_handlers=[kwargs]
     )
-    assert accelerator.num_processes == num_gpus
+    assert accelerator.num_processes == num_gpus, f"Expected {num_gpus} GPUs but got {accelerator.num_processes} processes."
     cfg.trainer.num_gpus = accelerator.num_processes
 
     weight_dtype = torch.float32
@@ -228,7 +228,7 @@ def main(cfg: BaseConfig):
         transformers.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()
 
-    if cfg.profile:
+    if cfg.profile and cfg.trainer.profiler_record_memory:
         torch.cuda.memory._record_memory_history()
 
     try:

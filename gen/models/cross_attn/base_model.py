@@ -24,7 +24,7 @@ from transformers.models.clip.modeling_clip import CLIPTextModel
 from diffusers import (AutoencoderKL, ControlNetModel, DDIMScheduler, DDPMScheduler, StableDiffusionControlNetPipeline, StableDiffusionPipeline,
                        UNet2DConditionModel)
 from diffusers.models.attention import BasicTransformerBlock
-from diffusers.training_utils import cast_training_params
+from diffusers.training_utils import EMAModel, cast_training_params
 from diffusers.utils.torch_utils import randn_tensor
 from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
@@ -35,12 +35,12 @@ from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
+from gen.utils.data_utils import maybe_convert_to_one_hot
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState
-
 
 class InputData(TypedDict):
     gen_pixel_values: Float[Tensor, "b c h w"]
@@ -142,8 +142,9 @@ class BaseMapper(Trainable):
         return next(self.parameters()).device
 
     def initialize_custom_models(self):
-        self.mapper = FeatureMapper(cfg=self.cfg).to(self.cfg.trainer.device)
-        self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder)
+        if self.cfg.model.mask_token_conditioning:
+            self.mapper = FeatureMapper(cfg=self.cfg).to(self.cfg.trainer.device)
+            self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder)
 
         if self.cfg.model.use_dataset_segmentation is False:
             from gen.models.encoders.sam import HQSam
@@ -183,9 +184,14 @@ class BaseMapper(Trainable):
             self.vae: AutoencoderKL = AutoencoderKL.from_pretrained(
                 self.cfg.model.pretrained_model_name_or_path, subfolder="vae", revision=self.cfg.model.revision, variant=self.cfg.model.variant
             )
+            if self.cfg.model.autoencoder_slicing:
+                self.vae.enable_slicing()
             self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
                 self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
             )
+            if self.cfg.model.ema and not self.cfg.model.freeze_unet:
+                self.ema_unet = EMAModel(self.unet.parameters(), model_cls=UNet2DConditionModel, model_config=self.unet.config)
+                log_warn("Using EMA for U-Net. Inference has not het been handled properly.")
         else:
             self.unet = Dummy() # For rotation denoising only
 
@@ -253,16 +259,17 @@ class BaseMapper(Trainable):
             if set_grad:
                 self.hqsam.requires_grad_(False)
 
-        if md.freeze_clip:
-            if set_grad:
-                self.clip.requires_grad_(False)
-            self.clip.eval()
-            log_warn("CLIP is frozen for debugging")
-        else:
-            if set_grad:
-                self.clip.requires_grad_(True)
-            self.clip.train()
-            log_warn("CLIP is unfrozen")
+        if md.mask_token_conditioning:
+            if md.freeze_clip:
+                if set_grad:
+                    self.clip.requires_grad_(False)
+                self.clip.eval()
+                log_warn("CLIP is frozen for debugging")
+            else:
+                if set_grad:
+                    self.clip.requires_grad_(True)
+                self.clip.train()
+                log_warn("CLIP is unfrozen")
 
         if md.unfreeze_last_n_clip_layers is not None:
             log_warn(f"Unfreezing last {md.unfreeze_last_n_clip_layers} CLIP layers")
@@ -285,7 +292,11 @@ class BaseMapper(Trainable):
         else:
             if set_grad:
                 self.unet.requires_grad_(True)
+                if self.cfg.model.ema:
+                    self.ema_unet.requires_grad_(True)
             self.unet.train()
+            if self.cfg.model.ema:
+                self.ema_unet.train()
 
         if md.unfreeze_gated_cross_attn:
             for m in get_modules(self.unet, BasicTransformerBlock):
@@ -312,14 +323,15 @@ class BaseMapper(Trainable):
                 self.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
             self.text_encoder.train()
 
-        if md.freeze_mapper:
-            if set_grad:
-                self.mapper.requires_grad_(False)
-            self.mapper.eval()
-        else:
-            if set_grad:
-                self.mapper.requires_grad_(True)
-            self.mapper.train()
+        if md.mask_token_conditioning:
+            if md.freeze_mapper:
+                if set_grad:
+                    self.mapper.requires_grad_(False)
+                self.mapper.eval()
+            else:
+                if set_grad:
+                    self.mapper.requires_grad_(True)
+                self.mapper.train()
 
         if md.controlnet:
             if set_grad:
@@ -458,6 +470,10 @@ class BaseMapper(Trainable):
 
         torch.save(extra_pkl, path / "data.pkl")
         log_info(f"Saved state to {path}")
+
+    def on_sync_gradients(self, state: TrainingState):
+        if self.cfg.model.unet and not self.cfg.model.freeze_unet and self.cfg.model.ema:
+            self.ema_unet.step(self.unet.parameters())
 
     def get_standard_conditioning_for_inference(
         self,
@@ -635,6 +651,9 @@ class BaseMapper(Trainable):
         mask_instance_idx = []
         mask_dropout = []
 
+        if batch['valid'].shape[-1] != self.cfg.model.num_token_cls + 1:
+            log_warn(f"Invalid shape for valid mask: {batch['valid'].shape[-1]}")
+
         assert "gen_segmentation" in batch
         for i in range(bs):
             one_hot_mask: Bool[Tensor, "d h w"] = batch["gen_segmentation"][i].permute(2, 0, 1).bool()
@@ -646,15 +665,16 @@ class BaseMapper(Trainable):
 
             # Remove empty masks. Because of flash attention bugs, we require a minimum of 32 pixels. 14 is too few.
             non_empty_mask = torch.sum(one_hot_mask, dim=[1, 2]) > 0
-            non_empty_mask[1:] &= batch['valid'][i]
+            non_empty_mask[1:] &= batch['valid'][i][:self.cfg.model.num_token_cls]
 
             if self.cfg.model.training_mask_dropout is not None and self.training:
                 dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), False, dtype=torch.bool)
 
                 non_empty_idx = non_empty_mask.nonzero().squeeze(1)
-                num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
-                selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
-                dropout_mask[selected_masks] = True
+                if non_empty_idx.shape[0] > 0:
+                    num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
+                    selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
+                    dropout_mask[selected_masks] = True
 
                 if self.cfg.model.dropout_foreground_only:
                     dropout_mask[self.cfg.model.background_mask_idx] = True  # We always keep the background mask
@@ -830,7 +850,7 @@ class BaseMapper(Trainable):
         with torch.no_grad():
             cond.encoder_hidden_states = self.text_encoder(input_ids=batch["input_ids"])[0].to(dtype=self.dtype)
 
-        if add_conditioning:
+        if add_conditioning and self.cfg.model.mask_token_conditioning:
             if cond.mask_tokens is None or cond.mask_batch_idx is None:
                 cond = self.compute_mask_tokens(batch, cond)
             
@@ -875,6 +895,7 @@ class BaseMapper(Trainable):
 
     @beartype
     def forward(self, batch: InputData):
+        batch = maybe_convert_to_one_hot(cfg=self.cfg, batch=batch)
         batch = InputData(**batch)
         batch["device"] = self.device
         batch["dtype"] = self.dtype
@@ -973,7 +994,7 @@ class BaseMapper(Trainable):
                                         mode='nearest')
                 model_pred, target = model_pred * loss_mask, target * loss_mask
 
-            if self.cfg.model.break_a_scene_masked_loss:
+            if self.cfg.model.break_a_scene_masked_loss and self.cfg.model.mask_token_conditioning:
                 loss_mask = break_a_scene_masked_loss(cfg=self.cfg, batch=batch, cond=cond)
                 model_pred, target = model_pred * loss_mask, target * loss_mask
 
