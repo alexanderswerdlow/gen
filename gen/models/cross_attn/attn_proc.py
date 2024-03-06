@@ -11,6 +11,7 @@ from einx import rearrange, mean
 
 from gen.models.cross_attn.base_model import AttentionMetadata
 from gen.models.cross_attn.deprecated_configs import handle_attn_proc_masking
+from gen.models.cross_attn.eschernet import cape_embed
 from gen.models.utils import positionalencoding2d
 
 def register_layerwise_attention(unet):
@@ -69,7 +70,15 @@ class XFormersAttnProcessor:
             hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
 
         # START MODIFICATION
+        is_eschernet = "posemb" in attn_meta
         is_cross_attn = encoder_hidden_states is not None
+
+        if is_eschernet:
+            # turn 2d attention into multiview attention
+            p_out, p_in = attn_meta["posemb"] # BxTx4, # BxTx4
+            t_out, t_in = p_out.shape[1], p_in.shape[1]  # t size
+            hidden_states = rearrange('(b t_out) l d -> b (t_out l) d', hidden_states, t_out=t_out)
+        
         is_trainable_cross_attn = False
         if encoder_hidden_states is not None and attn_meta is not None:
             training_gated_attn = attn_meta.get("gate_scale", None) is not None
@@ -131,6 +140,15 @@ class XFormersAttnProcessor:
         # START MODIFICATION
         if is_cross_attn and attn_meta is not None and "attention_mask" in attn_meta:
             attention_mask = handle_attn_proc_masking(attn_meta, hidden_states, attn, query, batch_size)
+        
+        # apply 4DoF CaPE
+        if "t_out" in attn_meta:
+            p_out = rearrange('b t_out d -> b (t_out l) d', p_out, l=query.shape[1] // t_out)  # query shape
+            if is_cross_attn:
+                p_in = rearrange('b t_in d -> b (t_in l) d', p_in, l=key.shape[1] // t_in)  # key shape
+            else:
+                p_in = p_out
+            query, key = cape_embed(p_out, p_in, query, key)
 
         if is_trainable_cross_attn and attn_meta.get("return_attn_probs", False):
             attention_probs = attn.get_attention_scores(query, key, attention_mask)
@@ -151,6 +169,10 @@ class XFormersAttnProcessor:
         hidden_states = attn.to_out[0](hidden_states, *args)
         # dropout
         hidden_states = attn.to_out[1](hidden_states)
+
+        if is_eschernet:
+            # reshape back
+            hidden_states = rearrange('b (t_out l) d -> (b t_out) l d', hidden_states, t_out=t_out)
 
         if input_ndim == 4:
             hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)

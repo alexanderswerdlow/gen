@@ -15,7 +15,7 @@ from scipy.spatial.transform import Rotation as R
 
 import wandb
 from gen.models.cross_attn.break_a_scene import AttentionStore, aggregate_attention
-from gen.utils.data_utils import get_one_hot_channels, integer_to_one_hot
+from gen.utils.data_defs import get_one_hot_channels, integer_to_one_hot
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.pytorch3d_transforms import matrix_to_quaternion
 from gen.utils.rotation_utils import (compute_rotation_matrix_from_ortho6d, get_discretized_zyx_from_quat, get_ortho6d_from_rotation_matrix,
@@ -97,7 +97,7 @@ def evenly_weighted_mask_loss(
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
         object_masks = get_one_hot_channels(batch.gen_segmentation[b], mask_idxs_for_batch)
 
-        gt_masks = F.interpolate(rearrange(object_masks, "h w c -> c () h w").float(), size=(cfg.model.latent_dim, cfg.model.latent_dim)).squeeze(1)
+        gt_masks = F.interpolate(rearrange(object_masks, "h w c -> c () h w").float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim)).squeeze(1)
         gt_masks = rearrange(gt_masks, "c h w -> c (h w)") > 0.5
 
         batch_losses = []
@@ -131,7 +131,7 @@ def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: Condition
             max_masks.append(torch.max(object_masks, axis=-1).values)
 
     max_masks = torch.stack(max_masks, dim=0)[:, None]
-    loss_mask = F.interpolate(input=max_masks.float(), size=(cfg.model.latent_dim, cfg.model.latent_dim))
+    loss_mask = F.interpolate(input=max_masks.float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim))
 
     if cfg.model.viz and batch.state.true_step % 1 == 0:
         from image_utils import Im

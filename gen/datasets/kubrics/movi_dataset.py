@@ -19,7 +19,7 @@ from gen import MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_P
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.abstract_dataset import AbstractDataset, Split
-from gen.utils.data_utils import one_hot_to_integer
+from gen.utils.data_defs import one_hot_to_integer
 from gen.utils.decoupled_utils import load_tensor_dict, save_tensor_dict
 from gen.utils.tokenization_utils import get_tokens
 
@@ -36,7 +36,7 @@ class MoviDataset(AbstractDataset, Dataset):
         dataset: str = "movi_e",
         num_frames: int = 24,
         num_objects: int = 23, # We need to return a consistent segmentation mask with this many channels + 1 (for the background)
-        augmentation: Optional[Augmentation] = Augmentation(),
+        augmentation: Optional[Augmentation] = None,
         custom_split: Optional[str] = None, # Specifies train or validation
         subset: Optional[tuple[str]] = None, # Specifies an optional subset of scenes to use
         fake_return_n: Optional[int] = None, # Fake that we have n times more elements. Useful for debugging on small datasets.
@@ -304,7 +304,7 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         path=MOVI_OVERFIT_DATASET_PATH,
         num_objects=1,
-        augmentation=Augmentation(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=True),
+        augmentation=Augmentation(enable_rand_augment=False, enable_random_resize_crop=True, enable_horizontal_flip=True),
     )
     new_dataset = MoviDataset(
         cfg=None,
@@ -319,7 +319,7 @@ if __name__ == "__main__":
         num_objects=23,
         num_frames=24,
         num_cameras=1,
-        augmentation=Augmentation(target_resolution=256, minimal_source_augmentation=True, enable_crop=False, enable_horizontal_flip=False),
+        augmentation=Augmentation(target_resolution=256, enable_rand_augment=False, enable_random_resize_crop=False, enable_horizontal_flip=False),
         multi_camera_format=True,
         cache_in_memory=True,
         cache_instances_in_memory=False,

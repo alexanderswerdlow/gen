@@ -296,6 +296,23 @@ def tensorboard_trace_handler(dir_name: str, record_memory: bool = False, worker
 
     return handler_fn
 
+def save_memory_profile(profile_dir):
+    if is_main_process():
+        print(f"Saving memory profile to {profile_dir}")
+        os.makedirs(profile_dir, exist_ok=True)
+        torch.cuda.memory._dump_snapshot(f"{profile_dir}/memory_snapshot.pickle")
+        os.system(
+            f"python -m torch.cuda._memory_viz trace_plot {profile_dir}/memory_snapshot.pickle -o {profile_dir}/memory_snapshot.html"
+        )
+        torch.cuda.memory._save_segment_usage(f"{profile_dir}/segment.svg")
+        torch.cuda.memory._save_memory_usage(f"{profile_dir}/memory.svg") 
+        torch.cuda.memory._record_memory_history(enabled=None)
+
+        log_func(f"Saved memory snapshot at: {profile_dir}/memory_snapshot.pickle")
+        log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {profile_dir.resolve()} 6008")
+
+        wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_snapshot.html")})
+        wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_timeline.html")})
 
 class Profiler:
     def __init__(self, output_dir, warmup_steps: int = 5, active_steps: int = 3, record_memory: bool = False):
@@ -328,22 +345,7 @@ class Profiler:
             traces = glob.glob(f"{self.profile_dir}/*.pt.trace.json*")
             for trace in traces:
                 log_func(f"Adding {trace}")
-                wandb.save(trace, base_path=self.profile_dir, policy="now")
-
-            if self.record_memory:
-                torch.cuda.memory._save_segment_usage(f"{self.profile_dir}/segment.svg")
-                torch.cuda.memory._save_memory_usage(f"{self.profile_dir}/memory.svg") 
-                torch.cuda.memory._dump_snapshot(f"{self.profile_dir}/memory_snapshot.pickle")
-                torch.cuda.memory._record_memory_history(enabled=None)
-                os.system(
-                    f"python -m torch.cuda._memory_viz trace_plot {self.profile_dir}/memory_snapshot.pickle -o {self.profile_dir}/memory_snapshot.html"
-                )
-
-                log_func(f"Saved memory snapshot at: {self.profile_dir}/memory_snapshot.pickle")
-                log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {self.profile_dir.resolve()} 6008")
-
-                wandb.log({'profile': wandb.Html(f"{self.profile_dir}/memory_snapshot.html")})
-                wandb.log({'profile': wandb.Html(f"{self.profile_dir}/memory_timeline.html")})
+                wandb.save(trace, base_path=self.profile_dir, policy="now")                
 
         if use_dist():
             torch.distributed.barrier()

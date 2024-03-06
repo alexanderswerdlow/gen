@@ -10,9 +10,9 @@ from torch.optim import Optimizer
 from importlib.util import find_spec
 
 default_optimizer_cls = torch.optim.AdamW
-if find_spec("apex"):
-    from apex.optimizers import FusedAdam
-    default_optimizer_cls = FusedAdam
+# if find_spec("apex"):
+#     from apex.optimizers import FusedAdam
+#     default_optimizer_cls = FusedAdam
 
 @dataclass
 class TrainerConfig:
@@ -55,7 +55,7 @@ class TrainerConfig:
     compile: bool = False
     profiler_active_steps: int = 2
     profiler_warmup_steps: int = 5
-    profiler_record_memory: bool = True
+    profile_memory: bool = False
     log_gradients: Optional[int] = None
     log_parameters: bool = False
 
@@ -76,6 +76,8 @@ class TrainerConfig:
 
     enable_timing: bool = False
     enable_timing_sync: bool = True
+    fast_eval: bool = False
+    eval_decay_steps: bool = True
 
     # Set in code
     num_gpus: Optional[int] = None

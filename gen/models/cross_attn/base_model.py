@@ -37,39 +37,14 @@ from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
-from gen.utils.data_utils import get_one_hot_channels, integer_to_one_hot, maybe_convert_to_one_hot
+from gen.utils.data_defs import InputData, get_one_hot_channels, integer_to_one_hot
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
-from gen.utils.trainer_utils import Trainable, TrainingState
+from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
 from tensordict import tensorclass
 
-@tensorclass
-class InputData:
-    gen_pixel_values: Float[Tensor, "b c h w"]
-    gen_segmentation: Integer[Tensor, "b h w"]
-    disc_pixel_values: Float[Tensor, "b c h w"]
-    disc_segmentation: Integer[Tensor, "b h w"]
-    input_ids: Integer[Tensor, "b l"]
-    state: Optional[TrainingState]
-    dtype: Optional[torch.dtype]
-    bs: Optional[int]
-    num_frames: Optional[int]
-    state: TrainingState
-
-    quaternions: Optional[Float] = None
-    raw_object_quaternions: Optional[Float] = None
-    camera_quaternions: Optional[Float] = None
-    positions: Optional[Float] = None
-    valid: Optional[Bool[Tensor, "b classes"]] = None
-    categories: Optional[Integer] = None
-    asset_id: Optional[Integer] = None
-    metadata: Optional[dict[str, Any]] = None
-    formatted_input_ids: Optional[Integer[Tensor, "b l"]] = None
-    gen_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
-    disc_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
-    one_hot_gen_segmentation: Optional[Integer[Tensor, "b h w c"]] = None
 
 @dataclass
 class ConditioningData:
@@ -132,7 +107,7 @@ class BaseMapper(Trainable):
 
         self.initialize_diffusers_models()
         self.initialize_custom_models()
-        self.set_training_mode(set_grad=True) # This must be called before we set LoRA
+        BaseMapper.set_training_mode(cfg=self.cfg, _other=self, dtype=self.dtype, device=self.device, set_grad=True) # This must be called before we set LoRA
 
         if self.cfg.model.unet: self.add_unet_adapters()
 
@@ -176,8 +151,9 @@ class BaseMapper(Trainable):
 
     def initialize_diffusers_models(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
         # Load the tokenizer
+        tokenizer_encoder_name = "runwayml/stable-diffusion-v1-5" if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.pretrained_model_name_or_path
         self.tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
-            self.cfg.model.pretrained_model_name_or_path, subfolder="tokenizer", revision=self.cfg.model.revision, use_fast=False
+            tokenizer_encoder_name, subfolder="tokenizer", revision=self.cfg.model.revision, use_fast=False
         )
 
         # Load scheduler and models
@@ -188,7 +164,7 @@ class BaseMapper(Trainable):
             prediction_type=self.cfg.model.rotation_diffusion_parameterization,
         )
         self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
-            self.cfg.model.pretrained_model_name_or_path, subfolder="text_encoder", revision=self.cfg.model.revision
+            tokenizer_encoder_name, subfolder="text_encoder", revision=self.cfg.model.revision
         )
         
 
@@ -245,17 +221,18 @@ class BaseMapper(Trainable):
             self.controller = AttentionStore()
             register_attention_control(self.controller, self.unet)
 
-        elif self.cfg.model.layer_specialization:
+        elif self.cfg.model.layer_specialization or self.cfg.model.eschernet:
             from gen.models.cross_attn.attn_proc import register_layerwise_attention
 
             num_cross_attn_layers = register_layerwise_attention(self.unet)
-            if not self.cfg.model.custom_conditioning_map:
+            if self.cfg.model.layer_specialization and (not self.cfg.model.custom_conditioning_map):
                 assert num_cross_attn_layers == (2 * self.cfg.model.num_conditioning_pairs * (2 if self.cfg.model.gated_cross_attn else 1))
    
         if self.cfg.model.per_layer_queries:
             assert self.cfg.model.layer_specialization
 
-    def set_training_mode(self, set_grad: bool = False):
+    @staticmethod
+    def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
         """
         Set training mode for the proper models and freeze/unfreeze them.
 
@@ -266,58 +243,61 @@ class BaseMapper(Trainable):
         For example, we want to first freeze the U-Net then add the LoRA adapter. We also see this error:
         `element 0 of tensors does not require grad and does not have a grad_fn`
         """
-        md = self.cfg.model
+        md = cfg.model
+        _dtype = dtype
+        _device = device
+        other = unwrap(_other)
 
         if set_grad and md.unet:
-            self.vae.to(device=self.device, dtype=self.dtype)
-            self.vae.requires_grad_(False)
+            other.vae.to(device=_device, dtype=_dtype)
+            other.vae.requires_grad_(False)
 
         if md.use_dataset_segmentation is False:
-            self.hqsam.eval()
+            other.hqsam.eval()
             if set_grad:
-                self.hqsam.requires_grad_(False)
+                other.hqsam.requires_grad_(False)
 
         if md.mask_token_conditioning:
             if md.freeze_clip:
                 if set_grad:
-                    self.clip.requires_grad_(False)
-                self.clip.eval()
+                    other.clip.requires_grad_(False)
+                other.clip.eval()
                 log_warn("CLIP is frozen for debugging")
             else:
                 if set_grad:
-                    self.clip.requires_grad_(True)
-                self.clip.train()
+                    other.clip.requires_grad_(True)
+                other.clip.train()
                 log_warn("CLIP is unfrozen")
 
         if md.unfreeze_last_n_clip_layers is not None:
             log_warn(f"Unfreezing last {md.unfreeze_last_n_clip_layers} CLIP layers")
-            for block in self.clip.base_model.transformer.resblocks[-md.unfreeze_last_n_clip_layers :]:
+            for block in other.clip.base_model.blocks[-md.unfreeze_last_n_clip_layers :]:
                 if set_grad:
                     block.requires_grad_(True)
                 block.train()
 
         if md.unfreeze_resnet:
-            for module in list(self.clip.base_model.children())[:6]:
+            for module in list(other.clip.base_model.children())[:6]:
                 if set_grad:
                     module.requires_grad_(True)
                 module.train()
 
         if md.freeze_unet:
             if set_grad:
-                self.unet.to(device=self.device, dtype=self.dtype)
-                self.unet.requires_grad_(False)
-            self.unet.eval()
+                other.unet.to(device=_device, dtype=_dtype)
+                other.unet.requires_grad_(False)
+            other.unet.eval()
         else:
             if set_grad:
-                self.unet.requires_grad_(True)
-                if self.cfg.model.ema:
-                    self.ema_unet.requires_grad_(True)
-            self.unet.train()
-            if self.cfg.model.ema:
-                self.ema_unet.train()
+                other.unet.requires_grad_(True)
+                if cfg.model.ema:
+                    other.ema_unet.requires_grad_(True)
+            other.unet.train()
+            if cfg.model.ema:
+                other.ema_unet.train()
 
         if md.unfreeze_gated_cross_attn:
-            for m in get_modules(self.unet, BasicTransformerBlock):
+            for m in get_modules(other.unet, BasicTransformerBlock):
                 assert hasattr(m, "fuser")
                 assert hasattr(m, "attn2")
                 if set_grad: # TODO: Initialize weights somewhere else
@@ -329,48 +309,49 @@ class BaseMapper(Trainable):
 
         if md.freeze_text_encoder:
             if set_grad:
-                self.text_encoder.to(device=self.device, dtype=self.dtype)
-                self.text_encoder.requires_grad_(False)
-            self.text_encoder.eval()
+                other.text_encoder.to(device=_device, dtype=_dtype)
+                other.text_encoder.requires_grad_(False)
+            other.text_encoder.eval()
         else:
             if set_grad:
-                self.text_encoder.requires_grad_(True)
+                other.text_encoder.requires_grad_(True)
             if set_grad and md.freeze_text_encoder_except_token_embeddings:
-                self.text_encoder.text_model.encoder.requires_grad_(False)
-                self.text_encoder.text_model.final_layer_norm.requires_grad_(False)
-                self.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
-            self.text_encoder.train()
+                other.text_encoder.text_model.encoder.requires_grad_(False)
+                other.text_encoder.text_model.final_layer_norm.requires_grad_(False)
+                other.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
+            other.text_encoder.train()
 
         if md.mask_token_conditioning:
             if md.freeze_mapper:
                 if set_grad:
-                    self.mapper.requires_grad_(False)
-                self.mapper.eval()
+                    other.mapper.requires_grad_(False)
+                other.mapper.eval()
             else:
                 if set_grad:
-                    self.mapper.requires_grad_(True)
-                self.mapper.train()
+                    other.mapper.requires_grad_(True)
+                other.mapper.train()
 
         if md.controlnet:
             if set_grad:
-                self.controlnet.requires_grad_(True)
-            self.controlnet.train()
+                other.controlnet.requires_grad_(True)
+            other.controlnet.train()
 
         if md.clip_shift_scale_conditioning:
             if set_grad:
-                self.clip_proj_layers.requires_grad_(True)
-            self.clip_proj_layers.train()
+                other.clip_proj_layers.requires_grad_(True)
+            other.clip_proj_layers.train()
 
         if md.token_cls_pred_loss or md.token_rot_pred_loss:
             if set_grad:
-                self.token_mapper.requires_grad_(True)
-            self.token_mapper.train()
+                other.token_mapper.requires_grad_(True)
+            other.token_mapper.train()
 
-        if hasattr(self, "controller"):
-            self.controller.reset()
+        if hasattr(other, "controller"):
+            other.controller.reset()
 
-        if hasattr(self, "pipeline"):  # After validation, we need to clear this
-            del self.pipeline
+        if hasattr(other, "pipeline"):  # After validation, we need to clear this
+            del other.pipeline
+            print("Cleared pipeline")
             torch.cuda.empty_cache()
 
     def unfreeze_unet(self):
@@ -418,7 +399,7 @@ class BaseMapper(Trainable):
             params.extend(self.clip_proj_layers.parameters())
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             params.extend(self.token_mapper.parameters())
-        
+                        
         params.extend(self.mapper.parameters())
 
         # Add clip parameters
@@ -427,8 +408,8 @@ class BaseMapper(Trainable):
         return params
 
     def get_unet_params(self):
-        is_unet_trainable = self.cfg.model.unet and not self.cfg.model.freeze_unet
-        return dict(self.unet.named_parameters()) if is_unet_trainable else dict()
+        is_unet_trainable = self.cfg.model.unet and (not self.cfg.model.freeze_unet or self.cfg.model.unet_lora)
+        return {k:v for k,v in dict(self.unet.named_parameters()) if p.requires_grad} if is_unet_trainable else dict()
     
     def get_param_groups(self):
         if self.cfg.model.finetune_unet_with_different_lrs:
@@ -451,6 +432,11 @@ class BaseMapper(Trainable):
                     {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate},
                     {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate / 4},
                     {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 8},
+                ]
+            elif self.cfg.model.lr_finetune_version == 2:
+                return [  # Order matters here
+                    {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate * 2},
+                    {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate},
                 ]
         elif self.cfg.model.unfreeze_gated_cross_attn:
             unet_params = self.get_unet_params()
@@ -494,17 +480,12 @@ class BaseMapper(Trainable):
         if self.cfg.model.unet and not self.cfg.model.freeze_unet and self.cfg.model.ema:
             self.ema_unet.step(self.unet.parameters())
 
-    def process_input(self, batch: dict, state: TrainingState):
-        batch = InputData(
-            num_frames=1,
-            batch_size=[batch["gen_pixel_values"].shape[0]],
-            bs=batch["gen_pixel_values"].shape[0],
-            device=self.device,
-            dtype=self.dtype,
-            state=state,
-            **batch,
-        )
-        # batch = maybe_convert_to_one_hot(cfg=self.cfg, batch=batch)
+    def process_input(self, batch: dict, state: TrainingState) -> InputData:
+        if not isinstance(batch, InputData):
+            batch: InputData = InputData.from_dict(batch)
+
+        batch.state = state
+        batch.dtype = self.dtype
         return batch
 
     def get_standard_conditioning_for_inference(
@@ -669,8 +650,7 @@ class BaseMapper(Trainable):
             if "dino" in self.clip.model_name and "reg" in self.clip.model_name:
                 clip_feature_map = clip_feature_map[:, :, 4:, :]
 
-        latent_dim = 16
-
+        latent_dim = self.cfg.model.encoder_latent_dim
         if self.cfg.model.add_pos_emb:
             pos_emb = positionalencoding2d(clip_feature_map.shape[-1], latent_dim, latent_dim, device=clip_feature_map.device, dtype=clip_feature_map.dtype).to(clip_feature_map)
             clip_feature_map = add("... (h w) d, d h w -> ... (h w) d", clip_feature_map, pos_emb)
@@ -688,10 +668,11 @@ class BaseMapper(Trainable):
         dropout_background_only = self.cfg.model.dropout_background_only
         background_mask_idx = self.cfg.model.background_mask_idx
 
-        indices_ = batch.disc_segmentation.view(batch.batch_size[0], -1)
+        indices_ = batch.disc_segmentation.view(batch.batch_size[0], -1) + 1
         ones_ = torch.ones_like(indices_, dtype=torch.bool)
-        all_non_empty_mask = ones_.new_zeros((batch.batch_size[0], self.cfg.model.segmentation_map_size))
+        all_non_empty_mask = ones_.new_zeros((batch.batch_size[0], self.cfg.model.segmentation_map_size + 1))
         all_non_empty_mask.scatter_add_(1, indices_, ones_)  # Perform batched bincount
+        all_non_empty_mask = all_non_empty_mask[:, 1:]
 
         assert batch.disc_segmentation is not None
         for i in range(bs):
@@ -704,7 +685,7 @@ class BaseMapper(Trainable):
 
                 non_empty_idx = non_empty_mask.nonzero().squeeze(1)
                 if non_empty_idx.shape[0] > 0:
-                    num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
+                    num_sel_masks = torch.randint(non_empty_idx.shape[0] // 2, non_empty_idx.shape[0] + 1, (1,)) # We randomly take n/2 to n available masks
                     selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
                     dropout_mask[selected_masks] = True
 
@@ -849,7 +830,14 @@ class BaseMapper(Trainable):
         cond.learnable_idxs = (batch.formatted_input_ids == self.placeholder_token_id).nonzero(as_tuple=True)
         cond.encoder_hidden_states[cond.learnable_idxs[0], cond.learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
 
-        if self.cfg.model.layer_specialization:
+        if self.cfg.model.eschernet:
+            cond.unet_kwargs["cross_attention_kwargs"]['attn_meta'].update(dict(
+                layer_idx=0,
+                num_layers=1,
+                num_cond_vectors=self.cfg.model.num_conditioning_pairs,
+                add_pos_emb=self.cfg.model.add_pos_emb,
+            ))
+        elif self.cfg.model.layer_specialization:
             cond.unet_kwargs["cross_attention_kwargs"]['attn_meta'].update(dict(
                 layer_idx=0,
                 num_layers=(8 * 2) if self.cfg.model.custom_conditioning_map else (self.cfg.model.num_conditioning_pairs * 2),
@@ -888,6 +876,11 @@ class BaseMapper(Trainable):
             assert not self.cfg.model.layer_specialization
             cond.encoder_hidden_states[:] = shift_scale_uncond_hidden_states(self)
 
+        if self.cfg.model.eschernet:
+            cond.unet_kwargs["cross_attention_kwargs"]['attn_meta'].update(dict(
+                posemb=[batch.gen_pose_out, batch.disc_pose_in]
+            ))
+
         return cond
 
     def get_hidden_state(
@@ -898,6 +891,8 @@ class BaseMapper(Trainable):
     ) -> ConditioningData:
         if cond is None:
             cond = ConditioningData()
+        
+        if len(cond.unet_kwargs) == 0:
             cond.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=AttentionMetadata())
 
         cond.placeholder_token = self.placeholder_token_id
@@ -947,7 +942,6 @@ class BaseMapper(Trainable):
     def inverted_cosine(self, timesteps):
         return torch.arccos(torch.sqrt(timesteps))
 
-    @beartype
     def forward(self, batch: InputData):
         assert batch.formatted_input_ids is None
 
@@ -1036,7 +1030,7 @@ class BaseMapper(Trainable):
                 loss_mask = rearrange("b h w -> b () h w ", ~batch.gen_pad_mask)
                 loss_mask = F.interpolate(
                     loss_mask.float(),
-                    size=(self.cfg.model.latent_dim, self.cfg.model.latent_dim),
+                    size=(self.cfg.model.decoder_latent_dim, self.cfg.model.decoder_latent_dim),
                     mode='nearest'
                 )
                 model_pred, target = model_pred * loss_mask, target * loss_mask

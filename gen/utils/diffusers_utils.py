@@ -34,7 +34,7 @@ def load_stable_diffusion_model(
     cls = StableDiffusionControlNetPipeline if cfg.model.controlnet else StableDiffusionPipeline
     pretrained_model_name_or_path = cfg.model.pretrained_model_name_or_path
 
-    kwargs = dict(pretrained_model_name_or_path=pretrained_model_name_or_path, torch_dtype=torch_dtype, unet=unwrap(unet), vae=vae)
+    kwargs = dict(pretrained_model_name_or_path=pretrained_model_name_or_path, torch_dtype=torch_dtype, unet=unwrap(unet), vae=unwrap(vae), tokenizer=tokenizer, text_encoder=unwrap(text_encoder))
 
     if cfg.model.controlnet:
         kwargs["controlnet"] = model.controlnet
@@ -49,9 +49,10 @@ def load_stable_diffusion_model(
             subfolder="text_encoder",
             torch_dtype=torch_dtype,
         )
-
+    
     pipeline = cls.from_pretrained(**kwargs)
     pipeline = pipeline.to(device)
+    # We do not set enable_xformers_memory_efficient_attention because we generally use a custom attention processor
 
     if cfg.inference.use_ddim:
         scheduler = DDIMScheduler(

@@ -92,7 +92,7 @@ class ImageNetDataset(ImageNetBase):
         resolution: int = 512,
         override_text: bool = True,
         legacy_transforms: bool = False,
-        augmentation: Optional[Augmentation] = Augmentation(),
+        augmentation: Optional[Augmentation] = None,
         **kwargs,
     ):
         self.tokenizer = tokenizer
@@ -159,7 +159,7 @@ class ImageNetCustomDataset(AbstractDataset):
         resolution: int = 512,
         override_text: bool = True,
         legacy_transforms: bool = False,
-        augmentation: Optional[Augmentation] = Augmentation(),
+        augmentation: Optional[Augmentation] = None,
         custom_split=None,
         num_objects=None,
         subset=None,
@@ -198,7 +198,7 @@ if __name__ == "__main__":
         shuffle=True,
         subset_size=None,
         tokenizer=tokenizer,
-        augmentation=Augmentation(minimal_source_augmentation=False),
+        augmentation=Augmentation(enable_rand_augment=True),
     )
     dataloader = dataset.get_dataloader()
     for batch in dataloader:

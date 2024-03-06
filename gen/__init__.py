@@ -21,5 +21,11 @@ PLACEHOLDER_TOKEN: str = os.getenv("PLACEHOLDER_TOKEN", "masks")
 DEFAULT_PROMPT: str = os.getenv("DEFAULT_PROMPT", f"A photo of {PLACEHOLDER_TOKEN}")
 CONDA_ENV = Path(os.getenv("CONDA_ENV", "gen"))
 GSO_PCD_PATH = Path(os.getenv("GSO_PCD_PATH", "/projects/katefgroup/aswerdlo/gen/gso_pcd.npz"))
+OBJAVERSE_DATASET_PATH = Path(os.getenv("OBJAVERSE_DATASET_PATH", "/projects/katefgroup/aswerdlo/datasets/objaverse"))
+SCRATCH_OBJAVERSE_PATH = Path(os.getenv("SCRATCH_OBJAVERSE_PATH", "/scratch/aswerdlo/objaverse"))
+if SCRATCH_OBJAVERSE_PATH.exists():
+    OBJAVERSE_DATASET_PATH = SCRATCH_OBJAVERSE_PATH
+    print(f"Using scratch objaverse path: {OBJAVERSE_DATASET_PATH}")
 
 os.environ["EINX_WARN_ON_RETRACE"] = "25"
+os.enviorn["IMAGE_UTILS_DISABLE_WARNINGS"] = "1"

@@ -446,3 +446,14 @@ def viz():
     #         del self._extras[key]
     #     else:
     #         raise KeyError(f"{key} is not an extra field and cannot be deleted.")
+            # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
+        # source_data.image = source_data.image.squeeze(0)
+        # source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        # target_data.image = target_data.image.squeeze(0)
+        # target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        # valid = (torch.sum(source_data.segmentation, dim=[0, 1]) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2)
+        # categories = torch.full((valid.shape), fill_value=-1)
+        # categories[unique_instance] = unique_semantic - 1
+        # categories[~valid] = -1
+        # valid = valid[..., 1:]
+        # categories = categories[..., 1:]

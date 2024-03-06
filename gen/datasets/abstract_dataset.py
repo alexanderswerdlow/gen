@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any, Optional
 
 from torch.utils.data import DataLoader, RandomSampler, Subset, ChainDataset, StackDataset, ConcatDataset
+from gen.utils.data_defs import InputData
 
 from gen.utils.logging_utils import log_info, log_warn
 from torch import Generator
@@ -31,7 +32,8 @@ class AbstractDataset(ABC):
             subset_size: Optional[int] = None,
             random_subset: bool = True,
             drop_last: bool = True,
-            repeat_dataset_n_times: Optional[int] = None
+            repeat_dataset_n_times: Optional[int] = None,
+            return_tensorclass: bool = False,
         ):
         from gen.configs import BaseConfig
         self.cfg: BaseConfig = cfg
@@ -43,6 +45,7 @@ class AbstractDataset(ABC):
         self.random_subset = random_subset # Either get random indices or a determinstic, evenly spaced subset
         self.drop_last = drop_last
         self.repeat_dataset_n_times = repeat_dataset_n_times
+        self.return_tensorclass = return_tensorclass
 
         # Subclasses may control these properties inside get_dataset
         self.allow_shuffle = True
@@ -53,7 +56,11 @@ class AbstractDataset(ABC):
         pass
 
     def collate_fn(self, batch):
-        return torch.utils.data.default_collate(batch)
+        batch = torch.utils.data.default_collate(batch)
+        if self.return_tensorclass:
+            batch = InputData.from_dict(batch)
+
+        return batch
 
     def get_dataloader(self, generator: Optional[Generator] = None, pin_memory: bool = True):
         orig_dataset = self.get_dataset()

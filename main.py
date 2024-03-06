@@ -228,10 +228,10 @@ def main(cfg: BaseConfig):
         transformers.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()
 
-    if cfg.profile and cfg.trainer.profiler_record_memory:
-        torch.cuda.memory._record_memory_history()
-
     set_timing_builtins(cfg.trainer.enable_timing, cfg.trainer.enable_timing_sync)
+
+    if cfg.trainer.profile_memory:
+        torch.cuda.memory._record_memory_history()
 
     try:
         if cfg.run_inference:

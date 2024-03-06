@@ -1,3 +1,4 @@
+from functools import partial
 from hydra_zen import builds
 
 from gen import (
@@ -11,6 +12,8 @@ from gen import (
 from gen.configs.utils import mode_store, store_child_config
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
 import torch
+from gen.models.cross_attn.base_inference import run_qualitative_inference, compose_two_images, interpolate_latents
+
 
 def get_override_dict(**kwargs):
     return dict(
@@ -23,13 +26,13 @@ shared_overfit_movi_args = dict(
     custom_split="train",
     path=MOVI_OVERFIT_DATASET_PATH,
     num_objects=1,
-    augmentation=dict(minimal_source_augmentation=True, enable_crop=False),
+    augmentation=dict(enable_rand_augment=False, enable_random_resize_crop=False),
 )
 
 shared_movi_args = dict(
     path=MOVI_DATASET_PATH,
     num_objects=23,
-    augmentation=dict(minimal_source_augmentation=True, enable_crop=True, enable_horizontal_flip=False),
+    augmentation=dict(enable_rand_augment=False, enable_random_resize_crop=True, enable_horizontal_flip=False),
 )
 
 
@@ -44,8 +47,8 @@ def get_deprecated_experiments():
         ),
         trainer=dict(enable_xformers_memory_efficient_attention=False, eval_every_n_steps=250, max_train_steps=10000, checkpointing_steps=1000),
         dataset=dict(
-            train_dataset=dict(batch_size=6, augmentation=dict(enable_crop=False, enable_horizontal_flip=True)),
-            validation_dataset=dict(augmentation=dict(enable_crop=False, enable_horizontal_flip=True)),
+            train_dataset=dict(batch_size=6, augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=True)),
+            validation_dataset=dict(augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=True)),
         ),
         inference=dict(infer_new_prompts=True, num_masks_to_remove=6, save_prompt_embeds=False),
     )
@@ -72,8 +75,8 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi",
         dataset=dict(
-            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False), multi_camera_format=False),
-            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False), multi_camera_format=False),
+            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False), multi_camera_format=False),
+            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False), multi_camera_format=False),
         ),
         model=dict(
             segmentation_map_size=24,
@@ -118,16 +121,16 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi_augmentation",
         dataset=dict(
-            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=True)),
-            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=True)),
+            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=True)),
+            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=True)),
         ),
     )
 
     mode_store(
         name="no_movi_augmentation",
         dataset=dict(
-            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False)),
-            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_crop=False)),
+            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),
+            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),
         ),
     )
 
@@ -139,7 +142,7 @@ def get_datasets():  # TODO: These do not need to be global configs
                 subset=("video_0018",),
                 fake_return_n=8,
                 random_subset=False,
-                augmentation=dict(enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True),
+                augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False, enable_rand_augment=False),
             ),
         ),
         hydra_defaults=["movi_single_scene"],
@@ -150,7 +153,7 @@ def get_datasets():  # TODO: These do not need to be global configs
         dataset=dict(
             train_dataset=dict(
                 custom_split="train",
-                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True),
+                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_random_resize_crop=False, enable_rand_augment=False),
                 path=MOVI_MEDIUM_PATH,
                 num_objects=23,
                 num_frames=8,
@@ -166,7 +169,7 @@ def get_datasets():  # TODO: These do not need to be global configs
                 num_frames=8,
                 num_cameras=2,
                 multi_camera_format=True,
-                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_crop=False, minimal_source_augmentation=True),
+                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_random_resize_crop=False, enable_rand_augment=False),
             ),
         ),
         model=dict(
@@ -220,8 +223,8 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="imagenet",
         dataset=dict(
-            train_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=False, enable_horizontal_flip=False)),
-            validation_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_crop=False, enable_horizontal_flip=False)),
+            train_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=False)),
+            validation_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=False)),
         ),
         hydra_defaults=[
             "_self_",
@@ -232,8 +235,20 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="coco_panoptic",
         dataset=dict(
-            train_dataset=dict(),
-            validation_dataset=dict(),
+            train_dataset=dict(
+                augmentation=dict(
+                    enable_random_resize_crop=True,
+                    enable_horizontal_flip=True,
+                    random_scale_ratio=((0.75, 1.75), (0.9, 1.1)),
+                )
+            ),
+            validation_dataset=dict(
+                augmentation=dict(
+                    enable_random_resize_crop=True,
+                    enable_horizontal_flip=False,
+                    random_scale_ratio=((0.75, 1.75), (1.0, 1.0)),
+                )
+            ),
         ),
         model=dict(
             segmentation_map_size=134,
@@ -242,12 +257,44 @@ def get_datasets():  # TODO: These do not need to be global configs
             "_self_",
             {"override /dataset": "coco_panoptic"},
         ],
-
     )
 
+    mode_store(
+        name="objaverse",
+        dataset=dict(
+            train_dataset=dict(
+                augmentation=dict(
+                    enable_random_resize_crop=False,
+                    enable_horizontal_flip=False,
+                )
+            ),
+            validation_dataset=dict(
+                augmentation=dict(
+                    enable_random_resize_crop=False,
+                    enable_horizontal_flip=False,
+                )
+            ),
+        ),
+        model=dict(
+            segmentation_map_size=2,
+        ),
+        hydra_defaults=[
+            "_self_",
+            {"override /dataset": "objaverse"},
+        ],
+    )
+
+def get_inference_experiments():
+    mode_store(
+        name="compose_two_images",
+        inference=dict(
+            inference_func=compose_two_images
+        ),
+    )
 
 def get_experiments():
     get_datasets()
+    get_inference_experiments()
     get_deprecated_experiments()
 
     mode_store(name="resnet", model=dict(encoder=builds(ResNetFeatureExtractor, populate_full_signature=False), cross_attn_dim=256))
@@ -357,7 +404,7 @@ def get_experiments():
                 )
             ),
         ),
-        model=dict(encoder_resolution=224, decoder_resolution=256, latent_dim=32),
+        model=dict(encoder_resolution=224, decoder_resolution=256, decoder_latent_dim=32),
     )
 
     mode_store(
@@ -598,7 +645,7 @@ def get_experiments():
             num_token_cls=133, 
             encoder_resolution=448, 
             decoder_resolution=512,
-            latent_dim=64,
+            decoder_latent_dim=64,
             diffusion_timestep_range=(500, 1000),
             training_mask_dropout=None,
             training_layer_dropout=None,
@@ -685,6 +732,19 @@ def get_experiments():
     )
 
     mode_store(
+        name="debug_vit_large_clip",
+        model=dict(
+            encoder=dict(
+                model_name="vit_large_patch14_clip_336.laion2b_ft_in12k_in1k",
+                pretrained=True,
+                img_size=448,
+            ),
+            encoder_dim=1024,
+        ),
+        hydra_defaults=["debug_vit_base_scratch"],
+    )
+
+    mode_store(
         name="coco_recon_only",
         model=dict(
             num_token_cls=133,
@@ -695,21 +755,70 @@ def get_experiments():
             unet=True, 
             gated_cross_attn=False,
             unfreeze_gated_cross_attn=False,
-            unet_lora=True,
-            lora_rank=512,
-            freeze_unet=True,
-            encoder=dict(return_only=None),
-            feature_map_keys=(
-                "stage12",
-                "stage18",
-                "stage24",
+            unet_lora=False,
+            freeze_unet=False,
+            freeze_clip=True,
+            encoder=dict(
+                return_only=None,
+                img_size=384,
+                return_nodes={
+                    "blocks.5": "blocks.5",
+                    "norm": "norm",
+                },
             ),
+            feature_map_keys=(
+                "blocks.5",
+                "norm",
+            ),
+            decoder_latent_dim=64,
+            decoder_resolution=512,
+            encoder_resolution=384,
+            encoder_latent_dim=24,
+            decoder_transformer=dict(
+                embed_dim=512
+            ),
+            lr_finetune_version=2,
+            finetune_unet_with_different_lrs=False,
+            unfreeze_last_n_clip_layers=6,
+            # pretrained_model_name_or_path="lambdalabs/sd-image-variations-diffusers",
+            # token_embedding_dim=768,
+            # use_sd_15_tokenizer_encoder=True,
         ),
         dataset=dict(
-            train_dataset=dict(batch_size=192),
+            train_dataset=dict(
+                batch_size=36,
+                augmentation=dict(
+                    source_resolution="${model.encoder_resolution}", 
+                    target_resolution="${model.decoder_resolution}"
+                )
+            ),
+            validation_dataset=dict(
+                augmentation=dict(
+                    source_resolution="${model.encoder_resolution}", 
+                    target_resolution="${model.decoder_resolution}"
+                )
+            )
         ),
-        trainer=dict(learning_rate=1e-4, scale_lr_gpus_grad_accum=False, scale_lr_batch_size=False),
-        hydra_defaults=["no_movi_augmentation", "multiscale", "low_res", "coco_panoptic"],
+        trainer=dict(
+            gradient_accumulation_steps=1, 
+            learning_rate=1e-4, 
+            scale_lr_gpus_grad_accum=False, 
+            scale_lr_batch_size=False, 
+            checkpointing_steps=5000, 
+            eval_every_n_steps=2000, 
+            max_train_steps=1000000,
+            validate_training_dataset=False
+        ),
+        hydra_defaults=["no_movi_augmentation", "multiscale", "low_res",  "coco_panoptic", "debug_vit_base_clip"], # "sd_15"
+    )
+
+    mode_store(
+        name="coco_recon_small",
+        model=dict(
+            decoder_latent_dim=32,
+            decoder_resolution=256,
+        ),
+        hydra_defaults=["coco_recon_only"],
     )
 
     mode_store(
@@ -752,6 +861,68 @@ def get_experiments():
     )
     mode_store(
         name="profiler",
-        model=dict(layer_specialization=False, per_layer_queries=False),
         trainer=dict(learning_rate=1e-4, eval_on_start=False, max_train_steps=10, gradient_accumulation_steps=1, enable_dynamic_grad_accum=False, profiler_active_steps=2),
+    )
+
+    mode_store(
+        name="debug_memory",
+        model=dict(
+            training_mask_dropout=None,
+            training_layer_dropout=None,
+            training_cfg_dropout=None,
+        ),
+        trainer=dict(
+            max_train_steps=100, eval_every_n_steps=100, eval_on_start=False, profile_memory=False, enable_dynamic_grad_accum=False, validate_training_dataset=False, fast_eval=True, gradient_accumulation_steps=1, log_gradients=None, eval_decay_steps=False
+        ),
+        dataset=dict(train_dataset=dict(single_return=False), validation_dataset=dict(single_return=False)),
+    )
+
+    mode_store(
+        name="eschernet",
+        model=dict(
+            eschernet=True,
+            layer_specialization=False,
+            num_conditioning_pairs=1,
+            custom_conditioning_map=False,
+            per_layer_queries=False,
+            freeze_clip=False,
+            unfreeze_last_n_clip_layers=None,
+            encoder=dict(
+                model_name='vit_small_patch16_224.augreg_in21k_ft_in1k',
+                pretrained=True,
+                return_only=None,
+                img_size=256,
+                return_nodes={
+                    "blocks.5": "blocks.5",
+                    "norm": "norm",
+                },
+            ),
+            feature_map_keys=(
+                "blocks.5",
+                "norm",
+            ),
+            decoder_resolution=256,
+            encoder_resolution=256,
+            encoder_latent_dim=16,
+            decoder_latent_dim=32,
+            decoder_transformer=dict(
+                embed_dim=512,
+                depth=1,
+            ),
+            lr_finetune_version=2,
+            finetune_unet_with_different_lrs=False,
+            pretrained_model_name_or_path="lambdalabs/sd-image-variations-diffusers",
+            token_embedding_dim=768,
+            use_sd_15_tokenizer_encoder=True,
+        ),
+        inference=dict(
+            visualize_attention_map=False
+        ),
+        trainer=dict(
+            eval_every_n_steps=500,
+            learning_rate=7.5e-5,
+            enable_dynamic_grad_accum=False,
+        ),
+        dataset=dict(train_dataset=dict(batch_size=128)),
+        hydra_defaults=["coco_recon_only", "objaverse", "vit_small_scratch"],
     )

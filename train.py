@@ -25,8 +25,9 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils.import_utils import is_xformers_available
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.abstract_dataset import AbstractDataset, Split
+from gen.models.cross_attn.base_model import BaseMapper
 from gen.models.utils import get_model_from_cfg
-from gen.utils.decoupled_utils import Profiler, get_rank, is_main_process, write_to_file
+from gen.utils.decoupled_utils import Profiler, get_rank, is_main_process, save_memory_profile, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.trainer_utils import (
     Trainable,
@@ -124,7 +125,13 @@ class Trainer:
         if self.cfg.dataset.overfit:
             self.validation_dataset_holder.get_dataset = lambda: self.train_dataloader.dataset
 
-        self.validation_dataloader: DataLoader = self.validation_dataset_holder.get_dataloader()
+        self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus, self.cfg.dataset.validation_dataset.batch_size)
+        g = torch.Generator()
+        g.manual_seed(0 + get_rank())
+        self.validation_dataset_holder.batch_size = self.cfg.dataset.validation_dataset.batch_size
+        self.validation_dataloader = self.validation_dataset_holder.get_dataloader(generator=g, pin_memory=False)
+        self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
+
         assert len(self.validation_dataloader) > 0
 
     def init_optimizer(self):        
@@ -166,9 +173,10 @@ class Trainer:
         )
 
         # Prepare everything with our `self.accelerator`.
-        self.optimizer, self.lr_scheduler, self.train_dataloader, self.validation_dataloader = self.accelerator.prepare(
-            self.optimizer, self.lr_scheduler, self.train_dataloader, self.validation_dataloader
+        self.optimizer, self.lr_scheduler = self.accelerator.prepare(
+            self.optimizer, self.lr_scheduler
         )
+        self.train_dataloader = self.accelerator.prepare_data_loader(self.train_dataloader, device_placement=True)
 
         # We need to recalculate our total training steps as the size of the training dataloader may have changed.
         num_update_steps_per_epoch = math.ceil(len(self.train_dataloader) / self.cfg.trainer.gradient_accumulation_steps)
@@ -186,24 +194,20 @@ class Trainer:
         save_path.mkdir(exist_ok=True, parents=True)
         unwrap(self.model).checkpoint(self.accelerator, state, save_path)
 
-    def validate(self, state: TrainingState):
-        validation_start_time = time()
-
-        if self.cfg.dataset.reset_validation_dataset_every_epoch or self.cfg.trainer.custom_inference_every_n_steps:
-            if state.epoch == 0:
-                self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus, self.cfg.dataset.validation_dataset.batch_size)
-            else:
-                self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus, self.cfg.dataset.validation_dataset.batch_size)
-                self.validation_dataset_holder.subset_size = max(self.cfg.dataset.validation_dataset.subset_size, self.validation_dataset_holder.subset_size) if self.cfg.dataset.validation_dataset.subset_size is not None else self.validation_dataset_holder.subset_size
-
-            g = torch.Generator()
-            g.manual_seed(state.global_step + get_rank())
-            self.validation_dataset_holder.batch_size = self.cfg.dataset.validation_dataset.batch_size
-            self.validation_dataloader = self.validation_dataset_holder.get_dataloader(generator=g)
-            self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
-
         param_keys = get_named_params(self.models).keys()
         write_to_file(path=Path(self.cfg.output_dir, self.cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
+
+    @torch.no_grad()
+    def validate(self, state: TrainingState):
+        # TODO: Cleanup all the validation code once we figure out the possible memory leak.
+        
+        validation_start_time = time()
+
+        if self.cfg.dataset.reset_validation_dataset_every_epoch:
+            g = torch.Generator()
+            g.manual_seed(state.global_step + get_rank())
+            self.validation_dataloader = self.validation_dataset_holder.get_dataloader(generator=g, pin_memory=False)
+            self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
 
         run_inference_dataloader(
             accelerator=self.accelerator,
@@ -217,8 +221,7 @@ class Trainer:
         if self.cfg.trainer.validate_training_dataset:
             self.validate_train_dataloader(state)
 
-        unwrap(self.model).set_training_mode()
-        validate_params(self.models, self.dtype)
+        BaseMapper.set_training_mode(cfg=self.cfg, _other=self.model, device=self.accelerator.device, dtype=self.dtype, set_grad=False)
 
         log_info(
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.get('wandb_url', None)}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
@@ -369,7 +372,7 @@ class Trainer:
             initial_global_step = 0
 
         if self.cfg.profile:
-            profiler = Profiler(output_dir=self.cfg.output_dir, warmup_steps=tr.profiler_warmup_steps, active_steps=tr.profiler_active_steps, record_memory=tr.profiler_record_memory)
+            profiler = Profiler(output_dir=self.cfg.output_dir, warmup_steps=tr.profiler_warmup_steps, active_steps=tr.profiler_active_steps, record_memory=True)
 
         progress_bar = tqdm(range(0, tr.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False)
 
@@ -398,6 +401,7 @@ class Trainer:
 
                     start_forward_time = time()
                     batch = unwrap(self.model).process_input(batch, state)
+                    batch = batch.to(self.accelerator.device)
                     match self.cfg.model.model_type:
                         case ModelType.BASE_MAPPER:
                             losses = self.model(batch)
@@ -406,13 +410,13 @@ class Trainer:
                     true_step += 1
                     for k, v in losses.items():
                         if isinstance(v, torch.Tensor):
-                            global_step_metrics[k.removeprefix("metric_")] += v.detach().item()
+                            global_step_metrics[k.removeprefix("metric_")] += v.detach().cpu().item()
                         else:
                             global_extra_wandb_metrics[k.removeprefix("metric_")] = v
 
                     losses = dict(filter(lambda item: not item[0].startswith("metric_"), losses.items())) # Allow for custom metrics that are not losses
                     loss = sum(losses.values())
-                    global_step_metrics["loss"] += loss.detach().item()  # Only on the main process to avoid syncing
+                    global_step_metrics["loss"] += loss.detach().cpu().item()  # Only on the main process to avoid syncing
                     
                     start_backward_time = time()
                     # The below lines may be silently skipped for gradient accumulation
@@ -426,6 +430,8 @@ class Trainer:
                     zero_grad_kwargs = dict()
                     if 'apex' not in self.cfg.trainer.optimizer_cls.path:
                         zero_grad_kwargs['set_to_none'] = tr.set_grads_to_none
+                    else:
+                        print("not setting to none")
                     self.optimizer.zero_grad(**zero_grad_kwargs)
 
                     global_step_metrics["backward_pass_time"] += time() - start_backward_time
@@ -441,11 +447,16 @@ class Trainer:
                         break
 
                     if check_every_n_steps(state, tr.checkpointing_steps, run_first=False, all_processes=False):
+                        del batch, loss, losses
+                        torch.cuda.empty_cache()
+                        print(torch.cuda.memory_summary(abbreviated=True))
                         self.checkpoint(state)
+                        print(torch.cuda.memory_summary(abbreviated=True))
 
                     if check_every_n_steps(
-                        state, tr.eval_every_n_steps, run_first=tr.eval_on_start, all_processes=True, decay_steps=True
+                        state, tr.eval_every_n_steps, run_first=tr.eval_on_start, all_processes=True, decay_steps=tr.eval_decay_steps
                     ) or check_every_n_epochs(state, tr.eval_every_n_epochs, all_processes=True):
+                        print(torch.cuda.memory_summary(abbreviated=True))
                         self.validate(state)
 
                     if check_every_n_steps(state, tr.custom_inference_every_n_steps, run_first=tr.eval_on_start, all_processes=True):
@@ -475,14 +486,16 @@ class Trainer:
 
         # Create the pipeline using using the trained modules and save it.
         self.accelerator.wait_for_everyone()
-        print(f"Before at rank {get_rank()}")
+
+        if self.cfg.trainer.profile_memory:
+            save_memory_profile(self.cfg.output_dir / "profile")
 
         if self.cfg.profile:
             profiler.finish()
             exit()
 
         if is_main_process():
-            if global_step >= 10:
+            if global_step > 100:
                 self.checkpoint(state)
 
         self.accelerator.end_training()

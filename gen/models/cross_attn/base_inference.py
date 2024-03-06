@@ -17,7 +17,7 @@ from gen import GSO_PCD_PATH
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
 from gen.models.cross_attn.losses import get_relative_rot_data, token_cls_loss, token_rot_loss
-from gen.utils.data_utils import integer_to_one_hot, maybe_convert_to_one_hot
+from gen.utils.data_defs import integer_to_one_hot
 from gen.utils.decoupled_utils import load_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
@@ -62,7 +62,7 @@ new_prompts = [
     "A photograph of two {} on a table",
 ]
 
-
+@torch.no_grad()
 def infer_batch(
     self: BaseMapper,
     batch: InputData,
@@ -99,6 +99,9 @@ def infer_batch(
 
     kwargs["height"] = self.cfg.model.decoder_resolution
     kwargs["width"] = self.cfg.model.decoder_resolution
+
+    if self.cfg.trainer.profile_memory or self.cfg.trainer.fast_eval:
+        kwargs["num_inference_steps"] = 1 # Required otherwise the profiler will create traces that are too large
 
     desired_context = torch.cuda.amp.autocast() if self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_gated_cross_attn else nullcontext()
     with desired_context:
@@ -185,6 +188,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     ret = {}
     orig_image = Im((batch.gen_pixel_values + 1) / 2)
+    orig_disc_image = Im((batch.disc_pixel_values + 1) / 2)
 
     if self.cfg.model.token_rot_pred_loss:
         with torch.cuda.amp.autocast():
@@ -287,6 +291,8 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     bs_ = batch.input_ids.shape[0]
     gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], get_layered_image_from_binary_mask(batch.one_hot_gen_segmentation[b_])).write_text(text="GT") for b_ in range(bs_)])
+    if self.cfg.model.eschernet:
+        gt_info = Im.concat_horizontal(orig_disc_image.write_text("Source").torch, gt_info)
     ret["validation"] = gt_info
 
     added_kwargs = dict()
@@ -299,7 +305,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     if self.cfg.inference.visualize_attention_map:
         attn = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attn_probs"]
-        target_size = (self.cfg.model.latent_dim, self.cfg.model.latent_dim)
+        target_size = (self.cfg.model.decoder_latent_dim, self.cfg.model.decoder_latent_dim)
         all_attn = []
         bs = len(prompt_image)
         for k, v in attn.items():
@@ -392,10 +398,10 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
         orig_gen_segmentation = batch.one_hot_gen_segmentation.clone()
 
         batched_valid = []
-        idxs = list(range(orig_gen_segmentation.shape[-1])[: self.cfg.inference.num_masks_to_remove])[1:]
-        for j in idxs:
+        idxs = list(range(orig_gen_segmentation.shape[-1])[1:min(self.cfg.inference.num_masks_to_remove, orig_valid.sum().item()) + 1])
+        for i, j in enumerate(idxs):
             valid_ = orig_valid.clone()
-            valid_[..., j] = False
+            valid_[..., i] = False
             batched_valid.append(valid_)
 
         batched_valid = torch.cat(batched_valid, dim=0)
@@ -491,56 +497,73 @@ def take_from(slices: tuple[int, slice], data: tuple[dict]):
 
 
 @torch.no_grad()
-def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embed_path_1: Path, embed_path_2: Path):
-    from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
+def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embed_path_1: Optional[Path] = None, embed_path_2: Optional[Path] = None):
+    from gen.models.cross_attn.base_model import ConditioningData
+    from gen.models.cross_attn.base_model import AttentionMetadata
 
-    image_0_dict = load_tensor_dict(embed_path_1)
-    image_1_dict = load_tensor_dict(embed_path_2)
+    if embed_path_1 is not None and embed_path_2 is not None:
+        image_batch_tokens = {
+            0: load_tensor_dict(embed_path_1),
+            1: load_tensor_dict(embed_path_2)
+        }
+        prompt_image_0, cond_0 = self.infer_batch(
+            batch=batch[0],
+            cond=ConditioningData(
+                mask_tokens=image_batch_tokens[0]["mask_tokens"], 
+                mask_batch_idx=torch.zeros((image_batch_tokens[0]["mask_tokens"].shape[0],), dtype=torch.int64),
+            ),
+        )
+        prompt_image_1, cond_1 = self.infer_batch(
+            batch=batch[1],
+            cond=ConditioningData(
+                mask_tokens=image_batch_tokens[1]["mask_tokens"], 
+                mask_batch_idx=torch.zeros((image_batch_tokens[1]["mask_tokens"].shape[0],), dtype=torch.int64),
+            ),
+        )
+        orig_prompt_images = [*prompt_image_0, *prompt_image_1]
+    else:
+        orig_prompt_images, orig_cond = self.infer_batch(batch=batch)
+        batch.one_hot_gen_segmentation = integer_to_one_hot(batch.gen_segmentation, num_classes=self.cfg.model.segmentation_map_size)
+        image_batch_tokens = {}
+        for b in range(batch.bs):
+            orig_image = Im((batch.gen_pixel_values[b] + 1) / 2)
+            all_masks = []
+            for j in orig_cond.mask_instance_idx[orig_cond.mask_batch_idx == b]:
+                composited_image = get_composited_mask(batch, b, j)
+                all_masks.append(composited_image.write_text(f"token_{j}").resize(256, 256).np)
 
-    image_0_tokens = image_0_dict["mask_tokens"]
-    image_1_tokens = image_1_dict["mask_tokens"]
+            image_batch_tokens[b] = {"mask_tokens": orig_cond.mask_tokens, "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}
 
-    prompt_image_0, cond_0 = self.infer_batch(
-        batch=batch,
-        cond=ConditioningData(mask_tokens=image_0_tokens, mask_batch_idx=torch.zeros((image_0_tokens.shape[0],), dtype=torch.int64)),
-    )
-    prompt_image_1, cond_1 = self.infer_batch(
-        batch=batch,
-        cond=ConditioningData(mask_tokens=image_1_tokens, mask_batch_idx=torch.zeros((image_1_tokens.shape[0],), dtype=torch.int64)),
-    )
+
 
     final_tokens, final_rgb = take_from(
         slices=(
             (1, slice(0, 1)),
-            (0, slice(1, 2)),
-            (1, slice(1, 2)),
+            (0, slice(0, None)),
+            # (1, slice(1, 2)),
         ),
-        data=(image_0_dict, image_1_dict),
+        data=(image_batch_tokens[0], image_batch_tokens[1]),
     )
 
     mask_batch_idx = torch.zeros((final_tokens.shape[0],), dtype=torch.int64)
     prompt_image, cond = self.infer_batch(
-        batch=batch, cond=ConditioningData(mask_tokens=final_tokens, mask_batch_idx=mask_batch_idx), num_images_per_prompt=4
+        batch=batch[[0]], cond=ConditioningData(mask_tokens=final_tokens, mask_batch_idx=mask_batch_idx), num_images_per_prompt=4
     )
 
     Im.concat_vertical(
         Im.concat_horizontal(Im(prompt_image_).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)),
-        Im(utils.make_grid(Im(final_rgb).torch)).write_text("Combined Conditioned masks [GT]"),
+        Im(utils.make_grid(Im(final_rgb).torch)).write_text("Conditioning Masks [GT] used", size=0.45, position=(0.05, 0.01)),
         Im.concat_horizontal(
-            Im(image_0_dict["orig_image"]).write_text("First Image GT", size=0.25),
-            Im(prompt_image_0[0]).write_text("First Image Autoencoded", size=0.25),
+            Im(image_batch_tokens[0]["orig_image"]).write_text("First Image GT", size=0.5),
+            Im(orig_prompt_images[0]).write_text("First Image Autoencoded", size=0.5),
         ),
         Im.concat_horizontal(
-            Im(image_1_dict["orig_image"]).write_text("Second Image GT", size=0.25),
-            Im(prompt_image_1[0]).write_text("Second Image Autoencoded", size=0.25),
+            Im(image_batch_tokens[1]["orig_image"]).write_text("Second Image GT", size=0.5),
+            Im(orig_prompt_images[1]).write_text("Second Image Autoencoded", size=0.5),
         ),
     ).save("test_00.png")
 
     breakpoint()
-
-
-def lerp(a, b, ts):
-    return a + (b - a) * ts
 
 
 @torch.no_grad()
@@ -554,6 +577,9 @@ def interpolate_latents(
     batch_interp: bool = True,
     steps: int = 10,
 ):
+    def lerp(a, b, ts):
+        return a + (b - a) * ts
+    
     from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
 
     image_0_dict = load_tensor_dict(embed_path_1)

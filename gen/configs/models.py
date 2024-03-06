@@ -22,7 +22,7 @@ class ModelConfig:
 
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     token_embedding_dim: int = 768
-    latent_dim: int = 64  # Resolution after VAE [input to U-Net]. For SD at 512x512, this is 64 x 64
+    decoder_latent_dim: int = 64  # Resolution after VAE [input to U-Net]. For SD at 512x512, this is 64 x 64
     encoder_resolution: int = 224
     decoder_resolution: int = 512
 
@@ -112,6 +112,9 @@ class ModelConfig:
     # This value should equal N. In datasets with a maximum number of instances, this is then num_instances + 1
     segmentation_map_size: int = -1
     custom_conditioning_map: bool = False
+    encoder_latent_dim: int = 16 # resolution // patch_size
+    eschernet: bool = False
+    use_sd_15_tokenizer_encoder: bool = False
 
 
 @dataclass

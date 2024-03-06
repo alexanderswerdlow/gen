@@ -82,15 +82,20 @@ def get_run_dir(_, *, _root_: BaseConfig):
         _root_.run_name = _root_.run_name + f'{datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}'
         return Path(_root_.first_level_output_path) / _root_.second_level_output_path / _root_.run_name
 
-def get_transform(_, *, _root_: BaseConfig):
+def get_source_transform(_, *, _root_: BaseConfig):
     """
     We instantiate the model container (without actually loading the params) to get the transforms.
     """
     model: TimmModel = hydra.utils.instantiate(OmegaConf.to_container(_root_.model.encoder), deferred_init=True)
     return model.transform
 
+def get_target_transform(_, *, _root_: BaseConfig):
+    from gen.datasets.utils import get_stable_diffusion_transforms
+    return get_stable_diffusion_transforms(resolution=_root_.model.decoder_resolution)
+
 OmegaConf.register_new_resolver("get_run_dir", get_run_dir)
-OmegaConf.register_new_resolver("get_transform", get_transform)
+OmegaConf.register_new_resolver("get_source_transform", get_source_transform)
+OmegaConf.register_new_resolver("get_target_transform", get_target_transform)
 
 store(get_hydra_config())
 

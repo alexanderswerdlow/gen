@@ -29,7 +29,7 @@ def inference(cfg: BaseConfig, accelerator: Accelerator):
         cfg=cfg, split=Split.VALIDATION, tokenizer=model.tokenizer
     ).get_dataloader()
 
-    load_from_ckpt(cfg=cfg, accelerator=accelerator, model=model)
+    load_from_ckpt(cfg=cfg, accelerator=accelerator, model=model, load_model=True)
 
     validation_dataloader, model = accelerator.prepare(validation_dataloader, model)
 
@@ -42,6 +42,7 @@ def flatten(list_of_lists):
     return list(chain.from_iterable(list_of_lists))
 
 
+@torch.no_grad()
 def run_inference_dataloader(
     accelerator: Optional[Accelerator],
     dataloader: DataLoader,
@@ -53,6 +54,7 @@ def run_inference_dataloader(
 ):
     output_path.mkdir(exist_ok=True, parents=True)
     unwrap(model).set_inference_mode(**kwargs)
+    model.eval()
     log_info(f"Running inference w/prefix: {prefix}, Dataloder size: {len(dataloader)}")
     
     outputs = []
@@ -65,6 +67,7 @@ def run_inference_dataloader(
             true_step=state.true_step,
         )
         batch = unwrap(model).process_input(batch, state)
+        batch = batch.to(accelerator.device)
         output = unwrap(model).run_inference(batch=batch, state=inference_state)
         outputs.append(output)
 
