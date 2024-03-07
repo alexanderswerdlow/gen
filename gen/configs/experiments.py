@@ -13,6 +13,7 @@ from gen.configs.utils import mode_store, store_child_config
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
 import torch
 from gen.models.cross_attn.base_inference import run_qualitative_inference, compose_two_images, interpolate_latents
+from gen.models.encoders.extra_encoders import ViTWithExtraChannelsFeatureExtractor
 
 
 def get_override_dict(**kwargs):
@@ -153,7 +154,7 @@ def get_datasets():  # TODO: These do not need to be global configs
         dataset=dict(
             train_dataset=dict(
                 custom_split="train",
-                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_random_resize_crop=False, enable_rand_augment=False),
+                augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False, enable_rand_augment=False),
                 path=MOVI_MEDIUM_PATH,
                 num_objects=23,
                 num_frames=8,
@@ -169,7 +170,7 @@ def get_datasets():  # TODO: These do not need to be global configs
                 num_frames=8,
                 num_cameras=2,
                 multi_camera_format=True,
-                augmentation=dict(target_resolution=256, enable_horizontal_flip=False, enable_random_resize_crop=False, enable_rand_augment=False),
+                augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False, enable_rand_augment=False),
             ),
         ),
         model=dict(
@@ -237,16 +238,18 @@ def get_datasets():  # TODO: These do not need to be global configs
         dataset=dict(
             train_dataset=dict(
                 augmentation=dict(
+                    initial_resolution=512,
                     enable_random_resize_crop=True,
                     enable_horizontal_flip=True,
-                    random_scale_ratio=((0.75, 1.75), (0.9, 1.1)),
+                    target_random_scale_ratio=((0.4, 1), (0.8, 1.0)),
                 )
             ),
             validation_dataset=dict(
                 augmentation=dict(
+                    initial_resolution=512,
                     enable_random_resize_crop=True,
                     enable_horizontal_flip=False,
-                    random_scale_ratio=((0.75, 1.75), (1.0, 1.0)),
+                    target_random_scale_ratio=((0.6, 0.8), (1.0, 1.0)),
                 )
             ),
         ),
@@ -390,20 +393,6 @@ def get_experiments():
 
     mode_store(
         name="low_res",
-        dataset=dict(
-            train_dataset=dict(
-                augmentation=dict(
-                    source_resolution="${model.encoder_resolution}", 
-                    target_resolution="${model.decoder_resolution}"
-                )
-            ),
-            validation_dataset=dict(
-                augmentation=dict(
-                    source_resolution="${model.encoder_resolution}", 
-                    target_resolution="${model.decoder_resolution}"
-                )
-            ),
-        ),
         model=dict(encoder_resolution=224, decoder_resolution=256, decoder_latent_dim=32),
     )
 
@@ -656,17 +645,9 @@ def get_experiments():
             train_dataset=dict(
                 batch_size=16, 
                 cache_in_memory=False,
-                augmentation=dict(
-                    source_resolution="${model.encoder_resolution}", 
-                    target_resolution="${model.decoder_resolution}"
-                )
             ),
             validation_dataset=dict(
                 cache_in_memory=False,
-                augmentation=dict(
-                    source_resolution="${model.encoder_resolution}",
-                    target_resolution="${model.decoder_resolution}"
-                )
             )
         ),
         hydra_defaults=["large_model", "coco_panoptic"],
@@ -749,7 +730,8 @@ def get_experiments():
         model=dict(
             num_token_cls=133,
             layer_specialization=True,
-            num_conditioning_pairs=2,
+            num_conditioning_pairs=8,
+            num_layer_queries=2,
             custom_conditioning_map=True,
             per_layer_queries=True,
             unet=True, 
@@ -775,7 +757,7 @@ def get_experiments():
             encoder_resolution=384,
             encoder_latent_dim=24,
             decoder_transformer=dict(
-                embed_dim=512
+                embed_dim=1024
             ),
             lr_finetune_version=2,
             finetune_unet_with_different_lrs=False,
@@ -787,17 +769,7 @@ def get_experiments():
         dataset=dict(
             train_dataset=dict(
                 batch_size=36,
-                augmentation=dict(
-                    source_resolution="${model.encoder_resolution}", 
-                    target_resolution="${model.decoder_resolution}"
-                )
             ),
-            validation_dataset=dict(
-                augmentation=dict(
-                    source_resolution="${model.encoder_resolution}", 
-                    target_resolution="${model.decoder_resolution}"
-                )
-            )
         ),
         trainer=dict(
             gradient_accumulation_steps=1, 
@@ -925,4 +897,37 @@ def get_experiments():
         ),
         dataset=dict(train_dataset=dict(batch_size=128)),
         hydra_defaults=["coco_recon_only", "objaverse", "vit_small_scratch"],
+    )
+
+    mode_store(
+        name="soda_coco",
+        model=dict(
+            add_pos_emb=False,
+            add_grid_to_input_channels=True,
+            encoder=dict(
+                img_size=224,
+                num_total_input_channels=5,
+            ),
+            feature_map_keys=(
+                "norm",
+            ),
+            decoder_resolution=256,
+            encoder_resolution=224,
+            encoder_latent_dim=14,
+            decoder_latent_dim=32,
+            unfreeze_last_n_clip_layers=None,
+            freeze_clip=False,
+        ),
+        dataset=dict(
+            train_dataset=dict(
+                batch_size=36,
+                augmentation=dict(
+                    enable_random_resize_crop=True, 
+                    enable_horizontal_flip=True,
+                    target_random_scale_ratio=((0.75, 1.75), (0.9, 1.1)),
+                    enable_rand_augment=False
+                )
+            ),
+        ),
+        hydra_defaults=["coco_recon_only",  {"override /model": "basemapper_vit_extra_channels"}],
     )

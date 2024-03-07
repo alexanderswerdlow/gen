@@ -21,13 +21,18 @@ from gen.utils.decoupled_utils import all_gather, get_rank, is_main_process, san
 from gen.utils.logging_utils import log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, unwrap
 import itertools
+import time
 
 def inference(cfg: BaseConfig, accelerator: Accelerator):
     model = get_model_from_cfg(cfg)
 
+    if cfg.inference.set_seed is False:
+        g = torch.Generator()
+        g.manual_seed(int(time.time()))
+
     validation_dataloader = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=True)(
         cfg=cfg, split=Split.VALIDATION, tokenizer=model.tokenizer
-    ).get_dataloader()
+    ).get_dataloader(generator=g)
 
     load_from_ckpt(cfg=cfg, accelerator=accelerator, model=model, load_model=True)
 

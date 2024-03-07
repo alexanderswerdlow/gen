@@ -47,7 +47,7 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, 
         #     accelerator.load_state(path)
         if load_model:
             state_dict = torch.load(path, map_location='cpu')
-            model.load_state_dict(state_dict, strict=True)
+            model.load_state_dict(state_dict, strict=cfg.trainer.strict_load)
         try:
             if path.is_file():
                 global_step = int(path.parent.parent.name.split("_")[-1])

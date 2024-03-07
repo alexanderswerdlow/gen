@@ -35,7 +35,7 @@ from gen.models.cross_attn.deprecated_configs import (attention_masking, forward
 from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, get_gt_rot,
                                           token_cls_loss, token_rot_loss)
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
-from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor
+from gen.models.encoders.encoder import BaseModel
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
 from gen.utils.data_defs import InputData, get_one_hot_channels, integer_to_one_hot
 from gen.utils.decoupled_utils import get_modules
@@ -114,7 +114,7 @@ class BaseMapper(Trainable):
         if self.cfg.trainer.compile:
             print("Using torch.compile()...")
             if hasattr(self, "clip"):
-                self.clip: ClipFeatureExtractor = torch.compile(self.clip, mode="reduce-overhead", fullgraph=True)
+                self.clip = torch.compile(self.clip, mode="reduce-overhead", fullgraph=True)
             self.mapper = torch.compile(self.mapper, mode="reduce-overhead", fullgraph=True)
             
             # self.token_mapper = torch.compile(self.token_mapper, mode="reduce-overhead")
@@ -140,7 +140,6 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.use_dataset_segmentation is False:
             from gen.models.encoders.sam import HQSam
-
             self.hqsam = HQSam(model_type="vit_b")
 
         if self.cfg.model.clip_shift_scale_conditioning:
@@ -182,6 +181,19 @@ class BaseMapper(Trainable):
             self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
                 self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
             )
+
+            if self.cfg.model.add_grid_to_input_channels:
+                new_dim = self.unet.conv_in.in_channels + 2
+                conv_in_updated = torch.nn.Conv2d(
+                    new_dim, self.unet.conv_in.out_channels, kernel_size=self.unet.conv_in.kernel_size, padding=self.unet.conv_in.padding
+                )
+                conv_in_updated.requires_grad_(False)
+                self.unet.conv_in.requires_grad_(False)
+                torch.nn.init.zeros_(conv_in_updated.weight)
+                conv_in_updated.weight[:,:4,:,:].copy_(self.unet.conv_in.weight)
+                conv_in_updated.bias.copy_(self.unet.conv_in.bias)
+                self.unet.conv_in = conv_in_updated
+
             if self.cfg.model.ema and not self.cfg.model.freeze_unet:
                 self.ema_unet = EMAModel(self.unet.parameters(), model_cls=UNet2DConditionModel, model_config=self.unet.config)
                 log_warn("Using EMA for U-Net. Inference has not het been handled properly.")
@@ -632,7 +644,12 @@ class BaseMapper(Trainable):
         device = batch.gen_pixel_values.device
         dtype = self.dtype
 
-        clip_feature_map = self.clip(batch.disc_pixel_values.to(device=device, dtype=dtype))  # b (h w) d
+        clip_input = batch.disc_pixel_values.to(device=device, dtype=dtype)
+
+        if self.cfg.model.add_grid_to_input_channels:
+            clip_input = torch.cat((clip_input, batch.disc_grid), dim=1)
+
+        clip_feature_map = self.clip.forward_model(clip_input)  # b (h w) d
 
         if isinstance(clip_feature_map, dict):
             for k in clip_feature_map.keys():
@@ -685,7 +702,7 @@ class BaseMapper(Trainable):
 
                 non_empty_idx = non_empty_mask.nonzero().squeeze(1)
                 if non_empty_idx.shape[0] > 0:
-                    num_sel_masks = torch.randint(non_empty_idx.shape[0] // 2, non_empty_idx.shape[0] + 1, (1,)) # We randomly take n/2 to n available masks
+                    num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take n/2 to n available masks
                     selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
                     dropout_mask[selected_masks] = True
 
@@ -725,7 +742,7 @@ class BaseMapper(Trainable):
         # In the simplest case, we have one query per mask, and a single feature map. However, we support multiple queries per mask 
         # [to generate tokens for different layers] and also support each query to have K/Vs  from different feature maps, as long as all feature maps 
         # have the same dimension allowing us to assume that each mask has the same number of pixels (KVs) for each feature map.
-        num_queries_per_mask = self.cfg.model.num_conditioning_pairs if self.cfg.model.per_layer_queries else 1
+        num_queries_per_mask = self.cfg.model.num_layer_queries if self.cfg.model.per_layer_queries else 1
         num_feature_maps = clip_feature_map.shape[1]
         seqlens_k = feature_map_masks.sum(dim=-1) * num_feature_maps  # We sum the number of valid "pixels" in each mask
         seqlens_k = einops.repeat(seqlens_k, 'b -> (b layers)', layers=num_queries_per_mask)
@@ -768,13 +785,14 @@ class BaseMapper(Trainable):
         cond.attn_dict["x_kv"] = x_kv_orig
         cond.mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
 
-        if self.cfg.model.detach_features_before_cross_attn:
-            # queries = orig_queries.clone().detach()
-            cond.attn_dict["x"] = orig_queries.to(self.dtype)
-            cond.attn_dict["x_kv"] = x_kv_orig.detach() # mapper.position_embedding is frozen
-            cond.mask_head_tokens = self.mapper.cross_attn(cond).to(self.dtype)
-        else:
-            cond.mask_head_tokens = cond.mask_tokens
+        
+        if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
+            if self.cfg.model.detach_features_before_cross_attn:
+                cond.attn_dict["x"] = orig_queries.to(self.dtype)
+                cond.attn_dict["x_kv"] = x_kv_orig.detach() # mapper.position_embedding is frozen
+                cond.mask_head_tokens = self.mapper.cross_attn(cond).to(self.dtype)
+            else:
+                cond.mask_head_tokens = cond.mask_tokens
 
         if self.cfg.model.per_layer_queries: # Break e.g., 1024 -> 16 x 64
             if cond.mask_tokens is not None: 
@@ -782,15 +800,15 @@ class BaseMapper(Trainable):
 
             if cond.mask_head_tokens is not None:
                 cond.mask_head_tokens = einops.rearrange(cond.mask_head_tokens, "(masks layers) d -> masks (layers d)", masks=cond.mask_batch_idx.shape[0])
-            
-        elif self.cfg.model.layer_specialization: # Break e.g., 1024 -> 16 x 64
+        
+        if self.cfg.model.layer_specialization and self.cfg.model.num_conditioning_pairs != self.cfg.model.num_layer_queries: # Break e.g., 1024 -> 16 x 64
             if cond.mask_tokens is not None:
-                layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_tokens, l=self.cfg.model.num_conditioning_pairs)
+                layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_tokens, layers=self.cfg.model.num_conditioning_pairs)
                 layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens)  # Batched 64 -> 1024
                 cond.mask_tokens = rearrange("b layers d -> b (layers d)", layerwise_mask_tokens).to(self.dtype)
 
             if cond.mask_head_tokens is not None:
-                layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_head_tokens, l=self.cfg.model.num_conditioning_pairs)
+                layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_head_tokens, layers=self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries)
                 layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens)  # Batched 64 -> 1024
                 cond.mask_head_tokens = rearrange("b layers d -> b (layers d)", layerwise_mask_tokens).to(self.dtype)
 
@@ -847,22 +865,10 @@ class BaseMapper(Trainable):
 
             if self.cfg.model.custom_conditioning_map:
                 cond.unet_kwargs["cross_attention_kwargs"]['attn_meta']['custom_map'] = {
-                    0: 0,
-                    1: 0,
-                    2: 0,
-                    3: 0,
-                    4: 1,
-                    5: 1,
-                    6: 1,
-                    7: 1,
-                    8: 1,
-                    9: 1,
-                    10: 1,
-                    11: 1,
-                    12: 0,
-                    13: 0,
-                    14: 0,
-                    15: 0,
+                    0: 0, 1: 0, 2: 0, 3: 0,
+                    4: 1, 5: 1, 6: 1, 7: 1,
+                    8: 1, 9: 1, 10: 1,11: 1,
+                    12: 0, 13: 0, 14: 0, 15: 0,
                 }
 
             if self.cfg.model.gated_cross_attn:

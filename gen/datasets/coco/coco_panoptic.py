@@ -18,16 +18,30 @@ from gen.datasets.coco.build import build_transforms
 from gen.datasets.coco.coco_utils import _COCO_PANOPTIC_INFORMATION, _COCO_PANOPTIC_THING_LIST, _COCO_PANOPTIC_TRAIN_ID_TO_EVAL_ID, COCO_CATEGORIES
 from gen.datasets.coco.pre_augmentation_transforms import Resize
 from gen.datasets.coco.target_transforms import PanopticTargetGenerator, SemanticTargetGenerator
+from gen.models.encoders.sam import find_true_indices_batched, mask_max_pool, show_anns
 from gen.utils.data_defs import integer_to_one_hot, one_hot_to_integer, get_one_hot_channels, visualize_input_data
 from gen.utils.tokenization_utils import get_tokens
+from pathlib import Path
 
 torchvision.disable_beta_transforms_warning()
+
+
+def one_hot_to_integer_np(one_hot_mask):
+    # Find the index of the maximum value in the last dimension
+    indices = np.argmax(one_hot_mask, axis=-1)
+    # Check for the existence of a non-zero value in the last dimension
+    values = np.max(one_hot_mask, axis=-1)
+    # Where values are greater than 0, return indices; otherwise, return -1
+    return np.where(values > 0, indices, -1)
 
 @inherit_parent_args
 class CocoPanoptic(AbstractDataset, Dataset):
     """
     Written by Bowen Cheng (bcheng9@illinois.edu)
     COCO panoptic segmentation dataset.
+    https://github.com/bowenc0221/panoptic-deeplab/blob/master/segmentation/data/datasets/coco_panoptic.py
+    https://github.com/facebookresearch/detectron2/blob/main/projects/Panoptic-DeepLab/panoptic_deeplab/panoptic_seg.py
+    https://github.com/bowenc0221/panoptic-deeplab/blob/master/datasets/prepare_coco_panoptic_trainid.py
     Arguments:
         root: Str, root directory.
         split: Str, data split, e.g. train/val/test.
@@ -60,6 +74,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
             object_ignore_threshold: float = 0.2,
             single_return: bool = False,
             top_n_masks_only: Optional[int] = 8,
+            load_custom_masks: bool = False,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
             resolution=None,
             custom_split=None, # TODO: Needed for hydra
@@ -144,6 +159,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         self.object_ignore_threshold = object_ignore_threshold
         self.enable_orig_coco_processing = enable_orig_coco_processing
         self.top_n_masks_only = top_n_masks_only
+        self.load_custom_masks = load_custom_masks
 
         # Get image and annotation list.
         if 'test' in self.coco_split:
@@ -188,6 +204,11 @@ class CocoPanoptic(AbstractDataset, Dataset):
                                                             small_instance_weight=small_instance_weight)
         # Generates semantic label for evaluation.
         self.raw_label_transform = SemanticTargetGenerator(self.ignore_label, self.rgb2id)
+
+        if self.load_custom_masks:
+            from pycocotools.coco import COCO
+            # custom_
+            self.coco = COCO(os.path.join(self.train_id_root, 'custom_{}.json'.format(self.coco_split)))
 
     @staticmethod
     def train_id_to_eval_id():
@@ -342,6 +363,16 @@ class CocoPanoptic(AbstractDataset, Dataset):
             torch.as_tensor(pad_mask), -torch.ones_like(instance), instance
         )
 
+        if self.load_custom_masks:
+            annIds = self.coco.getAnnIds(imgIds=[int(Path(self.ann_list[index]).stem)])
+            anns = self.coco.loadAnns(ids=annIds)
+            masks_ = [self.coco.annToMask(anns[i]) for i in range(len(anns))]
+            try:
+                instance_with_pad_mask = torch.from_numpy(one_hot_to_integer_np(np.stack(masks_, axis=-1)) + 1) # Instances are 1...., 0 is background
+            except:
+                pass
+                print(f'Error with {int(Path(self.ann_list[index]).stem)}')
+
         # -1 is ignore, 0 is background
         source_data, target_data = self.augmentation(
             source_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].squeeze(-1).float()),
@@ -360,7 +391,6 @@ class CocoPanoptic(AbstractDataset, Dataset):
         source_data.grid = source_data.grid.squeeze(0)
         target_data.image = target_data.image.squeeze(0)
         target_data.segmentation = target_data.segmentation.squeeze(0).long()
-        target_data.grid = target_data.grid.squeeze(0)
 
         # We handle -1 by adding 1 and then removing the 1st element
         source_bincount = torch.bincount(source_data.segmentation.squeeze(0).long().view(-1) + 1, minlength=self.num_classes + 2)[1:]
@@ -400,6 +430,9 @@ class CocoPanoptic(AbstractDataset, Dataset):
             "categories": categories,
         }
 
+        if source_data.grid is not None: ret["disc_grid"] = source_data.grid.squeeze(0)
+        if target_data.grid is not None: ret["gen_grid"] = target_data.grid.squeeze(0)
+
         return ret
 
     
@@ -407,12 +440,32 @@ class CocoPanoptic(AbstractDataset, Dataset):
         return self
 
 
+def run_sam(dataloader):
+    from gen.models.encoders.sam import HQSam
+    from image_utils import Im
+    from einops import rearrange
+    hqsam = HQSam(model_type='vit_b')
+    hqsam = hqsam.to('cuda')
+    image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').pil
+    image = Im(image.crop(((image.size[0]-image.size[1]) // 2, 0, image.size[0] - (image.size[0]-image.size[1]) // 2, image.size[1]))).resize(224, 224).np
+    masks = hqsam.forward(image)
+
+    bs = len(masks)
+    original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(bs)]))
+
+    from ipdb import set_trace; set_trace()
+
+    Im(rearrange(original[:, None].repeat(1, 3, 1, 1) * 1.0, 'b c h w -> b h w c')).save('high_res_mask')
+
+    show_anns(image, masks)
+
 if __name__ == "__main__":
     from transformers import AutoTokenizer
+    from image_utils import library_ops
     tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
     dataset = CocoPanoptic(
         cfg=None,
-        split=Split.TRAIN,
+        split=Split.VALIDATION,
         num_workers=0,
         batch_size=8,
         shuffle=True,
@@ -421,24 +474,26 @@ if __name__ == "__main__":
         augmentation=Augmentation(
             enable_random_resize_crop=True, 
             enable_horizontal_flip=True,
-            random_scale_ratio=((0.75, 1.75), (0.9, 1.1)),
-            enable_rand_augment=False
+            source_random_scale_ratio=None,
+            target_random_scale_ratio=((1, 1), (1, 1)),
+            enable_rand_augment=False,
         ),
         single_return=False,
         object_ignore_threshold=0.2,
         top_n_masks_only=8,
         enable_orig_coco_processing=False,
         return_tensorclass=True,
+        load_custom_masks=True,
     )
 
     import time
     start_time = time.time()
     dataloader = dataset.get_dataloader()
+
     for step, batch in enumerate(dataloader):
         print(f'Time taken: {time.time() - start_time}')
-        visualize_input_data(batch)
+        visualize_input_data(batch, name=f'coco_{step}')
         start_time = time.time()
-        from ipdb import set_trace; set_trace()
 
-        if step > 2:
+        if step > 4:
             break

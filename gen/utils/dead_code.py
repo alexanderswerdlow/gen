@@ -457,3 +457,23 @@ def viz():
         # categories[~valid] = -1
         # valid = valid[..., 1:]
         # categories = categories[..., 1:]
+            # from scipy import ndimage
+        # import numpy as np
+        # def replace_nan_with_nearest(image):
+        #     def nan_replace(patch):
+        #         if np.isnan(patch[len(patch) // 2]):  # Check if central pixel is NaN
+        #             non_nan_patch = patch[~np.isnan(patch)]  # Consider all non-NaN values in the patch
+        #             return np.nanmedian(non_nan_patch) if non_nan_patch.size > 0 else np.nan
+        #         else:
+        #             return patch[len(patch) // 2]  # Return the central pixel if not NaN
+            
+
+        #     for c in range(image.shape[2]):
+        #         footprint = np.ones((16, 16))
+        #         image[:, :, c] = ndimage.generic_filter(image[:, :, c], np.nanmax, size=(10, 10), mode='nearest')
+
+        #     return image
+        
+        # data.grid[data.grid < 0.1] = torch.nan
+        # data.grid = torch.from_numpy(replace_nan_with_nearest(data.grid[0].permute(1, 2, 0).numpy())).permute(2, 0, 1).unsqueeze(0).float()
+        # Im(torch.cat((data.grid[0], data.grid[0].new_zeros((1, *data.grid.shape[2:]))), dim=0)).save('1')

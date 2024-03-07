@@ -81,16 +81,29 @@ def integer_to_one_hot(int_tensor, num_classes):
 def visualize_input_data(batch: InputData, name: Optional[str] = None):
     gen_one_hot = integer_to_one_hot(batch.gen_segmentation + 1, batch.gen_segmentation.max() + 2)
     disc_one_hot = integer_to_one_hot(batch.disc_segmentation + 1, batch.disc_segmentation.max() + 2)
+    if batch.gen_grid is not None:
+        batch.gen_grid = (batch.gen_grid + 1) / 2
+    if batch.disc_grid is not None:
+        batch.disc_grid = (batch.disc_grid + 1) / 2
+
     from image_utils import Im, get_layered_image_from_binary_mask
     for b in range(batch.bs):            
         gen_ = Im.concat_vertical(
             Im((batch.gen_pixel_values[b] + 1) / 2), 
             Im(get_layered_image_from_binary_mask(gen_one_hot[b].squeeze(0))),
-            Im(torch.cat((batch.gen_grid[b], batch.gen_grid.new_zeros((1, *batch.gen_grid.shape[2:]))), dim=0)),
         )
+        if batch.gen_grid is not None:
+            gen_ = Im.concat_vertical(
+                gen_, Im(torch.cat((batch.gen_grid[b], batch.gen_grid.new_zeros((1, *batch.gen_grid.shape[2:]))), dim=0))
+            )
+
         disc_ = Im.concat_vertical(
             Im((batch.disc_pixel_values[b] + 1) / 2), 
             Im(get_layered_image_from_binary_mask(disc_one_hot[b].squeeze(0))),
-            Im(torch.cat((batch.disc_grid[b], batch.disc_grid.new_zeros((1, *batch.disc_grid.shape[2:]))), dim=0))
         )
-        Im.concat_horizontal(gen_, disc_).save(f'input_data_{name}_{b}.png')
+
+        if batch.disc_grid is not None:
+            disc_ = Im.concat_vertical(
+                disc_, Im(torch.cat((batch.disc_grid[b], batch.disc_grid.new_zeros((1, *batch.disc_grid.shape[2:]))), dim=0))
+            )
+        Im.concat_horizontal(disc_, gen_).save(f'input_data_{name}_{b}.png')

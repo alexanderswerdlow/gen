@@ -394,39 +394,39 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             self.controller.reset()
 
     if self.cfg.inference.num_masks_to_remove is not None:
-        orig_valid = batch.valid.clone()
-        orig_gen_segmentation = batch.one_hot_gen_segmentation.clone()
+        modified_batches = []
+        idxs = torch.unique(batch.gen_segmentation)[:self.cfg.inference.num_masks_to_remove]
+        for _, j in enumerate(idxs):
+            batch_ = batch.clone()
+            # We only create tokens for segmentation channels with more than 0 valid pixels and -1 is always ignored.
+            batch_.gen_segmentation[batch_.gen_segmentation == j] = -1
+            batch_.disc_segmentation[batch_.disc_segmentation == j] = -1
+            modified_batches.append(batch_)
 
-        batched_valid = []
-        idxs = list(range(orig_gen_segmentation.shape[-1])[1:min(self.cfg.inference.num_masks_to_remove, orig_valid.sum().item()) + 1])
-        for i, j in enumerate(idxs):
-            valid_ = orig_valid.clone()
-            valid_[..., i] = False
-            batched_valid.append(valid_)
+        modified_batches = torch.cat(modified_batches, dim=0)
 
-        batched_valid = torch.cat(batched_valid, dim=0)
-
-        if batched_valid.sum().item() != 0:
-            batch_ = repeat_batch(batch, bs=len(idxs))
-            batch_.valid = batched_valid
-
-            prompt_images, _ = self.infer_batch(batch=batch_)
+        if modified_batches.shape[0] != 0:
+            prompt_images, _ = self.infer_batch(batch=modified_batches, num_images_per_prompt=1)
             if self.cfg.model.break_a_scene_cross_attn_loss:
                 self.controller.reset()
             
             removed_mask_imgs = []
-            for idx_, j in enumerate(idxs):
+            for (i, j) in enumerate(idxs):
                 bs_ = batch.input_ids.shape[0]
                 img_ = []
                 for b_ in range(bs_):
-                    mask_image = Im(get_layered_image_from_binary_mask(orig_gen_segmentation[b_, ..., [j]]), channel_range=ChannelRange.UINT8)
+                    mask_image = Im(get_layered_image_from_binary_mask(orig_gen_segmentation[b_, ..., [j]]), channel_range=ChannelRange.UINT8).torch.to(batch.device)
+                    seg_ = modified_batches[(i * bs_) + b_].gen_segmentation
+                    valid_indices_ = torch.cat([torch.tensor([0]).to(batch.device), modified_batches[(i * bs_) + b_].valid.nonzero()[:, 0] + 1])
+                    valid_seg_mask = seg_.unsqueeze(-1).eq(valid_indices_).any(-1)
+                    mask_image[:, valid_seg_mask] = 1.0
                     composited_image = get_composited_mask(batch, b_, j)
-                    img_.append(Im.concat_vertical(prompt_images[(idx_ * bs_) + b_], mask_image, composited_image, spacing=5, fill=(128, 128, 128)))
+                    img_.append(Im.concat_vertical(prompt_images[(i * bs_) + b_], Im(mask_image.cpu()), composited_image, spacing=5, fill=(128, 128, 128)))
                 removed_mask_imgs.append(Im.concat_vertical(*img_))
-
-            ret["validation"] = Im.concat_horizontal(ret["validation"], Im.concat_horizontal(*removed_mask_imgs), spacing=15)
-            batch.one_hot_gen_segmentation = orig_gen_segmentation
-
+            
+            removed_masks = Im.concat_horizontal(*removed_mask_imgs).write_text("Red masks are removed. White is kept.")
+            ret["validation"] = Im.concat_horizontal(ret["validation"], removed_masks, spacing=15)
+        
     if self.cfg.inference.infer_new_prompts:
         prompts = [prompt.format(self.cfg.model.placeholder_token) for prompt in new_prompts]
 
@@ -534,13 +534,10 @@ def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embe
 
             image_batch_tokens[b] = {"mask_tokens": orig_cond.mask_tokens, "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}
 
-
-
     final_tokens, final_rgb = take_from(
         slices=(
             (1, slice(0, 1)),
             (0, slice(0, None)),
-            # (1, slice(1, 2)),
         ),
         data=(image_batch_tokens[0], image_batch_tokens[1]),
     )
@@ -561,9 +558,7 @@ def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embe
             Im(image_batch_tokens[1]["orig_image"]).write_text("Second Image GT", size=0.5),
             Im(orig_prompt_images[1]).write_text("Second Image Autoencoded", size=0.5),
         ),
-    ).save("test_00.png")
-
-    breakpoint()
+    ).save(f"compose_{state.epoch_step}.png")
 
 
 @torch.no_grad()

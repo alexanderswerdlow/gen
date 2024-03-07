@@ -7,7 +7,8 @@ from hydra_zen.typing import Builds
 
 from gen.configs.utils import auto_store, store_child_config
 from gen.models.cross_attn.decoder import DecoderTransformer
-from gen.models.encoders.encoder import BaseModel, ClipFeatureExtractor, ResNetFeatureExtractor, ViTFeatureExtractor
+from gen.models.encoders.encoder import BaseModel, ResNetFeatureExtractor, ViTFeatureExtractor
+from gen.models.encoders.extra_encoders import ClipFeatureExtractor, ViTWithExtraChannelsFeatureExtractor
 
 
 class ModelType(Enum):
@@ -115,6 +116,8 @@ class ModelConfig:
     encoder_latent_dim: int = 16 # resolution // patch_size
     eschernet: bool = False
     use_sd_15_tokenizer_encoder: bool = False
+    add_grid_to_input_channels: bool = False
+    num_layer_queries: int = 1
 
 
 @dataclass
@@ -170,6 +173,27 @@ store_child_config(
             "blocks": "blocks",
             "norm": "norm",
             "fc_norm": "fc_norm",
+        },
+        populate_full_signature=False,
+    ),
+    encoder_dim=192,
+)
+
+store_child_config(
+    cls=ModelConfig,
+    group="model",
+    parent="basemapper_vit_scratch",
+    child="basemapper_vit_extra_channels",
+    encoder=builds(
+        ViTWithExtraChannelsFeatureExtractor,
+        num_total_input_channels=5,
+        pretrained=True,
+        model_name='vit_tiny_patch16_224.augreg_in21k_ft_in1k',
+        return_only=None,
+        img_size=224,
+        return_nodes={
+            "blocks.5": "blocks.5",
+            "norm": "norm",
         },
         populate_full_signature=False,
     ),

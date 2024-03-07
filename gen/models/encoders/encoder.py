@@ -1,27 +1,32 @@
+from contextlib import nullcontext
 import functools
 import math
 from abc import ABC, abstractmethod, abstractproperty
 from functools import partial
+from pyexpat import features
 from typing import Callable, Optional, TypeAlias, Union
 
+import imageio.v3 as iio
 import numpy as np
 import timm
 import torch
 import torch.nn as nn
 import torchvision
 from einops import rearrange
-from image_utils import Im
 from jaxtyping import Float
 from PIL import Image
 from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
 from torch import Tensor
-from torchvision.models.feature_extraction import create_feature_extractor, get_graph_node_names
+from torchvision.models.feature_extraction import (create_feature_extractor,
+                                                   get_graph_node_names)
 
-from gen.models.encoders.extracted_encoder_utils import interpolate_embeddings, pad_image_and_adjust_coords
+from gen.models.encoders.extracted_encoder_utils import (interpolate_embeddings,
+                                              pad_image_and_adjust_coords)
 
-ImArr: TypeAlias = Union[Image.Image, Tensor]
-import open_clip
+import inspect
+ImArr: TypeAlias = Union[Image.Image, Tensor, np.ndarray]
+
 
 def reshape_vit_output(num_to_truncate: int, x: torch.Tensor):
     x = x[:, num_to_truncate:]
@@ -51,10 +56,11 @@ class BaseModel(ABC, nn.Module):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        import inspect
-
         if not inspect.isabstract(cls):
-            BaseModel._registry[cls.__name__] = cls
+            init_params = inspect.signature(cls.__init__).parameters.values()
+            if all(param.default is not param.empty for param in init_params 
+                   if param.name != 'self' and param.kind != param.VAR_KEYWORD):
+                BaseModel._registry[cls.__name__] = cls
 
     def __init__(
         self,
@@ -63,34 +69,54 @@ class BaseModel(ABC, nn.Module):
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
         deferred_init: bool = False,
+        enable_autocast: bool = True,
         **kwargs,
     ):
         super().__init__()
         if deferred_init:
             return
         self.model = self.create_model()
+        self.enable_autocast = enable_autocast
         if device is not None:
             self.model = self.model.to(device)
+
+        self.dtype = dtype
         if dtype is not None:
             self.model = self.model.to(dtype)
+            
         if compile:
             self.model = torch.compile(self.model, **compile_kwargs)
-
-    def create_model_timm(self, model_name: str, pretrained: bool = True, **kwargs):
-        return timm.create_model(model_name, pretrained=pretrained, **kwargs)
 
     @abstractmethod
     def create_model(self, **kwargs):
         pass
 
     def pre_transform(self, image: ImArr, **kwargs):
+        if isinstance(image, np.ndarray):
+            assert image.dtype == np.uint8
+            assert image.ndim == 3 or image.ndim == 4
+            assert image.shape[-1] == 3
+        elif isinstance(image, Tensor):
+            assert image.ndim == 4 or image.ndim == 3
+            assert image.shape[1] == 3
+            assert image.dtype != torch.uint8
         return image
 
     def post_transform(self, image: ImArr, **kwargs):
-        if isinstance(image, Tensor) and image.ndim == 3:
+        if isinstance(image, np.ndarray):
+            assert image.dtype == np.uint8
+            image = torch.from_numpy(image) / 255
+
+        assert isinstance(image, Tensor)
+        if image.ndim == 3:
             image = image.unsqueeze(0)
-        if isinstance(image, Tensor) and image.device == torch.device("cpu"):
+
+        if image.shape[1] > image.shape[-1]: # If have channels last
+            image = rearrange(image, "b h w c -> b c h w")
+
+        if image.device == torch.device("cpu"):
             image = image.to(next(iter(self.model.parameters())).device)
+
         return image
 
     @abstractproperty
@@ -100,7 +126,7 @@ class BaseModel(ABC, nn.Module):
     def reshape_func(self, output_data, **kwargs):
         return output_data
 
-    def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs):
+    def forward_model(self, image: Float[Tensor, "b c h w"], **kwargs):
         return self.model(image, **kwargs)
 
     def validate_input(self, image: ImArr, **kwargs):
@@ -111,16 +137,20 @@ class BaseModel(ABC, nn.Module):
         input_data = self.pre_transform(image, **kwargs)
         input_data = self.transform(input_data, **kwargs)
         input_data = self.post_transform(input_data, **kwargs)
-        output_data = self.forward_model(input_data, **kwargs)
+        context = torch.autocast(device_type="cuda", dtype=self.dtype) if self.enable_autocast and (input_data.dtype != torch.float32 or self.dtype != torch.float32) else nullcontext()
+        with context:
+            # Input is a [B, C, H, W] float tensor
+            output_data = self.forward_model(input_data, **kwargs)
         return self.reshape_func(output_data, **kwargs)
 
 
 class TimmModel(BaseModel):
-    def __init__(self, model_name: str, num_from_back: int = 0, tensor_input: bool = True, img_size: Optional[tuple[int]] = None, **kwargs):
+    def __init__(self, model_name: str, num_from_back: int = 0, tensor_input: bool = True, img_size: Optional[tuple[int]] = None, features_only: bool = True, **kwargs):
         self.model_name = model_name
         self.num_from_back = num_from_back
         self.tensor_input = tensor_input
         self.img_size = img_size
+        self.features_only = features_only
         super().__init__(**kwargs)
 
     @functools.cached_property
@@ -133,6 +163,12 @@ class TimmModel(BaseModel):
         if self.tensor_input:
             transform_.transforms = [x for x in transform_.transforms if not isinstance(x, torchvision.transforms.ToTensor)]
         return transform_
+    
+    def pre_transform(self, image: ImArr, **kwargs):
+        if isinstance(image, (Image.Image, np.ndarray)):
+            image = torchvision.transforms.ToTensor()(image)
+            
+        return image
 
     def create_model(self, **kwargs):
         if self.img_size is not None:
@@ -141,62 +177,64 @@ class TimmModel(BaseModel):
         if "pretrained" not in kwargs:
             kwargs["pretrained"] = True
 
-        return super().create_model_timm(self.model_name, **kwargs)
+        if self.features_only:
+            kwargs["features_only"] = True
+
+        return timm.create_model(self.model_name, **kwargs)
 
 
 class DINOV2(TimmModel):
     def __init__(self, model_name: str = "vit_base_patch14_reg4_dinov2", img_size=(224, 224), **kwargs):
-        super().__init__(model_name=model_name, img_size=img_size, **kwargs)
+        super().__init__(model_name=model_name, img_size=img_size, features_only=False, **kwargs)
 
     def pre_transform(self, image: ImArr, **kwargs):
-        return pad_image_and_adjust_coords(image, patch_size=14)
+        if isinstance(image, Image.Image):
+            image = pad_image_and_adjust_coords(image, patch_size=14)
+        
+        return super().pre_transform(image, **kwargs)
 
     def reshape_func(self, output):
         return reshape_vit_output(x=output, num_to_truncate=5)["x"]
 
-    def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs):
+    def forward_model(self, image: Float[Tensor, "b c h w"], **kwargs):
         return self.model.forward_features(image, **kwargs)
 
 
-class VIT(TimmModel):
-    def __init__(self, model_name: Optional[str] = None, img_size: Optional[tuple[int, int]] = None, **kwargs):
-        super().__init__(model_name=model_name, img_size=img_size, **kwargs)
+class ViT(TimmModel):
+    def __init__(self, model_name: str = "vit_base_patch16_clip_384.laion2b_ft_in12k_in1k", img_size=(224, 224), **kwargs):
+        super().__init__(model_name=model_name, img_size=img_size, features_only=False, **kwargs)
 
     def pre_transform(self, image: ImArr, **kwargs):
-        return pad_image_and_adjust_coords(image, patch_size=16)
+        if isinstance(image, Image.Image):
+            image = pad_image_and_adjust_coords(image, patch_size=16)
+        return super().pre_transform(image, **kwargs)
 
     def reshape_func(self, output):
         return reshape_vit_output(x=output, num_to_truncate=1)["x"]
 
-    def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs):
+    def forward_model(self, image: Float[Tensor, "b c h w"], **kwargs):
         return self.model.forward_features(image)
 
 
 class ConvNextV2(TimmModel):
-    def __init__(self, model_name: str = "convnextv2_base.fcmae_ft_in22k_in1k"):
-        super().__init__(model_name=model_name)
-
-    def pre_transform(self, image: ImArr, **kwargs):
-        return image
+    def __init__(self, model_name: str = "convnextv2_base.fcmae_ft_in22k_in1k", **kwargs):
+        super().__init__(model_name=model_name, **kwargs)
 
     def reshape_func(self, output: Tensor):
         return get_feature_layer(x=output, num_from_back=self.num_from_back)["x"]
 
-    def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs):
+    def forward_model(self, image: Float[Tensor, "b c h w"], **kwargs):
         return self.model.forward(image)
 
 
 class SwinV2(TimmModel):
-    def __init__(self, model_name: str = "swinv2_large_window12to16_192to256.ms_in22k_ft_in1k"):
-        super().__init__(model_name=model_name)
-
-    def pre_transform(self, image: ImArr):
-        return image
+    def __init__(self, model_name: str = "swinv2_large_window12to16_192to256.ms_in22k_ft_in1k", **kwargs):
+        super().__init__(model_name=model_name, **kwargs)
 
     def reshape_func(self, output: Tensor):
         return swin_rearrange(x=output, num_from_back=self.num_from_back)["x"]
 
-    def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs):
+    def forward_model(self, image: Float[Tensor, "b c h w"], **kwargs):
         return self.model.forward(image)
 
 
@@ -204,14 +242,12 @@ class ResNet(TimmModel):
     def __init__(self, model_name: str = "resnet50.fb_ssl_yfcc100m_ft_in1k", **kwargs):
         super().__init__(model_name=model_name, **kwargs)
 
-    def pre_transform(self, image: ImArr, **kwargs):
-        return image
-
     def reshape_func(self, output: torch.Tensor):
         return get_feature_layer(x=output, num_from_back=self.num_from_back)["x"]
 
-    def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs):
+    def forward_model(self, image: Float[Tensor, "b c h w"], **kwargs):
         return self.model.forward(image)
+
 
 class TorchVisionModel(BaseModel):
     def __init__(self, model_builder: Callable, weights, **kwargs):
@@ -223,12 +259,14 @@ class TorchVisionModel(BaseModel):
         return self.model_builder(weights=self.weights)
 
     def pre_transform(self, image: ImArr, **kwargs):
-        return self.transform(image)
+        if isinstance(image, (Image.Image, np.ndarray)):
+            image = torchvision.transforms.ToTensor()(image)
+        return image
 
     def reshape_func(self, output: torch.Tensor):
         return output
 
-    def forward_model(self, image: Float[Tensor, "b h w c"], **kwargs):
+    def forward_model(self, image: Float[Tensor, "b c h w"], **kwargs):
         return self.model.forward(image)
 
 
@@ -266,6 +304,10 @@ class ResNet18TorchVision(TorchVisionModel):
 
 
 class FeatureExtractorModel(BaseModel):
+    def __init__(self, return_nodes, **kwargs):
+        self.return_nodes = return_nodes
+        super().__init__(**kwargs)
+
     def create_model(self, **kwargs):
         self.base_model = super().create_model(**kwargs)
         return create_feature_extractor(self.base_model, return_nodes=self.return_nodes)
@@ -273,7 +315,7 @@ class FeatureExtractorModel(BaseModel):
     def get_nodes(self):
         return get_graph_node_names(self.base_model)
 
-    def forward(self, image: ImArr, **kwargs):
+    def forward_model(self, image: ImArr, **kwargs):
         output = self.model(image)
 
         if self.return_only is not None:
@@ -284,40 +326,7 @@ class FeatureExtractorModel(BaseModel):
         return self.base_model(image)
 
 
-class ClipFeatureExtractor(FeatureExtractorModel):
-    def __init__(
-        self,
-        model_name: str = "ViT-L-14",
-        weights: str = "datacomp_xl_s13b_b90k",
-        return_nodes={
-            "transformer.resblocks.0": "stage1",
-            "transformer.resblocks.5": "stage6",
-            "transformer.resblocks.11": "stage12",
-            "transformer.resblocks.17": "stage18",
-            "transformer.resblocks.23": "stage24",
-            "transformer": "transformer",
-            "ln_post": "ln_post",
-        },
-        return_only: Optional[str] = None,
-        **kwargs,
-    ):
-        self.model_name = model_name
-        self.weights = weights
-        self.return_nodes = return_nodes
-        self.return_only = return_only
-        super().__init__(**kwargs)
-
-    def create_model(self):
-        base_model, self.preprocess_train, self.preprocess_val = open_clip.create_model_and_transforms(self.model_name, pretrained=self.weights)
-        return create_feature_extractor(base_model.visual, return_nodes=self.return_nodes)
-
-    @functools.cached_property
-    def transform(self):
-        from gen.datasets.utils import get_open_clip_transforms_v2
-        return get_open_clip_transforms_v2()
-
-
-class ViTFeatureExtractor(FeatureExtractorModel, VIT):
+class ViTFeatureExtractor(FeatureExtractorModel, ViT):
     def __init__(
         self,
         return_nodes={
@@ -329,14 +338,15 @@ class ViTFeatureExtractor(FeatureExtractorModel, VIT):
         model_name: str = "vit_base_patch14_reg4_dinov2",
         pretrained: bool = True,
         num_classes: Optional[int] = None,
-        img_size: Optional[int] = None,
         **kwargs,
     ):
-        self.return_nodes = return_nodes
         self.return_only = return_only
         self.pretrained = pretrained
         self.num_classes = num_classes
-        super().__init__(model_name=model_name, img_size=img_size, **kwargs)
+        super().__init__(model_name=model_name, return_nodes=return_nodes, **kwargs)
+
+    def reshape_func(self, output):
+        return output
 
     def create_model(self):
         create_kwargs = {}
@@ -346,20 +356,25 @@ class ViTFeatureExtractor(FeatureExtractorModel, VIT):
 
 
 class ResNetFeatureExtractor(FeatureExtractorModel, ResNet):
+    """
+    The transforms for this model are currently broken.
+    """
     def __init__(
         self,
         return_nodes={
-            'layer2': 'layer2',
+            "layer2": "layer2",
         },
         return_only: Optional[str] = None,
-        model_name = "resnet18",
+        model_name="resnet18",
         pretrained: bool = True,
         **kwargs,
     ):
-        self.return_nodes = return_nodes
         self.return_only = return_only
         self.pretrained = pretrained
-        super().__init__(model_name=model_name, **kwargs)
+        super().__init__(model_name=model_name, return_nodes=return_nodes, **kwargs)
+
+    def reshape_func(self, output):
+        return output
 
     def forward(self, input: torch.Tensor):
         output = super().forward(input)
@@ -367,52 +382,24 @@ class ResNetFeatureExtractor(FeatureExtractorModel, ResNet):
 
     def create_model(self):
         return super().create_model(pretrained=self.pretrained)
-    
-    @functools.cached_property
+
+    @property
     def transform(self):
         transform_ = super().transform
         if self.tensor_input:
             transform_.transforms = [x for x in transform_.transforms if not isinstance(x, torchvision.transforms.Resize)]
         return transform_
-    
-
-def get_pil_img():
-    return Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").scale(0.5).resize(224, 224).pil
-
-
-def run_all():
-    import time
-
-    device = torch.device("cuda:0")
-    image = Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").scale(0.5).resize(224, 224).pil
-
-    for model_name, model_cls in BaseModel._registry.items():
-        model = model_cls()
-        model.to(device)
-        torch.cuda.synchronize()
-        start = time.time()
-        output = model(image)
-        end = time.time()
-        torch.cuda.synchronize()
-        print(f"{model_name}: {(end - start) * 1000}ms, {output.shape}")
 
 
 def simple_example():
-    image = Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").scale(0.5).resize(224, 224).pil
-    model = ClipFeatureExtractor(return_only="ln_post").cuda()
+    url = "https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png"
+    image = iio.imread(url, index=None)
+    image = torch.from_numpy(image).cuda()[:128, :128] / 255
+    image = image.permute(2, 0, 1).unsqueeze(0).float()
+    model = ResNet18TorchVision().cuda()
     output = model(image)
-    print(output.keys())
-
-
-def simple_example_():
-    image = Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").scale(0.5).resize(224, 224).torch.cuda()
-    model = ResNetFeatureExtractor(return_only='layer2', pretrained=False).cuda()
-    print(model.transform)
-    output = model(image)
-    breakpoint()
-    print(output.keys())
-    breakpoint()
+    print(output.shape)
 
 
 if __name__ == "__main__":
-    simple_example_()
+    simple_example()

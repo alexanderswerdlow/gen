@@ -70,8 +70,11 @@ augmentation = builds(
     Augmentation,
     enable_rand_augment=False,
     different_source_target_augmentation=False,
-    source_resolution="${model.encoder_resolution}",
-    target_resolution="${model.decoder_resolution}",
+    source_random_scale_ratio=None,
+    enable_random_resize_crop=False,
+    enable_horizontal_flip=False,
+    source_resolution=None,
+    target_resolution=None,
     # A little hacky but very useful. We instantiate the model to get the transforms, making sure
     # that we always have the right transform
     source_normalization="${get_source_transform:model}",

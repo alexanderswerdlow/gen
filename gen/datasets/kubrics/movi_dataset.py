@@ -19,7 +19,8 @@ from gen import MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_P
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.abstract_dataset import AbstractDataset, Split
-from gen.utils.data_defs import one_hot_to_integer
+
+from gen.utils.data_defs import one_hot_to_integer, visualize_input_data
 from gen.utils.decoupled_utils import load_tensor_dict, save_tensor_dict
 from gen.utils.tokenization_utils import get_tokens
 
@@ -101,7 +102,9 @@ class MoviDataset(AbstractDataset, Dataset):
             # When we return multiple frames, we return a list [which is batched, resulting in a list of lists].
             # For simplicity, we will then return (b frames) ... for all elements
             batch = list(chain.from_iterable(batch))
-        return torch.utils.data.default_collate(batch)
+        batch = torch.utils.data.default_collate(batch)
+
+        return self.process_batch(batch)
     
     def num_unique_scene_elements(self):
         """
@@ -265,13 +268,15 @@ class MoviDataset(AbstractDataset, Dataset):
         ret.update({
             "gen_pixel_values": target_data.image,
             "gen_segmentation": one_hot_to_integer(target_data.segmentation),
+            "gen_grid": target_data.grid,
             "disc_pixel_values": source_data.image,
             "disc_segmentation": one_hot_to_integer(source_data.segmentation),
+            "disc_grid": source_data.grid,
             "input_ids": get_tokens(self.tokenizer),
         })
 
-        if source_data.grid is not None: ret["disc_grid"] = source_data.grid
-        if target_data.grid is not None: ret["gen_grid"] = target_data.grid
+        if source_data.grid is not None: ret["disc_grid"] = source_data.grid.squeeze(0)
+        if target_data.grid is not None: ret["gen_grid"] = target_data.grid.squeeze(0)
 
         # Required for memory pinning
         ret = {k: torch.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in ret.items()}
@@ -290,27 +295,15 @@ class MoviDataset(AbstractDataset, Dataset):
 
 if __name__ == "__main__":
     from transformers import AutoTokenizer
+    from gen.datasets.utils import get_stable_diffusion_transforms
+    from gen.models.encoders.encoder import ViTFeatureExtractor
 
     tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
     dataset = MoviDataset(
         cfg=None,
         split=Split.TRAIN,
         num_workers=0,
-        batch_size=1,
-        shuffle=True,
-        subset_size=None,
-        dataset="movi_e",
-        num_frames=24,
-        tokenizer=tokenizer,
-        path=MOVI_OVERFIT_DATASET_PATH,
-        num_objects=1,
-        augmentation=Augmentation(enable_rand_augment=False, enable_random_resize_crop=True, enable_horizontal_flip=True),
-    )
-    new_dataset = MoviDataset(
-        cfg=None,
-        split=Split.TRAIN,
-        num_workers=0,
-        batch_size=6,
+        batch_size=10,
         shuffle=True,
         subset_size=None,
         dataset="movi_e",
@@ -319,24 +312,32 @@ if __name__ == "__main__":
         num_objects=23,
         num_frames=24,
         num_cameras=1,
-        augmentation=Augmentation(target_resolution=256, enable_rand_augment=False, enable_random_resize_crop=False, enable_horizontal_flip=False),
+        augmentation=Augmentation(
+            initial_resolution=256,
+            enable_rand_augment=False,
+            enable_random_resize_crop=True,
+            enable_horizontal_flip=True,
+            different_source_target_augmentation=True,
+            source_random_scale_ratio=((0.9, 0.9), (0.9, 1.1)),
+            target_random_scale_ratio=((0.5, 0.5), (0.8, 1.2)),
+            source_normalization=ViTFeatureExtractor(model_name="vit_small_patch16_224").transform,
+            target_normalization=get_stable_diffusion_transforms(resolution=512)
+        ),
         multi_camera_format=True,
         cache_in_memory=True,
         cache_instances_in_memory=False,
         num_subset=None,
+        return_tensorclass=True,
     )
     import time
     start_time = time.time()
-    dataloader = new_dataset.get_dataloader()
+    dataloader = dataset.get_dataloader()
     for step, batch in enumerate(dataloader):
         print(f'Time taken: {time.time() - start_time}')
+        visualize_input_data(batch, name=f'movi_{step}')
         start_time = time.time()
-        from image_utils import Im, get_layered_image_from_binary_mask
-        for b in range(batch['gen_pixel_values'].shape[0]):            
-            gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch["gen_segmentation"][b].squeeze(0))))
-            disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(batch['disc_segmentation'][b].squeeze(0))))
-            print(batch["gen_segmentation"].sum() / batch["gen_segmentation"][b, ..., 0].numel(), batch['disc_segmentation'].sum() / batch['disc_segmentation'][b, ..., 0].numel())
-            Im.concat_horizontal(gen_, disc_).save(f'movi_{step}_{b}.png')
 
-        if step > 1:
+        # from ipdb import set_trace; set_trace()
+
+        if step > 3:
             break

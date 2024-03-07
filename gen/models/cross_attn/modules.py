@@ -309,14 +309,14 @@ class FeatureMapper(nn.Module):
         )
 
         self.learnable_token = nn.Parameter(
-            torch.randn(cfg.model.num_conditioning_pairs if self.cfg.model.per_layer_queries else 1, cfg.model.cross_attn_dim) * 0.02
+            torch.randn(self.cfg.model.num_layer_queries if self.cfg.model.per_layer_queries else 1, cfg.model.cross_attn_dim) * 0.02
         )
 
         # If we have per layer queries, we don't need to chop up the mask vector
-        if self.cfg.model.layer_specialization and not self.cfg.model.per_layer_queries:
+        if self.cfg.model.layer_specialization and self.cfg.model.num_conditioning_pairs != self.cfg.model.num_layer_queries:
             self.layer_specialization = nn.Sequential(
-                nn.Linear(cfg.model.token_embedding_dim // self.cfg.model.num_conditioning_pairs, cfg.model.token_embedding_dim),
-                nn.LayerNorm(cfg.model.token_embedding_dim),
+                nn.Linear(self.cfg.model.token_embedding_dim // (self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries), self.cfg.model.token_embedding_dim),
+                nn.LayerNorm(self.cfg.model.token_embedding_dim),
             )
 
         if self.cfg.model.feature_map_keys is not None:

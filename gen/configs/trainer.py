@@ -68,6 +68,8 @@ class TrainerConfig:
     detect_anomaly: bool = False
     find_unused_parameters: bool = False
     validate_training_dataset: bool = False # Whether to also run inference on the training dataset after the validation dataset
+    strict_load: bool = True
+    wandb_log_code: bool = True
 
     custom_inference_every_n_steps: Optional[int] = None
     custom_inference_fixed_shuffle: bool = False

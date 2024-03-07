@@ -55,11 +55,12 @@ class AbstractDataset(ABC):
     def get_dataset(self):
         pass
 
+    def process_batch(self, batch):
+        return InputData.from_dict(batch) if self.return_tensorclass else batch
+
     def collate_fn(self, batch):
         batch = torch.utils.data.default_collate(batch)
-        if self.return_tensorclass:
-            batch = InputData.from_dict(batch)
-
+        batch = self.process_batch(batch)
         return batch
 
     def get_dataloader(self, generator: Optional[Generator] = None, pin_memory: bool = True):

@@ -28,4 +28,4 @@ if SCRATCH_OBJAVERSE_PATH.exists():
     print(f"Using scratch objaverse path: {OBJAVERSE_DATASET_PATH}")
 
 os.environ["EINX_WARN_ON_RETRACE"] = "25"
-os.enviorn["IMAGE_UTILS_DISABLE_WARNINGS"] = "1"
+os.environ["IMAGE_UTILS_DISABLE_WARNINGS"] = "1"
