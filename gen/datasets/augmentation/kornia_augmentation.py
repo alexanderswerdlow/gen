@@ -8,16 +8,15 @@ from kornia.constants import Resample
 import torch
 from git import Optional
 from image_utils import Im
-from kornia.augmentation.auto.base import SUBPLOLICY_CONFIG
 from kornia.augmentation.auto.rand_augment.rand_augment import RandAugment
 from kornia.augmentation.container import AugmentationSequential
 import torchvision.transforms.v2 as transforms
 
 from gen.datasets.augmentation.utils import get_keypoints, get_viz_keypoints, process_output_keypoints, process_output_segmentation, viz
-from gen.datasets.utils import get_simple_transform, get_stable_diffusion_transforms
 import warnings
+import random
 
-randaug_policy: List[SUBPLOLICY_CONFIG] = [
+randaug_policy: List[Any] = [
     [("auto_contrast", 0, 1)],
     [("equalize", 0, 1)],
     [("invert", 0, 1)],
@@ -50,6 +49,9 @@ class Augmentation:
         self,
         initial_resolution: int = 256,
         different_source_target_augmentation: bool = False,
+        return_grid: bool = True,
+        center_crop: bool = True,
+        enable_square_crop: bool = True,
         enable_rand_augment: bool = False,
         enable_random_resize_crop: bool = True,
         enable_horizontal_flip: bool = True,
@@ -67,6 +69,12 @@ class Augmentation:
         self.target_normalization = target_normalization
         self.initial_resolution = initial_resolution
         self.kornia_resize_mode = kornia_resize_mode
+        self.enable_square_crop = enable_square_crop
+        self.return_grid = return_grid
+        self.center_crop = center_crop
+
+        if self.return_grid: assert self.enable_square_crop, "Grids only seem to work on square images for now."
+
         if self.source_normalization is None or self.target_normalization is None:
             print("Warning: source_normalization and target_normalization are None. This is not recommended.")
         
@@ -113,6 +121,11 @@ class Augmentation:
         assert source_data.image.shape == target_data.image.shape, f"Source and target image shapes do not match: {source_data.image.shape} != {target_data.image.shape}"
         initial_h, initial_w = source_data.image.shape[-2], source_data.image.shape[-1]
 
+        if self.enable_square_crop:
+            assert source_data.mask is None and target_data.mask is None, "Square crop is not supported with masks"
+            assert source_data.grid is None and target_data.grid is None, "Square crop is not supported with grids"
+            source_data.image, source_data.segmentation, target_data.image, target_data.segmentation = crop_to_square(source_data.image, source_data.segmentation, target_data.image, target_data.segmentation, center=self.center_crop)
+
         if self.source_transform is not None:
             # When we augment the source we need to also augment the target
             source_params = self.source_transform.forward_parameters(batch_shape=source_data.image.shape)
@@ -134,8 +147,35 @@ class Augmentation:
         except:
             pass
 
+        if not self.return_grid:
+            source_data.grid = None
+            target_data.grid = None
+
         return source_data, target_data
     
+def crop_to_square(*args, center=True):
+    """
+    Crop a 4D tensor representing an image to a square shape.
+    
+    Parameters:
+    - tensor (torch.Tensor): Input tensor with shape [1, 3, height, width].
+    - center (bool): If True, crop the center. If False, crop a random part.
+    
+    Returns:
+    - torch.Tensor: Cropped tensor with shape [1, 3, min_dim, min_dim].
+    """
+    height, width = args[0].shape[-2:]
+    min_dim = min(height, width)
+    
+    if center:
+        start_x = (width - min_dim) // 2
+        start_y = (height - min_dim) // 2
+    else:
+        start_x = random.randint(0, width - min_dim)
+        start_y = random.randint(0, height - min_dim)
+    
+    return [tensor[..., start_y:start_y+min_dim, start_x:start_x+min_dim] for tensor in args]
+
 def santitize_and_normalize_grid_values(tensor, patch_size = 4):
     tensor[tensor < 0] = torch.nan
     B, C, H, W = tensor.shape
@@ -158,6 +198,10 @@ def apply_normalization_transforms(data: Data, normalization_transform, initial_
         data.grid = data.grid.permute(0, 3, 1, 2).float()
 
     if normalization_transform is not None:
+        if normalization_transform.transforms[0].interpolation != transforms.InterpolationMode.BICUBIC:
+            if data.image.is_floating_point() and -128 <= data.image.min() <= data.image.max() <= 128:
+                data.image = torch.clamp(data.image, 0, 1)
+
         data.image = normalization_transform(data.image)
 
         # TODO: Ideally we should apply all transforms through Kornia.

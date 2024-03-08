@@ -37,7 +37,7 @@ from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
-from gen.utils.data_defs import InputData, get_one_hot_channels, integer_to_one_hot
+from gen.utils.data_defs import InputData, get_dropout_grid, get_gen_grid, get_one_hot_channels, integer_to_one_hot
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
@@ -999,6 +999,14 @@ class BaseMapper(Trainable):
             if len(cond.unet_kwargs.get('cross_attention_kwargs', {}).get('attn_meta', {})) == 0:
                 if 'cross_attention_kwargs' in cond.unet_kwargs and 'attn_meta' in cond.unet_kwargs['cross_attention_kwargs']:
                     del cond.unet_kwargs['cross_attention_kwargs']['attn_meta']
+
+            if self.cfg.model.add_grid_to_input_channels:
+                downsampled_grid = get_gen_grid(self.cfg, batch)
+                if self.cfg.model.dropout_grid_conditioning is not None:
+                    dropout = torch.rand(batch.bs, device=batch.device) < self.cfg.model.dropout_grid_conditioning
+                    dropout_grid = get_dropout_grid(self.cfg.model.decoder_latent_dim).to(downsampled_grid)
+                    downsampled_grid[dropout] = dropout_grid
+                noisy_latents = torch.cat([noisy_latents, downsampled_grid], dim=1)
 
             if self.cfg.model.controlnet:
                 controlnet_image = self.get_controlnet_conditioning(batch)

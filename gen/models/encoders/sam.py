@@ -36,8 +36,7 @@ class HQSam(nn.Module):
         self.sam = sam_model_registry[model_type](checkpoint=load_checkpoint_from_url(model_urls[model_type]))
         self.mask_generator = SamAutomaticMaskGenerator(
             model=self.sam,
-            points_per_side=16,
-            process_batch_size=128
+            points_per_side=24
         )
 
     def forward(self, image):
@@ -67,6 +66,7 @@ def show_anns(image, anns, output_path: Path = Path("outputs/sam_hq.png")):
     plt.axis('off')
     plt.tight_layout()
     plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
+    plt.clf()
 
 def run_timing_exps():
     num_iters = 2

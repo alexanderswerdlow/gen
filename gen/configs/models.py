@@ -118,7 +118,7 @@ class ModelConfig:
     use_sd_15_tokenizer_encoder: bool = False
     add_grid_to_input_channels: bool = False
     num_layer_queries: int = 1
-
+    dropout_grid_conditioning: Optional[float] = 0.15
 
 @dataclass
 class ControlNetConfig(ModelConfig):

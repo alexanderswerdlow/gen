@@ -17,7 +17,7 @@ from gen import GSO_PCD_PATH
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
 from gen.models.cross_attn.losses import get_relative_rot_data, token_cls_loss, token_rot_loss
-from gen.utils.data_defs import integer_to_one_hot
+from gen.utils.data_defs import get_gen_grid, integer_to_one_hot
 from gen.utils.decoupled_utils import load_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
@@ -102,6 +102,9 @@ def infer_batch(
 
     if self.cfg.trainer.profile_memory or self.cfg.trainer.fast_eval:
         kwargs["num_inference_steps"] = 1 # Required otherwise the profiler will create traces that are too large
+
+    if self.cfg.model.add_grid_to_input_channels:
+        kwargs["concat_latent_along_channel_dim"] = get_gen_grid(self.cfg, batch)
 
     desired_context = torch.cuda.amp.autocast() if self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_gated_cross_attn else nullcontext()
     with desired_context:
@@ -326,7 +329,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                     continue
                 tokens = rearrange("t (h w) -> t 3 h w", softmax("t [hw]", rearrange("t h w -> t (h w)", tokens)), h=tokens.shape[-1])
                 tokens = (tokens - torch.min(tokens)) / (torch.max(tokens) - torch.min(tokens))
-                masks = Im(rearrange("h w masks -> masks 3 h w", batch.one_hot_gen_segmentation[b, ..., cond.mask_instance_idx]).float()).resize(32, 32)
+                masks = Im(rearrange("h w masks -> masks 3 h w", batch.one_hot_gen_segmentation[b, ..., cond.mask_instance_idx]).float()).resize(*target_size)
                 attn_imgs.append(Im.concat_vertical(Im.concat_horizontal(*tokens), Im.concat_horizontal(*masks.torch)))
 
             ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
@@ -424,7 +427,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                     img_.append(Im.concat_vertical(prompt_images[(i * bs_) + b_], Im(mask_image.cpu()), composited_image, spacing=5, fill=(128, 128, 128)))
                 removed_mask_imgs.append(Im.concat_vertical(*img_))
             
-            removed_masks = Im.concat_horizontal(*removed_mask_imgs).write_text("Red masks are removed. White is kept.")
+            removed_masks = Im.concat_horizontal(*removed_mask_imgs).write_text("Red masks are removed. White is kept.", size=0.25)
             ret["validation"] = Im.concat_horizontal(ret["validation"], removed_masks, spacing=15)
         
     if self.cfg.inference.infer_new_prompts:
@@ -443,7 +446,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             self.controller.reset()
 
         ret["prompt_images"] = Im.concat_horizontal(
-            Im(prompt_image).write_text(prompt, size=3.2) for prompt_image, prompt in zip(prompt_images, prompts)
+            Im(prompt_image).write_text(prompt, size=0.5) for prompt_image, prompt in zip(prompt_images, prompts)
         )
         if ret["prompt_images"].torch.ndim == 3:
             ret["prompt_images"] = ret["prompt_images"][None]
@@ -499,7 +502,6 @@ def take_from(slices: tuple[int, slice], data: tuple[dict]):
 @torch.no_grad()
 def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embed_path_1: Optional[Path] = None, embed_path_2: Optional[Path] = None):
     from gen.models.cross_attn.base_model import ConditioningData
-    from gen.models.cross_attn.base_model import AttentionMetadata
 
     if embed_path_1 is not None and embed_path_2 is not None:
         image_batch_tokens = {
@@ -530,14 +532,14 @@ def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embe
             all_masks = []
             for j in orig_cond.mask_instance_idx[orig_cond.mask_batch_idx == b]:
                 composited_image = get_composited_mask(batch, b, j)
-                all_masks.append(composited_image.write_text(f"token_{j}").resize(256, 256).np)
+                all_masks.append(composited_image.write_text(f"token_{j}").resize(self.cfg.model.decoder_resolution, self.cfg.model.decoder_resolution).np)
 
             image_batch_tokens[b] = {"mask_tokens": orig_cond.mask_tokens, "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}
 
     final_tokens, final_rgb = take_from(
         slices=(
-            (1, slice(0, 1)),
             (0, slice(0, None)),
+            (1, slice(0, 1)),
         ),
         data=(image_batch_tokens[0], image_batch_tokens[1]),
     )

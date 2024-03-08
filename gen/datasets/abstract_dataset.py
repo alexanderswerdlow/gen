@@ -97,7 +97,7 @@ class AbstractDataset(ABC):
             batch_size=self.batch_size, 
             collate_fn=self.collate_fn, 
             num_workers=self.num_workers, 
-            pin_memory=False, 
+            pin_memory=pin_memory, 
             drop_last=self.drop_last,
             **extra_kwargs
         )

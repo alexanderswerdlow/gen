@@ -39,6 +39,8 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.stable_diffusion.pipeline_output import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 
+from gen.utils.data_defs import get_dropout_grid
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -797,6 +799,7 @@ class StableDiffusionPipeline(
         clip_skip: Optional[int] = None,
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
+        concat_latent_along_channel_dim: Optional[torch.FloatTensor] = None,
         **kwargs,
     ):
         r"""
@@ -1002,6 +1005,10 @@ class StableDiffusionPipeline(
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                if concat_latent_along_channel_dim is not None:
+                    concat_latent_along_channel_dim_ = concat_latent_along_channel_dim.repeat(num_images_per_prompt, 1, 1, 1)
+                    concat_latent_along_channel_dim_ = torch.cat([get_dropout_grid(concat_latent_along_channel_dim_.shape[-1]).to(concat_latent_along_channel_dim_)[None].repeat(concat_latent_along_channel_dim_.shape[0], 1, 1, 1), concat_latent_along_channel_dim_], dim=0) if self.do_classifier_free_guidance else concat_latent_along_channel_dim_
+                    latent_model_input = torch.cat([latent_model_input, concat_latent_along_channel_dim_.to(latent_model_input)], dim=1)
 
                 # predict the noise residual
                 noise_pred = self.unet(

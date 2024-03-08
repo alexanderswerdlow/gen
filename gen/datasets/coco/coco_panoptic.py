@@ -2,12 +2,16 @@ import autoroot
 
 import json
 import os
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Tuple
 
+import cv2
 import numpy as np
 import torch
 import torchvision
 from PIL import Image, ImageOps
+from pycocotools import mask as maskUtils
+from pycocotools.coco import COCO
 from torch.utils.data import Dataset
 
 from gen import COCO_DATASET_PATH, COCO_TRAIN_ID_PATH
@@ -18,21 +22,24 @@ from gen.datasets.coco.build import build_transforms
 from gen.datasets.coco.coco_utils import _COCO_PANOPTIC_INFORMATION, _COCO_PANOPTIC_THING_LIST, _COCO_PANOPTIC_TRAIN_ID_TO_EVAL_ID, COCO_CATEGORIES
 from gen.datasets.coco.pre_augmentation_transforms import Resize
 from gen.datasets.coco.target_transforms import PanopticTargetGenerator, SemanticTargetGenerator
-from gen.models.encoders.sam import find_true_indices_batched, mask_max_pool, show_anns
-from gen.utils.data_defs import integer_to_one_hot, one_hot_to_integer, get_one_hot_channels, visualize_input_data
+from gen.models.encoders.sam import show_anns
+from gen.utils.data_defs import get_one_hot_channels, visualize_input_data
 from gen.utils.tokenization_utils import get_tokens
-from pathlib import Path
 
 torchvision.disable_beta_transforms_warning()
 
-
 def one_hot_to_integer_np(one_hot_mask):
-    # Find the index of the maximum value in the last dimension
     indices = np.argmax(one_hot_mask, axis=-1)
-    # Check for the existence of a non-zero value in the last dimension
     values = np.max(one_hot_mask, axis=-1)
-    # Where values are greater than 0, return indices; otherwise, return -1
     return np.where(values > 0, indices, -1)
+
+def process_mask(mask: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
+    mask_np = mask.numpy().astype(np.uint8)
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    eroded = cv2.erode(mask_np, kernel, iterations=1) # Erosion to remove thin lines
+    dilated = cv2.dilate(eroded, kernel, iterations=1) # Dilation to restore the eroded main objects
+    processed_mask = torch.from_numpy(dilated).to(torch.bool)
+    return processed_mask
 
 @inherit_parent_args
 class CocoPanoptic(AbstractDataset, Dataset):
@@ -75,11 +82,12 @@ class CocoPanoptic(AbstractDataset, Dataset):
             single_return: bool = False,
             top_n_masks_only: Optional[int] = 8,
             load_custom_masks: bool = False,
+            num_objects: int = 133,
+            postprocess: bool = False,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
             resolution=None,
             custom_split=None, # TODO: Needed for hydra
             path=None, # TODO: Needed for hydra
-            num_objects=None, # TODO: Needed for hydra
             num_frames=None, # TODO: Needed for hydra
             num_cameras=None, # TODO: Needed for hydra
             multi_camera_format=None, # TODO: Needed for hydra
@@ -160,6 +168,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
         self.enable_orig_coco_processing = enable_orig_coco_processing
         self.top_n_masks_only = top_n_masks_only
         self.load_custom_masks = load_custom_masks
+        self.num_objects = num_objects
+        self.postprocess = postprocess
 
         # Get image and annotation list.
         if 'test' in self.coco_split:
@@ -206,9 +216,11 @@ class CocoPanoptic(AbstractDataset, Dataset):
         self.raw_label_transform = SemanticTargetGenerator(self.ignore_label, self.rgb2id)
 
         if self.load_custom_masks:
-            from pycocotools.coco import COCO
-            # custom_
-            self.coco = COCO(os.path.join(self.train_id_root, 'custom_{}.json'.format(self.coco_split)))
+            if self.postprocess:
+                coco_path_ = os.path.join(self.train_id_root, 'custom_postprocessed_{}.json'.format(self.coco_split))
+            else:
+                coco_path_ = os.path.join(self.train_id_root, 'custom_{}.json'.format(self.coco_split))
+            self.coco = COCO(coco_path_)
 
     @staticmethod
     def train_id_to_eval_id():
@@ -364,13 +376,18 @@ class CocoPanoptic(AbstractDataset, Dataset):
         )
 
         if self.load_custom_masks:
-            annIds = self.coco.getAnnIds(imgIds=[int(Path(self.ann_list[index]).stem)])
-            anns = self.coco.loadAnns(ids=annIds)
-            masks_ = [self.coco.annToMask(anns[i]) for i in range(len(anns))]
             try:
-                instance_with_pad_mask = torch.from_numpy(one_hot_to_integer_np(np.stack(masks_, axis=-1)) + 1) # Instances are 1...., 0 is background
-            except:
-                pass
+                annIds = self.coco.getAnnIds(imgIds=[int(Path(self.ann_list[index]).stem)])
+                anns = self.coco.loadAnns(ids=annIds)
+                if self.postprocess:
+                    anns = [ann for ann in anns if len(ann['segmentation']) > 0][:self.num_objects]
+                else:
+                    anns = [ann for ann in anns if len(ann['segmentation']) > 0 and maskUtils.area(ann['segmentation']) > 10][:self.num_objects]
+
+                masks_ = np.stack([self.coco.annToMask(anns[i]) for i in range(len(anns))]).astype(np.bool_).transpose(1, 2, 0)
+                instance_with_pad_mask = torch.from_numpy(one_hot_to_integer_np(masks_) + 1) # Instances are 1...., 0 is background
+            except Exception as e:
+                print(e)
                 print(f'Error with {int(Path(self.ann_list[index]).stem)}')
 
         # -1 is ignore, 0 is background
@@ -379,36 +396,39 @@ class CocoPanoptic(AbstractDataset, Dataset):
             target_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].squeeze(-1).float()),
         )
 
-        source_pad_mask = source_data.segmentation == -1
-        source_pad_mask = source_pad_mask.squeeze(0)
-
-        target_pad_mask = target_data.segmentation == -1
-        target_pad_mask = target_pad_mask.squeeze(0)
-
-        # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
         source_data.image = source_data.image.squeeze(0)
         source_data.segmentation = source_data.segmentation.squeeze(0).long()
-        source_data.grid = source_data.grid.squeeze(0)
         target_data.image = target_data.image.squeeze(0)
         target_data.segmentation = target_data.segmentation.squeeze(0).long()
+
+        # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
+        source_pad_mask = source_data.segmentation == -1
+        target_pad_mask = target_data.segmentation == -1
 
         # We handle -1 by adding 1 and then removing the 1st element
         source_bincount = torch.bincount(source_data.segmentation.squeeze(0).long().view(-1) + 1, minlength=self.num_classes + 2)[1:]
 
-        # We remove instance masks that are too small
-        valid = source_bincount > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2
-        
-        # We optionally only take the largest n masks [if previously valid]
-        if self.top_n_masks_only is not None:
-            remove_smaller_masks = torch.argsort(source_bincount)[:-self.top_n_masks_only]
-            valid[remove_smaller_masks] = False
+        if self.postprocess is False:
+            # We remove instance masks that are too small
+            valid = source_bincount > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2
+            
+            # We optionally only take the largest n masks [if previously valid]
+            if self.top_n_masks_only is not None:
+                remove_smaller_masks = torch.argsort(source_bincount)[:-self.top_n_masks_only]
+                valid[remove_smaller_masks] = False
 
-        # For all pixels that belong to a instance that is too small, we set the pixel to 0 (background)
-        too_small_instance_pixels = get_one_hot_channels(source_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
-        source_data.segmentation[too_small_instance_pixels] = 0
+            # For all pixels that belong to a instance that is too small, we set the pixel to 0 (background)
+            too_small_instance_pixels = get_one_hot_channels(source_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
+            source_data.segmentation[too_small_instance_pixels] = 0
 
-        too_small_instance_pixels_ = get_one_hot_channels(target_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
-        target_data.segmentation[too_small_instance_pixels_] = 0
+            too_small_instance_pixels_ = get_one_hot_channels(target_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
+            target_data.segmentation[too_small_instance_pixels_] = 0
+        else:
+            valid = source_bincount > 0
+            initial_one_hot_background = target_data.segmentation == 0
+            one_hot_background = process_mask(initial_one_hot_background, kernel_size=int(target_data.segmentation.shape[0] * 24/512))
+            target_data.segmentation[initial_one_hot_background] = -1
+            target_data.segmentation[one_hot_background] = 0
 
         categories = torch.full((valid.shape), fill_value=-1)
         categories[unique_instance] = unique_semantic - 1
@@ -420,11 +440,9 @@ class CocoPanoptic(AbstractDataset, Dataset):
             "gen_pad_mask": target_pad_mask,
             "gen_pixel_values": target_data.image,
             "gen_segmentation": target_data.segmentation,
-            "gen_grid": target_data.grid,
             "disc_pad_mask": source_pad_mask,
             "disc_pixel_values": source_data.image,
             "disc_segmentation": source_data.segmentation,
-            "disc_grid": source_data.grid,
             "input_ids": get_tokens(self.tokenizer),
             "valid": valid,
             "categories": categories,
@@ -441,59 +459,82 @@ class CocoPanoptic(AbstractDataset, Dataset):
 
 
 def run_sam(dataloader):
+    from einops import rearrange
+
     from gen.models.encoders.sam import HQSam
     from image_utils import Im
-    from einops import rearrange
     hqsam = HQSam(model_type='vit_b')
     hqsam = hqsam.to('cuda')
+    for step, batch in enumerate(dataloader):
+        images = rearrange(((batch.gen_pixel_values + 1) / 2) * 255, "b c h w -> b h w c").to(torch.uint8).cpu().detach().numpy()
+        for i in range(batch.bs):
+            image = images[i]
+            torch.cuda.synchronize()
+            start_time = time.time()
+            masks = hqsam.forward(image)
+            masks = sorted(masks, key=lambda d: d["area"], reverse=True)
+            masks = masks[:32]  # We only have 77 tokens
+            masks = np.array([masks[i]["segmentation"] for i in range(len(masks))]).transpose(1, 2, 0)
+            masks = one_hot_to_integer_np(masks)
+            batch.gen_segmentation[i] = torch.from_numpy(masks).long()
+            torch.cuda.synchronize()
+            print(f'Time taken per image: {time.time() - start_time}')
+            show_anns(image, masks, output_path=Path(f"output/{step}_{i}.png"))
+
+        visualize_input_data(batch, name=f'coco_sam_{step}')
+
+
     image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').pil
     image = Im(image.crop(((image.size[0]-image.size[1]) // 2, 0, image.size[0] - (image.size[0]-image.size[1]) // 2, image.size[1]))).resize(224, 224).np
     masks = hqsam.forward(image)
-
     bs = len(masks)
     original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(bs)]))
-
     from ipdb import set_trace; set_trace()
-
     Im(rearrange(original[:, None].repeat(1, 3, 1, 1) * 1.0, 'b c h w -> b h w c')).save('high_res_mask')
 
     show_anns(image, masks)
 
 if __name__ == "__main__":
     from transformers import AutoTokenizer
+
     from image_utils import library_ops
     tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+    from gen.datasets.utils import get_stable_diffusion_transforms
     dataset = CocoPanoptic(
+        shuffle=False,
         cfg=None,
         split=Split.VALIDATION,
         num_workers=0,
-        batch_size=8,
-        shuffle=True,
+        batch_size=16,
         tokenizer=tokenizer,
         resolution=256,
         augmentation=Augmentation(
+            different_source_target_augmentation=False,
             enable_random_resize_crop=True, 
             enable_horizontal_flip=True,
-            source_random_scale_ratio=None,
-            target_random_scale_ratio=((1, 1), (1, 1)),
+            source_random_scale_ratio=None, # ((0.8, 1.0), (0.9, 1.1)),
+            target_random_scale_ratio=((0.9, 0.9), (0.8, 1.2)),
             enable_rand_augment=False,
+            target_normalization=get_stable_diffusion_transforms(resolution=512)
         ),
         single_return=False,
-        object_ignore_threshold=0.2,
-        top_n_masks_only=8,
+        object_ignore_threshold=0.0,
+        top_n_masks_only=100,
         enable_orig_coco_processing=False,
         return_tensorclass=True,
         load_custom_masks=True,
+        postprocess=True,
     )
 
     import time
     start_time = time.time()
-    dataloader = dataset.get_dataloader()
+    generator = torch.Generator().manual_seed(0)
+    dataloader = dataset.get_dataloader(generator=generator)
 
     for step, batch in enumerate(dataloader):
         print(f'Time taken: {time.time() - start_time}')
-        visualize_input_data(batch, name=f'coco_{step}')
+        visualize_input_data(batch, name=f'coco_orig_{step}', show_background_foreground_only=True)
         start_time = time.time()
 
-        if step > 4:
+        if step > 1:
             break

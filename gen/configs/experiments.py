@@ -237,6 +237,7 @@ def get_datasets():  # TODO: These do not need to be global configs
         name="coco_panoptic",
         dataset=dict(
             train_dataset=dict(
+                num_objects=133,
                 augmentation=dict(
                     initial_resolution=512,
                     enable_random_resize_crop=True,
@@ -245,6 +246,7 @@ def get_datasets():  # TODO: These do not need to be global configs
                 )
             ),
             validation_dataset=dict(
+                num_objects=133,
                 augmentation=dict(
                     initial_resolution=512,
                     enable_random_resize_crop=True,

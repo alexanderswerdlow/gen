@@ -9,6 +9,7 @@ from omegaconf import OmegaConf
 from torch import Tensor
 from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
 from tensordict import tensorclass
+import torch.nn.functional as F
 
 @tensorclass
 class InputData:
@@ -78,9 +79,16 @@ def integer_to_one_hot(int_tensor, num_classes):
     one_hot = torch.where(mask.unsqueeze(-1), one_hot, False)
     return one_hot
 
-def visualize_input_data(batch: InputData, name: Optional[str] = None):
-    gen_one_hot = integer_to_one_hot(batch.gen_segmentation + 1, batch.gen_segmentation.max() + 2)
-    disc_one_hot = integer_to_one_hot(batch.disc_segmentation + 1, batch.disc_segmentation.max() + 2)
+def visualize_input_data(batch: InputData, name: Optional[str] = None, show_background_foreground_only: bool = False):
+    if show_background_foreground_only:
+        batch.gen_segmentation[batch.gen_segmentation > 0] = 1
+        batch.disc_segmentation[batch.disc_segmentation > 0] = 1
+        # batch.gen_segmentation[batch.gen_segmentation < 0] = 1
+        # batch.disc_segmentation[batch.disc_segmentation < 0] = 1
+    
+    gen_one_hot = integer_to_one_hot(batch.gen_segmentation + 1, batch.gen_segmentation.max() + 1)
+    disc_one_hot = integer_to_one_hot(batch.disc_segmentation + 1, batch.disc_segmentation.max() + 1)
+    
     if batch.gen_grid is not None:
         batch.gen_grid = (batch.gen_grid + 1) / 2
     if batch.disc_grid is not None:
@@ -107,3 +115,25 @@ def visualize_input_data(batch: InputData, name: Optional[str] = None):
                 disc_, Im(torch.cat((batch.disc_grid[b], batch.disc_grid.new_zeros((1, *batch.disc_grid.shape[2:]))), dim=0))
             )
         Im.concat_horizontal(disc_, gen_).save(f'input_data_{name}_{b}.png')
+
+
+def create_coordinate_array(H, W):
+    # Create a meshgrid with normalized coordinates ranging from -1 to 1
+    y = torch.linspace(-1, 1, steps=H)
+    x = torch.linspace(-1, 1, steps=W)
+    xv, yv = torch.meshgrid(x, y)
+    # Stack to create the desired shape [2, H, W]
+    coords = torch.stack((yv, xv), dim=0)
+    return coords
+
+def get_dropout_grid(latent_dim):
+    return create_coordinate_array(latent_dim, latent_dim)
+
+def get_gen_grid(cfg, batch):
+    downsampled_grid = F.interpolate(
+        batch.gen_grid,
+        size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim),
+        mode='bilinear'
+    )
+
+    return downsampled_grid
