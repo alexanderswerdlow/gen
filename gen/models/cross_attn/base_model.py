@@ -59,6 +59,7 @@ class ConditioningData:
     batch_cond_dropout: Optional[Bool[Tensor, "b"]] = None
     input_prompt: Optional[list[str]] = None
     learnable_idxs: Optional[Any] = None
+    batch_attn_masks: Optional[Float[Tensor, "b hw hw"]] = None
 
     # These are passed to the U-Net or pipeline
     encoder_hidden_states: Optional[Float[Tensor, "b d"]] = None
@@ -79,16 +80,21 @@ class TokenPredData:
     raw_pred_rot_logits: Optional[Float[Tensor, "n ..."]] = None
     mask_tokens: Optional[Float[Tensor, "n d"]] = None
 
-class AttentionMetadata(TypedDict):
-    layer_idx: int
-    num_layers: int
-    num_cond_vectors: int
-    add_pos_emb: bool
-    attention_mask: Optional[Float[Tensor, "b d h w"]]
-    gate_scale: Optional[float]
-    frozen_dim: Optional[int]
-    return_attn_probs: bool
-    attn_probs: Optional[Float[Tensor, "..."]]
+@dataclass
+class AttentionMetadata:
+    layer_idx: Optional[int] = None
+    num_layers: Optional[int] = None
+    num_cond_vectors: Optional[int] = None
+    add_pos_emb: Optional[bool] = None
+    cross_attention_mask: Optional[Float[Tensor, "b d h w"]] = None
+    self_attention_mask: Optional[Float[Tensor, "b hw hw"]] = None
+    gate_scale: Optional[float] = None
+    frozen_dim: Optional[int] = None
+    return_attn_probs: Optional[bool] = None
+    attn_probs: Optional[Float[Tensor, "..."]] = None
+    custom_map: Optional[dict] = None
+    posemb: Optional[tuple] = None
+    t_out: Optional[Any] = None
 
 class Dummy:
     def __getattr__(self, name):
@@ -113,11 +119,14 @@ class BaseMapper(Trainable):
 
         if self.cfg.trainer.compile:
             print("Using torch.compile()...")
+            self.mapper = torch.compile(self.mapper, mode="reduce-overhead", fullgraph=True)
+
             if hasattr(self, "clip"):
                 self.clip = torch.compile(self.clip, mode="reduce-overhead", fullgraph=True)
-            self.mapper = torch.compile(self.mapper, mode="reduce-overhead", fullgraph=True)
             
-            # self.token_mapper = torch.compile(self.token_mapper, mode="reduce-overhead")
+            if hasattr(self, "token_mapper"): 
+                self.token_mapper = torch.compile(self.token_mapper, mode="reduce-overhead")
+
             # TODO: Compile currently doesn't work with flash-attn apparently
             # self.unet.to(memory_format=torch.channels_last)
             # self.unet: UNet2DConditionModel = torch.compile(self.unet, mode="reduce-overhead", fullgraph=True)
@@ -221,12 +230,13 @@ class BaseMapper(Trainable):
                 self.controlnet.enable_xformers_memory_efficient_attention()
 
         if self.cfg.trainer.gradient_checkpointing:
+            self.clip.base_model.set_grad_checkpointing()
             self.unet.enable_gradient_checkpointing()
             if self.cfg.model.controlnet:
                 self.controlnet.enable_gradient_checkpointing()
             if self.cfg.model.freeze_text_encoder is False:
                 self.text_encoder.gradient_checkpointing_enable()
-
+            
         if self.cfg.model.break_a_scene_cross_attn_loss:
             from gen.models.cross_attn.break_a_scene import AttentionStore
 
@@ -675,6 +685,7 @@ class BaseMapper(Trainable):
         if self.cfg.model.feature_map_keys is not None:
             clip_feature_map = add("b n (h w) d, n d -> b n (h w) d", clip_feature_map, self.mapper.position_embedding)
 
+        batch_one_hot_masks = []
         feature_map_masks = []
         mask_batch_idx = []
         mask_instance_idx = []
@@ -685,11 +696,11 @@ class BaseMapper(Trainable):
         dropout_background_only = self.cfg.model.dropout_background_only
         background_mask_idx = self.cfg.model.background_mask_idx
 
-        indices_ = batch.disc_segmentation.view(batch.batch_size[0], -1) + 1
+        indices_ = batch.disc_segmentation.view(batch.batch_size[0], -1)
         ones_ = torch.ones_like(indices_, dtype=torch.bool)
-        all_non_empty_mask = ones_.new_zeros((batch.batch_size[0], self.cfg.model.segmentation_map_size + 1))
-        all_non_empty_mask.scatter_add_(1, indices_, ones_)  # Perform batched bincount
-        all_non_empty_mask = all_non_empty_mask[:, 1:]
+        all_non_empty_mask = ones_.new_zeros((batch.batch_size[0], 256))
+        all_non_empty_mask.scatter_add_(1, indices_.long(), ones_)  # Perform batched bincount
+        all_non_empty_mask = all_non_empty_mask[:, :self.cfg.model.segmentation_map_size]
 
         assert batch.disc_segmentation is not None
         for i in range(bs):
@@ -732,6 +743,16 @@ class BaseMapper(Trainable):
             mask_instance_idx.append(one_hot_idx)
             mask_dropout.append(combined_mask)
 
+            if self.cfg.model.masked_self_attention:
+                def get_attn_mask(dim_):
+                    flattened_mask = einops.rearrange(F.interpolate(
+                        einops.rearrange(one_hot_mask.float(), "c h w -> 1 c h w"),
+                        size=(dim_, dim_),
+                        mode='bilinear'
+                    ), "() c h w -> (h w) c")
+                    return flattened_mask
+                batch_one_hot_masks.append({(self.cfg.model.decoder_latent_dim // 2**(dim)): get_attn_mask(self.cfg.model.decoder_latent_dim // 2**(dim)) for dim in range(5)})
+
         # If the 1st image has 5 masks and the 2nd has 3 masks, we will have an integer tensor of shape (total == 8,) for 8 different cross-attns. The sequence length for each is thus the number of valid "pixels" (KVs)
         feature_map_masks = torch.cat(feature_map_masks, dim=0)  # feature_map_mask is a boolean mask of (total, h, w)
         feature_map_masks = einops.rearrange(feature_map_masks, "total h w -> total (h w)").to(device)
@@ -764,6 +785,10 @@ class BaseMapper(Trainable):
         cond.mask_batch_idx = mask_batch_idx
         cond.mask_instance_idx = mask_instance_idx
         cond.mask_dropout = mask_dropout
+
+        if len(batch_one_hot_masks) > 0:
+            cond.batch_attn_masks = {k: [m[k] for m in batch_one_hot_masks] for k in batch_one_hot_masks[0].keys()}
+            
         if self.cfg.model.clip_shift_scale_conditioning:
             forward_shift_scale(self, cond, clip_feature_map, latent_dim)
 
@@ -848,44 +873,43 @@ class BaseMapper(Trainable):
         cond.learnable_idxs = (batch.formatted_input_ids == self.placeholder_token_id).nonzero(as_tuple=True)
         cond.encoder_hidden_states[cond.learnable_idxs[0], cond.learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
 
+        attn_meta: AttentionMetadata = cond.unet_kwargs["cross_attention_kwargs"]['attn_meta']
         if self.cfg.model.eschernet:
-            cond.unet_kwargs["cross_attention_kwargs"]['attn_meta'].update(dict(
-                layer_idx=0,
-                num_layers=1,
-                num_cond_vectors=self.cfg.model.num_conditioning_pairs,
-                add_pos_emb=self.cfg.model.add_pos_emb,
-            ))
+            attn_meta.layer_idx = 0
+            attn_meta.num_layers = 1
+            attn_meta.num_cond_vectors = self.cfg.model.num_conditioning_pairs
+            attn_meta.add_pos_emb = self.cfg.model.add_pos_emb
+
         elif self.cfg.model.layer_specialization:
-            cond.unet_kwargs["cross_attention_kwargs"]['attn_meta'].update(dict(
-                layer_idx=0,
-                num_layers=(8 * 2) if self.cfg.model.custom_conditioning_map else (self.cfg.model.num_conditioning_pairs * 2),
-                num_cond_vectors=self.cfg.model.num_conditioning_pairs,
-                add_pos_emb=self.cfg.model.add_pos_emb,
-            ))
+            attn_meta.layer_idx = 0
+            attn_meta.num_layers = (8 * 2) if self.cfg.model.custom_conditioning_map else (self.cfg.model.num_conditioning_pairs * 2)
+            attn_meta.num_cond_vectors = self.cfg.model.num_conditioning_pairs
+            attn_meta.add_pos_emb = self.cfg.model.add_pos_emb
 
             if self.cfg.model.custom_conditioning_map:
-                cond.unet_kwargs["cross_attention_kwargs"]['attn_meta']['custom_map'] = {
+                attn_meta.custom_map = {
                     0: 0, 1: 0, 2: 0, 3: 0,
                     4: 1, 5: 1, 6: 1, 7: 1,
-                    8: 1, 9: 1, 10: 1,11: 1,
+                    8: 1, 9: 1, 10: 1, 11: 1,
                     12: 0, 13: 0, 14: 0, 15: 0,
                 }
 
             if self.cfg.model.gated_cross_attn:
-                cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["gate_scale"] = 1
+                attn_meta.gate_scale = 1
                 with torch.no_grad():
                     frozen_enc = self.text_encoder(input_ids=_get_tokens(self.tokenizer, "A photo")[None].to(cond.encoder_hidden_states.device))[0].to(dtype=self.dtype)
                 cond.encoder_hidden_states = rearrange("b t (layers d), () t d -> b t ((layers + 1) d)", cond.encoder_hidden_states, frozen_enc)
-                cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["frozen_dim"] = frozen_enc.shape[-1]
+                attn_meta.frozen_dim = frozen_enc.shape[-1]
 
         if self.cfg.model.clip_shift_scale_conditioning:
             assert not self.cfg.model.layer_specialization
             cond.encoder_hidden_states[:] = shift_scale_uncond_hidden_states(self)
 
         if self.cfg.model.eschernet:
-            cond.unet_kwargs["cross_attention_kwargs"]['attn_meta'].update(dict(
-                posemb=[batch.gen_pose_out, batch.disc_pose_in]
-            ))
+            attn_meta.posemb=[batch.gen_pose_out, batch.disc_pose_in]
+
+        if self.cfg.model.masked_self_attention:
+            attn_meta.self_attention_mask = cond.batch_attn_masks
 
         return cond
 
@@ -922,7 +946,7 @@ class BaseMapper(Trainable):
 
     def dropout_cfg(self, cond: ConditioningData):
         device: torch.device = cond.encoder_hidden_states.device
-        frozen_dim: int = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].get("frozen_dim", None)
+        frozen_dim: int = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].frozen_dim
         frozen_dim = -frozen_dim if frozen_dim is not None else None
 
         # We dropout the entire conditioning [all-layers] for a subset of batches.
@@ -996,7 +1020,8 @@ class BaseMapper(Trainable):
             # Add noise to the latents according to the noise magnitude at each timestep
             noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
-            if len(cond.unet_kwargs.get('cross_attention_kwargs', {}).get('attn_meta', {})) == 0:
+            attn_meta = cond.unet_kwargs.get('cross_attention_kwargs', {}).get('attn_meta', None)
+            if attn_meta is None or attn_meta.layer_idx is None:
                 if 'cross_attention_kwargs' in cond.unet_kwargs and 'attn_meta' in cond.unet_kwargs['cross_attention_kwargs']:
                     del cond.unet_kwargs['cross_attention_kwargs']['attn_meta']
 
@@ -1066,5 +1091,5 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.token_rot_pred_loss:
             losses.update(token_rot_loss(cfg=self.cfg, pred_data=pred_data))
-
+            
         return losses

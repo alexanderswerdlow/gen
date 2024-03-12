@@ -9,11 +9,6 @@ import torch
 from torch.optim import Optimizer
 from importlib.util import find_spec
 
-default_optimizer_cls = torch.optim.AdamW
-# if find_spec("apex"):
-#     from apex.optimizers import FusedAdam
-#     default_optimizer_cls = FusedAdam
-
 @dataclass
 class TrainerConfig:
     name: ClassVar[str] = "trainer"
@@ -36,7 +31,9 @@ class TrainerConfig:
     learning_rate: float = 5e-6
     scale_lr_batch_size: bool = False
     scale_lr_gpus_grad_accum: bool = True
-    optimizer_cls: Optimizer = default_optimizer_cls
+    optimizer_cls: Optimizer = torch.optim.AdamW
+    use_fused_adam: bool = True
+    use_8bit_adam: bool = False
     momentum: Optional[float] = None
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 500
@@ -75,6 +72,8 @@ class TrainerConfig:
     custom_inference_fixed_shuffle: bool = False
     custom_inference_batch_size: Optional[int] = None
     custom_inference_dataset_size: Optional[int] = 512
+
+    compose_inference: bool = False
 
     enable_timing: bool = False
     enable_timing_sync: bool = True

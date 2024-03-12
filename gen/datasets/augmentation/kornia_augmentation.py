@@ -16,6 +16,8 @@ from gen.datasets.augmentation.utils import get_keypoints, get_viz_keypoints, pr
 import warnings
 import random
 
+from gen.utils.logging_utils import log_warn
+
 randaug_policy: List[Any] = [
     [("auto_contrast", 0, 1)],
     [("equalize", 0, 1)],
@@ -45,6 +47,10 @@ class Data:
 
 
 class Augmentation:
+    """
+    TODO: One known issue with this class has to due with interpolation modes. Specifically, if the source and target normalization have different modes 
+    then we might first resize with kornia_resize_mode, and then in some cases not resize (if we already have the desired resolution.)
+    """
     def __init__(
         self,
         initial_resolution: int = 256,
@@ -55,36 +61,44 @@ class Augmentation:
         enable_rand_augment: bool = False,
         enable_random_resize_crop: bool = True,
         enable_horizontal_flip: bool = True,
-        source_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = ((0.7, 1.3), (0.7, 1.3)),
-        target_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = ((0.7, 1.3), (0.7, 1.3)),
+        enable_rotate: bool = False,
+        reorder_segmentation: bool = False,
+        source_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = None,
+        target_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = None,
         kornia_resize_mode: str = "BICUBIC",
-        source_resolution: Optional[int] = None, # By default, we keep initial_resolution and let source_normalization resize further if enabled
-        target_resolution: Optional[int] = None, # By default, we keep initial_resolution and let target_normalization resize further if enabled
-        source_normalization: Optional[Callable] = None,
-        target_normalization: Optional[Callable] = None,
+        source_resolution: Optional[int] = None, # By default, we keep initial_resolution and let source_transforms resize further if enabled
+        target_resolution: Optional[int] = None, # By default, we keep initial_resolution and let target_transforms resize further if enabled
+        source_transforms: Optional[Callable] = None,
+        target_transforms: Optional[Callable] = None,
     ):
         self.source_resolution = source_resolution
-        self.source_normalization = source_normalization
+        self.source_transforms = source_transforms
         self.target_resolution = target_resolution
-        self.target_normalization = target_normalization
+        self.target_transforms = target_transforms
         self.initial_resolution = initial_resolution
         self.kornia_resize_mode = kornia_resize_mode
         self.enable_square_crop = enable_square_crop
         self.return_grid = return_grid
         self.center_crop = center_crop
+        self.enable_rotate = enable_rotate
+        self.reorder_segmentation = reorder_segmentation
 
         if self.return_grid: assert self.enable_square_crop, "Grids only seem to work on square images for now."
 
-        if self.source_normalization is None or self.target_normalization is None:
-            print("Warning: source_normalization and target_normalization are None. This is not recommended.")
+        if self.source_transforms is None or self.target_transforms is None:
+            log_warn("Warning: source_transforms and target_transforms are None. This is not recommended.")
         
         self.different_source_target_augmentation = different_source_target_augmentation
 
         main_transforms = []
+
+        if enable_rotate:
+            main_transforms.append(K.RandomRotation(degrees=(-60, 60), p=0.5))
+
         if enable_random_resize_crop:
             resize_resolution = self.target_resolution if different_source_target_augmentation and target_resolution is not None else self.initial_resolution
             target_scale, target_ratio = target_random_scale_ratio
-            main_transforms.append(K.RandomResizedCrop(size=(resize_resolution, resize_resolution), scale=target_scale, ratio=target_ratio, resample=self.kornia_resize_mode, p=1.0))  # For logistical reasons
+            main_transforms.append(K.RandomResizedCrop(size=(resize_resolution, resize_resolution), scale=target_scale, ratio=target_ratio, resample=self.kornia_resize_mode, p=1.0))
 
         if enable_horizontal_flip:
             main_transforms.append(K.RandomHorizontalFlip(p=0.5))
@@ -110,14 +124,13 @@ class Augmentation:
         self.has_warned = False
 
     def kornia_augmentations_enabled(self) -> bool:
+        if not self.has_warned and self.source_transforms is not None and self.target_transforms is not None:
+            self.has_warned = True
+            log_warn(f"Source image is being resized to {self.source_transforms.transforms[0].size}")
+            log_warn(f"Target image is being resized to {self.target_transforms.transforms[0].size}")
         return self.source_transform is not None or self.target_transform is not None
 
     def __call__(self, source_data, target_data):
-        if not self.has_warned and self.source_normalization is not None and self.target_normalization is not None:
-            warnings.warn(f"Source image is being resized to {self.source_normalization.transforms[0].size}")
-            warnings.warn(f"Target image is being resized to {self.target_normalization.transforms[0].size}")
-            self.has_warned = True
-
         assert source_data.image.shape == target_data.image.shape, f"Source and target image shapes do not match: {source_data.image.shape} != {target_data.image.shape}"
         initial_h, initial_w = source_data.image.shape[-2], source_data.image.shape[-1]
 
@@ -125,6 +138,15 @@ class Augmentation:
             assert source_data.mask is None and target_data.mask is None, "Square crop is not supported with masks"
             assert source_data.grid is None and target_data.grid is None, "Square crop is not supported with grids"
             source_data.image, source_data.segmentation, target_data.image, target_data.segmentation = crop_to_square(source_data.image, source_data.segmentation, target_data.image, target_data.segmentation, center=self.center_crop)
+
+        if self.reorder_segmentation:
+            # This may result in a different ordering of the segmentation channels
+            try:
+                target_data.segmentation = reorder_segmentation(target_data.segmentation.clone().contiguous())
+                source_data.segmentation = reorder_segmentation(source_data.segmentation.clone().contiguous())
+            except Exception as e:
+                log_warn(f"Failed to reorder segmentation channels: {e}")
+                log_warn(f"Target: {target_data.segmentation.shape}, Source: {source_data.segmentation.shape}")
 
         if self.source_transform is not None:
             # When we augment the source we need to also augment the target
@@ -138,8 +160,8 @@ class Augmentation:
             target_data = process(aug=self.target_transform, params=target_params, input_data=target_data)
         
 
-        source_data = apply_normalization_transforms(source_data, self.source_normalization, initial_h, initial_w)
-        target_data = apply_normalization_transforms(target_data, self.target_normalization, initial_h, initial_w)
+        source_data = apply_normalization_transforms(source_data, self.source_transforms, initial_h, initial_w)
+        target_data = apply_normalization_transforms(target_data, self.target_transforms, initial_h, initial_w)
         
         try:
             mask = target_data.grid >= 0
@@ -175,6 +197,18 @@ def crop_to_square(*args, center=True):
         start_y = random.randint(0, height - min_dim)
     
     return [tensor[..., start_y:start_y+min_dim, start_x:start_x+min_dim] for tensor in args]
+
+def reorder_segmentation(tensor):
+    # Re-order segmentation channels (except background). This is because during cropping, large segmentation masks may no longer be in view.
+    tensor = tensor.long()
+    unique, inverse, counts = tensor[tensor > 0].unique(return_inverse=True, return_counts=True)
+    counts_sorted, indices_sorted = counts.sort(descending=True)
+    new_ranks = torch.zeros(unique.max() + 1, dtype=torch.long, device=tensor.device)  # Adjusted for direct indexing
+    new_ranks[unique[indices_sorted]] = torch.arange(1, len(unique) + 1, device=tensor.device)
+    tensor_view = tensor.view(-1)
+    mask = tensor_view > 0
+    tensor_view[mask] = new_ranks[tensor_view[mask]]
+    return tensor.float()
 
 def santitize_and_normalize_grid_values(tensor, patch_size = 4):
     tensor[tensor < 0] = torch.nan
@@ -267,8 +301,11 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
     if not input_data.image_only:
         B, _, H, W = input_data.image.shape
         keypoints = get_keypoints(B, H, W)
-        assert input_data.segmentation.ndim == 3
-        input_data.segmentation = input_data.segmentation.unsqueeze(1).float()
+        keypoints._data = keypoints._data.to(input_data.image.device)
+        keypoints._valid_mask = keypoints._valid_mask.to(input_data.image.device)
+        
+        if input_data.segmentation.ndim == 3:
+            input_data.segmentation = input_data.segmentation.unsqueeze(1).float()
 
     # output_tensor and output_segmentation are affected by resize but output_keypoints are not
     output_data = Data(image_only=input_data.image_only)
@@ -281,7 +318,7 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
 
     if not input_data.image_only:
         output_data.grid, output_data.mask = process_output_keypoints(output_keypoints, B, H, W, output_data.image.shape[-2], output_data.image.shape[-1])
-        output_data.segmentation = process_output_segmentation(output_keypoints, output_data.segmentation.squeeze(1), output_data.image.shape[-2], output_data.image.shape[-1], -1)
+        output_data.segmentation = process_output_segmentation(output_keypoints, output_data.segmentation, output_data.image.shape[-2], output_data.image.shape[-1], -1)
 
     if should_viz:
         Im(input_image.permute(0, 2, 3, 1)[:, output_data.grid[..., 0], output_data.grid[..., 1]][0]).save()

@@ -7,10 +7,14 @@ CHECKPOINT_DIR = Path(os.getenv("CHECKPOINT_DIR", "checkpoints"))
 COCO_CAPTIONS_FILES = os.getenv("COCO_CAPTIONS_PATH", "/projects/katefgroup/aswerdlo/mscoco/{00000..00059}.tar")
 COCO_DATASET_PATH = Path(os.getenv("COCO_DATASET_PATH", "/projects/katefgroup/datasets/coco"))
 SCRATCH_COCO_PATH = Path(os.getenv("SCRATCH_COCO_PATH", "/scratch/aswerdlo/coco"))
+COCO_CUSTOM_PATH = Path(os.getenv("COCO_CUSTOM_PATH", "/projects/katefgroup/aswerdlo/datasets/coco/annotations"))
+
 if SCRATCH_COCO_PATH.exists(): 
     COCO_DATASET_PATH = SCRATCH_COCO_PATH
+    COCO_CUSTOM_PATH = SCRATCH_COCO_PATH / "annotations"
     print(f"Using scratch coco path: {COCO_DATASET_PATH}")
-COCO_TRAIN_ID_PATH = Path(os.getenv("COCO_TRAIN_ID_PATH", "/projects/katefgroup/aswerdlo/datasets/coco"))
+
+SCRATCH_CACHE_PATH = Path(os.getenv("SCRATCH_CACHE_PATH", "/scratch/aswerdlo/cache"))
 MOVI_DATASET_PATH = Path(os.getenv("MOVI_DATASET_PATH", "/projects/katefgroup/datasets/movi"))
 MOVI_OVERFIT_DATASET_PATH = Path(os.getenv("MOVI_OVERFIT_DATASET_PATH", "/projects/katefgroup/aswerdlo/movi"))
 MOVI_MEDIUM_PATH = Path(os.getenv("MOVI_MEDIUM_PATH", "/projects/katefgroup/aswerdlo/datasets/movi_medium"))

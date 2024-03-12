@@ -96,6 +96,7 @@ def get_target_transform(_, *, _root_: BaseConfig):
 OmegaConf.register_new_resolver("get_run_dir", get_run_dir)
 OmegaConf.register_new_resolver("get_source_transform", get_source_transform)
 OmegaConf.register_new_resolver("get_target_transform", get_target_transform)
+OmegaConf.register_new_resolver("eval", eval)
 
 store(get_hydra_config())
 

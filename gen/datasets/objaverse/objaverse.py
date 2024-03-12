@@ -110,7 +110,7 @@ class ObjaverseData(AbstractDataset, Dataset):
             num_subset=None, # TODO: Needed for hydra
             return_multiple_frames=None, # TODO: Needed for hydra
             root=None,
-            train_id_root=None,
+            custom_data_root=None,
             min_resize_value=None,
             max_resize_value=None,
             resize_factor=None,
@@ -328,12 +328,12 @@ if __name__ == "__main__":
     for step, batch in enumerate(dataloader):
         print(f'Time taken: {time.time() - start_time}')
         start_time = time.time()
-        from image_utils import Im, get_layered_image_from_binary_mask
+        from image_utils import Im, onehot_to_color
         gen_seg = integer_to_one_hot(batch["gen_segmentation"], 1)
         disc_seg = integer_to_one_hot(batch["disc_segmentation"], 1)
         for b in range(batch['gen_pixel_values'].shape[0]):        
-            gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(gen_seg[b].squeeze(0))))
-            disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][b] + 1) / 2), Im(get_layered_image_from_binary_mask(disc_seg[b].squeeze(0))))
+            gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(onehot_to_color(gen_seg[b].squeeze(0))))
+            disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][b] + 1) / 2), Im(onehot_to_color(disc_seg[b].squeeze(0))))
             print(gen_seg.sum() / gen_seg[b, ..., 0].numel(), disc_seg.sum() / disc_seg[b, ..., 0].numel())
             Im.concat_horizontal(gen_, disc_).save(f'objaverse_{step}_{b}.png')
 

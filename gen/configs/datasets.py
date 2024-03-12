@@ -77,8 +77,8 @@ augmentation = builds(
     target_resolution=None,
     # A little hacky but very useful. We instantiate the model to get the transforms, making sure
     # that we always have the right transform
-    source_normalization="${get_source_transform:model}",
-    target_normalization="${get_target_transform:model}",
+    source_transforms="${get_source_transform:model}",
+    target_transforms="${get_target_transform:model}",
     populate_full_signature=True,
 )
 

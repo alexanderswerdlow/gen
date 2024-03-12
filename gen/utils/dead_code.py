@@ -68,7 +68,7 @@ def diffusers_eval(
     return avg_loss
 
 def viz():
-    from image_utils import Im, calculate_principal_components, get_layered_image_from_binary_mask, pca
+    from image_utils import Im, calculate_principal_components, onehot_to_color, pca
 
     principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]).float())
     bs_ = clip_feature_map.shape[1]
@@ -87,7 +87,7 @@ def viz():
     Im(outmap).save("pca")
     sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c")
     Im(sam_input).save("rgb")
-    Im(get_layered_image_from_binary_mask(original.permute(1, 2, 0))).save("masks")
+    Im(onehot_to_color(original.permute(1, 2, 0))).save("masks")
 
 # viz()
 
@@ -103,7 +103,7 @@ def viz():
 
 #         images = []
 #         orig_image = Im((batch["gen_pixel_values"].squeeze(0) + 1) / 2)
-#         gt_info = Im.concat_vertical(orig_image, get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0))).write_text(
+#         gt_info = Im.concat_vertical(orig_image, onehot_to_color(batch["gen_segmentation"].squeeze(0))).write_text(
 #             text="GT", relative_font_scale=0.004
 #         )
 
@@ -117,7 +117,7 @@ def viz():
 #             num_images_per_prompt=cfg.inference.num_images_per_prompt,
 #         )
 
-#         full_seg = Im(get_layered_image_from_binary_mask(batch["gen_segmentation"].squeeze(0)))
+#         full_seg = Im(onehot_to_color(batch["gen_segmentation"].squeeze(0)))
 #         images.append(
 #             Im.concat_horizontal(
 #                 Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}", relative_font_scale=0.004)
@@ -244,7 +244,7 @@ def viz():
 #                     pipeline=pipeline,
 #                     inference_cfg=cfg.inference,
 #                 )
-#                 mask_image = Im(get_layered_image_from_binary_mask(gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+#                 mask_image = Im(onehot_to_color(gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
 #                 mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
 #                 mask_alpha = (gen_segmentation[..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
 #                 composited_image = orig_image.pil.copy().convert("RGBA")
@@ -288,8 +288,8 @@ def viz():
     
 #     torch.sum(feature_map_mask_, dim=[0]) >= 1).sum()
 
-# from image_utils import get_layered_image_from_binary_mask, Im, ChannelRange
-# Im(get_layered_image_from_binary_mask(feature_map_mask_.permute(1, 2, 0)), channel_range=ChannelRange.UINT8)
+# from image_utils import onehot_to_color, Im, ChannelRange
+# Im(onehot_to_color(feature_map_mask_.permute(1, 2, 0)), channel_range=ChannelRange.UINT8)
 
 
 
@@ -303,10 +303,10 @@ def viz():
             # print(attention_mask.shape, query.shape, key.shape, value.shape)
             # cur_idx = (attn_meta["layer_idx"] - 1) % attn_meta["num_layers"]
             # if cur_idx == 0:
-            #     from image_utils import get_layered_image_from_binary_mask, Im, ChannelRange
+            #     from image_utils import onehot_to_color, Im, ChannelRange
             #     imgs_ = []
             #     for b in range(batch_size):
-            #         img_ = Im(get_layered_image_from_binary_mask(rearrange(attention_mask[b * attn.heads] > -1, '(h w) tokens -> h w tokens', h=latent_dim)), channel_range=ChannelRange.UINT8)
+            #         img_ = Im(onehot_to_color(rearrange(attention_mask[b * attn.heads] > -1, '(h w) tokens -> h w tokens', h=latent_dim)), channel_range=ChannelRange.UINT8)
             #         imgs_.append(img_)
 
             #     global idx_
@@ -477,3 +477,141 @@ def viz():
         # data.grid[data.grid < 0.1] = torch.nan
         # data.grid = torch.from_numpy(replace_nan_with_nearest(data.grid[0].permute(1, 2, 0).numpy())).permute(2, 0, 1).unsqueeze(0).float()
         # Im(torch.cat((data.grid[0], data.grid[0].new_zeros((1, *data.grid.shape[2:]))), dim=0)).save('1')
+    # with open(original_path, 'rb') as original_file:
+    # with gzip.open(compressed_path, 'wb', compresslevel=4) as compressed_file:
+    #     shutil.copyfileobj(original_file, compressed_file)
+
+    # def decompress_mask(compressed_mask, num_channels: int):
+    # """
+    # Decompress mask: (B, H, W, M) uint8 -> (B, H, W, C) bool
+    # """
+    # B, H, W, M = compressed_mask.shape
+    # device = compressed_mask.device
+    # decompressed_mask = torch.zeros((B, H, W, C), dtype=torch.bool, device=device)
+    # valid_mask = compressed_mask < C
+    # valid_channels = compressed_mask[valid_mask]
+    # valid_indices = valid_mask.nonzero()
+    # decompressed_mask[valid_indices[:, 0], valid_indices[:, 1], valid_indices[:, 2], valid_channels.long()] = True
+    # return decompressed_mask
+    # def get_one_hot_channels(seg, indices):
+#     """
+#     Parameters:
+#     - seg: [H, W] tensor with integers
+#     - indices: [M] tensor with selected indices for one-hot encoding.
+#     - N: Number of classes (int).
+    
+#     Returns:
+#     - [H, W, M] tensor representing the one-hot encoded segmentation map for selected indices.
+#     """
+#     H, W = seg.shape
+#     M = len(indices)
+    
+#     seg_expanded = seg.unsqueeze(-1).expand(H, W, M)
+#     indices_expanded = indices.expand(H, W, M)
+#     output = (seg_expanded == indices_expanded)
+#     return output
+
+# def one_hot_to_integer(one_hot_mask):
+#     values, indices = one_hot_mask.max(dim=-1)
+#     return torch.where(values > 0, indices, torch.tensor(-1))
+
+# def integer_to_one_hot(int_tensor, num_classes):
+#     mask = (int_tensor >= 0) & (int_tensor < num_classes)
+#     int_tensor = torch.where(mask, int_tensor, torch.tensor(0))
+#     one_hot = torch.nn.functional.one_hot(int_tensor, num_classes)
+#     one_hot = torch.where(mask.unsqueeze(-1), one_hot, False)
+#     return one_hot
+
+# import io
+# import os
+# from dataclasses import asdict, dataclass
+# from pathlib import Path
+# from typing import Optional
+# from image_utils import library_ops
+# import hdf5plugin
+# import hickle as hkl
+# from image_utils import Im
+# from PIL import Image
+# from jaxtyping import Float, jaxtyped, Integer
+# from beartype import beartype as typechecker
+# from torch import Tensor
+# from numpy import ndarray
+
+
+# def image_to_bytes(image):
+#     img_byte_arr = io.BytesIO()
+#     image.save(img_byte_arr, format="PNG")
+#     return img_byte_arr.getvalue()
+
+
+# def bytes_to_image(img_bytes):
+#     img_byte_arr = io.BytesIO(img_bytes)
+#     return Image.open(img_byte_arr, formats=("PNG",))
+
+
+# @jaxtyped
+# @typechecker
+# @dataclass(kw_only=True, unsafe_hash=True)
+# class GPTConfig:
+#     output_dir: str = "output"
+#     num_frames: int = 1
+#     img_torch: Optional[Float[Tensor, "c h w"]] = None
+#     img_np: Optional[Integer[ndarray, "h w c"]] = None
+#     img_pil: Optional[Image.Image] = None
+#     img: Optional[Im] = None
+#     path: Optional[Path] = None
+
+#     def serialize(self, path: Path):
+#         path = Path(path)
+#         path.parent.mkdir(parents=True, exist_ok=True)
+#         dump_dict = asdict(self)
+#         for key in list(dump_dict.keys()):
+#             if isinstance(dump_dict[key], Im):
+#                 dump_dict[f"{key}__im"] = dump_dict[key].np
+#                 del dump_dict[key]
+#             elif isinstance(dump_dict[key], Image.Image):
+#                 dump_dict[f"{key}__pil"] = image_to_bytes(dump_dict[key])
+#                 del dump_dict[key]
+#         hkl.dump(dump_dict, str(path), mode="w", **hdf5plugin.Zstd())
+
+#     @staticmethod
+#     def deserialize(path: Path):
+#         obj = hkl.load(str(path))
+#         for key in list(obj.keys()):
+#             if key.endswith("__im"):
+#                 obj[key.removesuffix("__im")] = Im(obj[key])
+#                 del obj[key]
+#             elif key.endswith("__pil"):
+#                 obj[key.removesuffix("__pil")] = bytes_to_image(obj[key])
+#                 del obj[key]
+
+#         print(obj)
+#         if isinstance(obj, GPTConfig):
+#             return obj
+#         else:
+#             return GPTConfig(**obj)
+
+
+# file_path = "test.pkl"
+# obj = GPTConfig()
+# image = Im("validation.png")
+
+# obj.img = image
+# obj.img_pil = image.pil
+# obj.img_torch = image.torch
+# obj.img_np = image.np
+# obj.path = Path("test.pkl")
+
+# print(obj)
+
+# obj.serialize(Path(file_path))
+
+# print(f"Compressed: {os.path.getsize(file_path) * 1e-6:.2f} MB")
+
+# obj = GPTConfig.deserialize(Path(file_path))
+
+# print(obj)
+
+# breakpoint()
+
+    # attention_mask = attention_mask.repeat_interleave(attn.heads, dim=0)

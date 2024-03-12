@@ -14,13 +14,17 @@ def get_model_from_cfg(cfg: BaseConfig):
     match cfg.model.model_type:
         case ModelType.BASE_MAPPER:
             model = BaseMapper(cfg)
-
-            inference_func = hydra.utils.instantiate(cfg.inference.inference_func)  # Instantiate the function (e.g., partials)
-            model.run_inference = types.MethodType(inference_func, model)
+            set_default_inference_func(model, cfg)
             return model
         case _:
             raise ValueError(f"Unknown model type: {cfg.model.model_type}")
+        
+def set_inference_func(model, inference_func):
+    model.run_inference = types.MethodType(inference_func, model)
 
+def set_default_inference_func(model, cfg: BaseConfig):
+    inference_func = hydra.utils.instantiate(cfg.inference.inference_func)  # Instantiate the function (e.g., partials)
+    model.run_inference = types.MethodType(inference_func, model)
 
 def _init_weights(m):
     initializer_range = 0.02

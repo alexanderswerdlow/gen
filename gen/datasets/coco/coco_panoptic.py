@@ -1,7 +1,10 @@
 import autoroot
 
+import gzip
 import json
 import os
+import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -9,12 +12,13 @@ import cv2
 import numpy as np
 import torch
 import torchvision
+from joblib import Memory
 from PIL import Image, ImageOps
 from pycocotools import mask as maskUtils
 from pycocotools.coco import COCO
 from torch.utils.data import Dataset
 
-from gen import COCO_DATASET_PATH, COCO_TRAIN_ID_PATH
+from gen import COCO_CUSTOM_PATH, COCO_DATASET_PATH, SCRATCH_CACHE_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
@@ -23,15 +27,50 @@ from gen.datasets.coco.coco_utils import _COCO_PANOPTIC_INFORMATION, _COCO_PANOP
 from gen.datasets.coco.pre_augmentation_transforms import Resize
 from gen.datasets.coco.target_transforms import PanopticTargetGenerator, SemanticTargetGenerator
 from gen.models.encoders.sam import show_anns
-from gen.utils.data_defs import get_one_hot_channels, visualize_input_data
+from gen.utils.data_defs import get_one_hot_channels, one_hot_to_integer, visualize_input_data
+from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.tokenization_utils import get_tokens
 
 torchvision.disable_beta_transforms_warning()
 
-def one_hot_to_integer_np(one_hot_mask):
-    indices = np.argmax(one_hot_mask, axis=-1)
-    values = np.max(one_hot_mask, axis=-1)
-    return np.where(values > 0, indices, -1)
+memory = Memory(SCRATCH_CACHE_PATH, verbose=0)
+
+@memory.cache(ignore=["coco"])
+def process(coco_split, coco, erode_dialate_preprocessed_masks, num_masks, num_overlapping_masks, image_id):
+    annIds = coco.getAnnIds(imgIds=[image_id])
+    anns = coco.loadAnns(ids=annIds)
+    anns = [(maskUtils.area(ann['segmentation']), ann) for ann in anns if len(ann['segmentation']) > 0]
+    anns = sorted(anns, key=lambda d: d[0], reverse=True)
+    anns = [ann[1] for ann in anns][:num_masks]
+
+    if len(anns) == 0:
+        log_warn(f"Image {image_id} has no annotations")
+        return None
+    else:
+        masks = torch.from_numpy(np.stack([coco.annToMask(anns[i]) for i in range(len(anns))])).bool().permute(1, 2, 0)
+
+        maximum_mask_threshold, min_coverage_threshold = 0.8, 0.5
+        num_pixels = masks[..., 0].numel()
+
+        remove_large_masks = masks.sum(dim=[0, 1]) < (num_pixels * maximum_mask_threshold)
+        masks = masks[..., remove_large_masks]
+
+        mask_coverage = torch.sum(torch.sum(masks, dim=-1) >= 1) / (num_pixels)
+
+        if mask_coverage < min_coverage_threshold:
+            log_warn(f"Mask coverage {mask_coverage:.2f} is less than {min_coverage_threshold} for image {image_id}")
+            return None
+        
+        instance_with_pad_mask = one_hot_to_integer(masks, num_overlapping_masks, assert_safe=False).permute(2, 0, 1) # Instances are 1...., 0 is background
+
+    if erode_dialate_preprocessed_masks:
+        initial_target_one_hot_background = instance_with_pad_mask == 255
+        one_hot_background = process_mask(initial_target_one_hot_background, kernel_size=int(instance_with_pad_mask.shape[0] * 18/512))
+        instance_with_pad_mask[initial_target_one_hot_background] = -1
+        instance_with_pad_mask[one_hot_background] = 0
+        raise NotImplementedError
+    
+    return instance_with_pad_mask
 
 def process_mask(mask: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
     mask_np = mask.numpy().astype(np.uint8)
@@ -40,6 +79,30 @@ def process_mask(mask: torch.Tensor, kernel_size: int = 3) -> torch.Tensor:
     dilated = cv2.dilate(eroded, kernel, iterations=1) # Dilation to restore the eroded main objects
     processed_mask = torch.from_numpy(dilated).to(torch.bool)
     return processed_mask
+
+def new_init(self, annotation_file=None):
+    """
+    Constructor of Microsoft COCO helper class for reading and visualizing annotations.
+    :param annotation_file (str): location of annotation file
+    :param image_folder (str): location to the folder that hosts images.
+    :return:
+    """
+    # load dataset
+    self.dataset,self.anns,self.cats,self.imgs = dict(),dict(),dict(),dict()
+    self.imgToAnns, self.catToImgs = defaultdict(list), defaultdict(list)
+    if not annotation_file == None:
+        print('loading annotations into memory...')
+        tic = time.time()
+        if isinstance(annotation_file, dict):
+            dataset = annotation_file
+        else:
+            with open(annotation_file, 'r') as f:
+                dataset = json.load(f)
+        assert type(dataset)==dict, 'annotation file format {} not supported'.format(type(dataset))
+        print('Done (t={:0.2f}s)'.format(time.time()- tic))
+        self.dataset = dataset
+        self.createIndex()
+
 
 @inherit_parent_args
 class CocoPanoptic(AbstractDataset, Dataset):
@@ -69,7 +132,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
             self,
             *,
             root=COCO_DATASET_PATH,
-            train_id_root=COCO_TRAIN_ID_PATH,
+            custom_data_root=COCO_CUSTOM_PATH,
             tokenizer=None,
             semantic_only=False,
             ignore_stuff_in_offset=False,
@@ -81,10 +144,12 @@ class CocoPanoptic(AbstractDataset, Dataset):
             object_ignore_threshold: float = 0.2,
             single_return: bool = False,
             top_n_masks_only: Optional[int] = 8,
-            load_custom_masks: bool = False,
-            num_objects: int = 133,
-            postprocess: bool = False,
+            use_preprocessed_masks: bool = False,
+            preprocessed_mask_type: str = "",
+            erode_dialate_preprocessed_masks: bool = False,
+            num_overlapping_masks: int = 1,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
+            num_objects=None,
             resolution=None,
             custom_split=None, # TODO: Needed for hydra
             path=None, # TODO: Needed for hydra
@@ -111,45 +176,35 @@ class CocoPanoptic(AbstractDataset, Dataset):
             augmentation.target_transform = None
             enable_orig_coco_augmentation = False
 
-        self.train_id_root = train_id_root
+        self.custom_data_root = custom_data_root
         self.coco_split = 'train2017' if self.split == Split.TRAIN else 'val2017'
         self.is_train = self.split == Split.TRAIN
         
         # Only used if enable_orig_coco_processing is True
-        self.min_resize_value=641
-        self.max_resize_value=641
-        self.resize_factor=32
-        self.mirror=True
-        self.min_scale=0.5
-        self.max_scale=2.
+        self.min_resize_value = 641
+        self.max_resize_value = 641
+        self.resize_factor = 32
+        self.mirror = True
+        self.min_scale = 0.5
+        self.max_scale = 2.
         self.scale_step_size=0.25
-        self.mean=(0.485, 0.456, 0.406)
-        self.std=(0.229, 0.224, 0.225)
-        crop_size = (resolution, resolution)
+        self.mean = (0.485, 0.456, 0.406)
+        self.std = (0.229, 0.224, 0.225)
+        crop_size = (self.min_resize_value, self.min_resize_value)
         self.crop_h, self.crop_w = crop_size
-
         self.pad_value = tuple([int(v * 255) for v in self.mean])
+        # End
 
-        # ======== override the following fields ========
         self.ignore_label = 255
         self.label_pad_value = (self.ignore_label, )
         self.label_dtype = 'uint8'
-
-        # list of image filename (required)
-        self.img_list = []
-        # list of label filename (required)
-        self.ann_list = []
-        # list of instance dictionary (optional)
-        self.ins_list = []
-
-        self.has_instance = False
-        self.label_divisor = 1000
-
+        self.img_list = [] # list of image filename (required)
+        self.ann_list = [] # list of label filename (required)
+        self.ins_list = [] # list of instance dictionary (optional)
         self.raw_label_transform = None
         self.pre_augmentation_transform = None
         self.transform = None
         self.target_transform = None
-
         assert self.coco_split in _COCO_PANOPTIC_INFORMATION.splits_to_sizes.keys()
 
         self.num_classes = _COCO_PANOPTIC_INFORMATION.num_classes
@@ -167,9 +222,10 @@ class CocoPanoptic(AbstractDataset, Dataset):
         self.object_ignore_threshold = object_ignore_threshold
         self.enable_orig_coco_processing = enable_orig_coco_processing
         self.top_n_masks_only = top_n_masks_only
-        self.load_custom_masks = load_custom_masks
-        self.num_objects = num_objects
-        self.postprocess = postprocess
+        self.use_preprocessed_masks = use_preprocessed_masks
+        self.preprocessed_mask_type = preprocessed_mask_type
+        self.erode_dialate_preprocessed_masks = erode_dialate_preprocessed_masks
+        self.num_overlapping_masks = num_overlapping_masks
 
         # Get image and annotation list.
         if 'test' in self.coco_split:
@@ -185,7 +241,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
             self.img_list = []
             self.ann_list = []
             self.ins_list = []
-            json_filename = os.path.join(self.train_id_root, 'panoptic_{}_trainId.json'.format(self.coco_split))
+            json_filename = os.path.join(self.custom_data_root, 'panoptic_{}_trainId.json'.format(self.coco_split))
             dataset = json.load(open(json_filename))
             # First sort by image id.
             images = sorted(dataset['images'], key=lambda i: i['id'])
@@ -195,8 +251,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
                 self.img_list.append(os.path.join(self.root, self.coco_split, img_file_name))
             for ann in annotations:
                 ann_file_name = ann['file_name']
-                self.ann_list.append(os.path.join(
-                    self.root, 'panoptic_{}'.format(self.coco_split), ann_file_name))
+                self.ann_list.append(os.path.join(self.root, 'panoptic_{}'.format(self.coco_split), ann_file_name))
                 self.ins_list.append(ann['segments_info'])
 
         assert len(self) == _COCO_PANOPTIC_INFORMATION.splits_to_sizes[self.coco_split]
@@ -208,19 +263,25 @@ class CocoPanoptic(AbstractDataset, Dataset):
         if semantic_only:
             self.target_transform = SemanticTargetGenerator(self.ignore_label, self.rgb2id)
         else:
-            self.target_transform = PanopticTargetGenerator(self.ignore_label, self.rgb2id, _COCO_PANOPTIC_THING_LIST,
-                                                            sigma=8, ignore_stuff_in_offset=ignore_stuff_in_offset,
-                                                            small_instance_area=small_instance_area,
-                                                            small_instance_weight=small_instance_weight)
-        # Generates semantic label for evaluation.
-        self.raw_label_transform = SemanticTargetGenerator(self.ignore_label, self.rgb2id)
+            self.target_transform = PanopticTargetGenerator(
+                self.ignore_label, self.rgb2id, _COCO_PANOPTIC_THING_LIST, sigma=8, ignore_stuff_in_offset=ignore_stuff_in_offset,
+                small_instance_area=small_instance_area, small_instance_weight=small_instance_weight
+            )
+        self.raw_label_transform = SemanticTargetGenerator(self.ignore_label, self.rgb2id) # Generates semantic label for evaluation.
 
-        if self.load_custom_masks:
-            if self.postprocess:
-                coco_path_ = os.path.join(self.train_id_root, 'custom_postprocessed_{}.json'.format(self.coco_split))
+        if self.preprocessed_mask_type:
+            self.custom_coco_json_path = Path(self.custom_data_root) / f'{self.preprocessed_mask_type}_{self.coco_split}.json'
+            if self.custom_coco_json_path.with_suffix('.json.gz').exists(): # We want to load the gzipped version if it exists
+                self.custom_coco_json_path = self.custom_coco_json_path.with_suffix('.json.gz')
+                with gzip.open(self.custom_coco_json_path, 'rt') as file:
+                    annotation_file = json.load(file)
             else:
-                coco_path_ = os.path.join(self.train_id_root, 'custom_{}.json'.format(self.coco_split))
-            self.coco = COCO(coco_path_)
+                annotation_file = self.custom_coco_json_path
+                log_warn(f'Could not find gzipped version of {self.custom_coco_json_path}')
+
+            log_info(f'Loading custom masks from {self.custom_coco_json_path}')
+            COCO.__init__ = new_init
+            self.coco = COCO(annotation_file=annotation_file)
 
     @staticmethod
     def train_id_to_eval_id():
@@ -289,31 +350,21 @@ class CocoPanoptic(AbstractDataset, Dataset):
     
     def __len__(self):
         return len(self.img_list)
-
-    def __getitem__(self, index):
-        # TODO: handle transform properly when there is no label
-        if self.single_return:
-            index = 0
+    
+    def get_coco_label(self, index):
         dataset_dict = {}
-        assert os.path.exists(self.img_list[index]), 'Path does not exist: {}'.format(self.img_list[index])
-        image = self.read_image(self.img_list[index], 'RGB')
-        if not self.is_train:
-            # Do not save this during training.
-            dataset_dict['raw_image'] = image.copy()
         if self.ann_list is not None:
             assert os.path.exists(self.ann_list[index]), 'Path does not exist: {}'.format(self.ann_list[index])
             label = self.read_label(self.ann_list[index], self.label_dtype)
         else:
             label = None
+
         raw_label = label.copy()
         if self.raw_label_transform is not None:
             raw_label = self.raw_label_transform(raw_label, self.ins_list[index])['semantic']
-        if not self.is_train:
-            # Do not save this during training
-            dataset_dict['raw_label'] = raw_label
+
         size = image.shape
         dataset_dict['raw_size'] = np.array(size)
-        # To save prediction for official evaluation.
         dataset_dict['name'] = os.path.splitext(os.path.basename(self.ann_list[index]))[0]
 
         # Resize and pad image to the same size before data augmentation.
@@ -324,8 +375,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         else:
             dataset_dict['size'] = dataset_dict['raw_size']
 
-        # Apply data augmentation.
-        if self.transform is not None:
+        if self.transform is not None: # Apply data augmentation.
             image, label = self.transform(image, label)
 
         pad_mask = (label == np.array(self.label_pad_value).reshape(1, 1, 3)).all(axis=-1)
@@ -343,10 +393,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
                 dataset_dict[key] = label_dict[key]
 
         for key in dataset_dict.keys():
-            if (key == 'semantic' or key == 'image') and isinstance(dataset_dict[key], np.ndarray):
+            if key == 'semantic' and isinstance(dataset_dict[key], np.ndarray):
                 dataset_dict[key] = torch.from_numpy(dataset_dict[key].copy())
-                if key == 'image':
-                    dataset_dict[key] = dataset_dict[key].permute(2, 0, 1) / 255.0
         
         # At this point, we have 133 categories. For some reason the range is 0-132 + 255
         # 0-132 are valid [e.g., 0 is person]. 255 is invalid/ignore. We treat this as background. The convention in this codebase is that the 0th segmentation mask is the background.
@@ -375,40 +423,64 @@ class CocoPanoptic(AbstractDataset, Dataset):
             torch.as_tensor(pad_mask), -torch.ones_like(instance), instance
         )
 
-        if self.load_custom_masks:
-            try:
-                annIds = self.coco.getAnnIds(imgIds=[int(Path(self.ann_list[index]).stem)])
-                anns = self.coco.loadAnns(ids=annIds)
-                if self.postprocess:
-                    anns = [ann for ann in anns if len(ann['segmentation']) > 0][:self.num_objects]
-                else:
-                    anns = [ann for ann in anns if len(ann['segmentation']) > 0 and maskUtils.area(ann['segmentation']) > 10][:self.num_objects]
+        return instance_with_pad_mask, unique_instance, unique_semantic
 
-                masks_ = np.stack([self.coco.annToMask(anns[i]) for i in range(len(anns))]).astype(np.bool_).transpose(1, 2, 0)
-                instance_with_pad_mask = torch.from_numpy(one_hot_to_integer_np(masks_) + 1) # Instances are 1...., 0 is background
+    def __getitem__(self, index):
+        if self.single_return:
+            index = 2186
+
+        
+        assert os.path.exists(self.img_list[index]), 'Path does not exist: {}'.format(self.img_list[index])
+        rgb = self.read_image(self.img_list[index], 'RGB').copy()
+        rgb = torch.from_numpy(rgb).permute(2, 0, 1) / 255.0
+
+        num_masks = min(self.top_n_masks_only, self.num_classes)
+        image_id = int(Path(self.ann_list[index]).stem)
+        if self.use_preprocessed_masks:
+            try:
+                image_id = int(Path(self.ann_list[index]).stem)
+                instance_with_pad_mask = process(self.coco_split, self.coco, self.erode_dialate_preprocessed_masks, num_masks, self.num_overlapping_masks, image_id)
+                if instance_with_pad_mask is None:
+                    raise Exception(f'No masks found for image_id {image_id}')
+                
             except Exception as e:
-                print(e)
-                print(f'Error with {int(Path(self.ann_list[index]).stem)}')
+                log_error(e)
+                return self.__getitem__((index + 1) % len(self)) # Very hacky but might save us in case of an error with a single instance.
+        else:
+            instance_with_pad_mask, unique_instance, unique_semantic = self.get_coco_label(index)
 
         # -1 is ignore, 0 is background
         source_data, target_data = self.augmentation(
-            source_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].squeeze(-1).float()),
-            target_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].squeeze(-1).float()),
+            source_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
+            target_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
         )
 
         source_data.image = source_data.image.squeeze(0)
-        source_data.segmentation = source_data.segmentation.squeeze(0).long()
+        source_data.segmentation = source_data.segmentation.squeeze(0).permute(1, 2, 0).long() # CHW -> HWC
         target_data.image = target_data.image.squeeze(0)
-        target_data.segmentation = target_data.segmentation.squeeze(0).long()
+        target_data.segmentation = target_data.segmentation.squeeze(0).permute(1, 2, 0).long() # CHW -> HWC
 
-        # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
-        source_pad_mask = source_data.segmentation == -1
-        target_pad_mask = target_data.segmentation == -1
+        if self.use_preprocessed_masks:
+            # In this mode, we have already performed pre-processing and any pixels not in a mask are ignored. This includes the "background" that we create from unused pixels.
+            source_data.segmentation[source_data.segmentation == -1] = 255
+            target_data.segmentation[target_data.segmentation == -1] = 255
+            source_pad_mask = (source_data.segmentation < 255).any(dim=-1)
+            target_pad_mask = (target_data.segmentation < 255).any(dim=-1)
 
-        # We handle -1 by adding 1 and then removing the 1st element
-        source_bincount = torch.bincount(source_data.segmentation.squeeze(0).long().view(-1) + 1, minlength=self.num_classes + 2)[1:]
+            pixels = source_data.segmentation.squeeze(0).long().contiguous().view(-1)
+            pixels = pixels[(pixels < 255) & (pixels >= 0)]
+            source_bincount = torch.bincount(pixels, minlength=num_masks + 1)
+            valid = source_bincount > (source_data.segmentation.shape[0] * self.object_ignore_threshold)
 
-        if self.postprocess is False:
+            # We convert to uint8 to save memory.
+            source_data.segmentation = source_data.segmentation.to(torch.uint8)
+            target_data.segmentation = target_data.segmentation.to(torch.uint8)
+        else:
+            # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
+            source_bincount = torch.bincount(source_data.segmentation.squeeze(0).long().view(-1) + 1, minlength=num_masks + 2)[1:]
+            source_pad_mask = source_data.segmentation == -1
+            target_pad_mask = target_data.segmentation == -1
+
             # We remove instance masks that are too small
             valid = source_bincount > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2
             
@@ -423,16 +495,12 @@ class CocoPanoptic(AbstractDataset, Dataset):
 
             too_small_instance_pixels_ = get_one_hot_channels(target_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
             target_data.segmentation[too_small_instance_pixels_] = 0
-        else:
-            valid = source_bincount > 0
-            initial_one_hot_background = target_data.segmentation == 0
-            one_hot_background = process_mask(initial_one_hot_background, kernel_size=int(target_data.segmentation.shape[0] * 24/512))
-            target_data.segmentation[initial_one_hot_background] = -1
-            target_data.segmentation[one_hot_background] = 0
+
 
         categories = torch.full((valid.shape), fill_value=-1)
-        categories[unique_instance] = unique_semantic - 1
-        categories[~valid] = -1
+        if self.use_preprocessed_masks is False:
+            categories[unique_instance] = unique_semantic - 1
+            categories[~valid] = -1
         valid = valid[..., 1:]
         categories = categories[..., 1:]
         
@@ -446,6 +514,9 @@ class CocoPanoptic(AbstractDataset, Dataset):
             "input_ids": get_tokens(self.tokenizer),
             "valid": valid,
             "categories": categories,
+            "metadata" : {
+                "scene_id": str(image_id)
+            }
         }
 
         if source_data.grid is not None: ret["disc_grid"] = source_data.grid.squeeze(0)
@@ -500,41 +571,56 @@ if __name__ == "__main__":
     from image_utils import library_ops
     tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
     from gen.datasets.utils import get_stable_diffusion_transforms
+    default_augmentation=Augmentation(
+        initial_resolution=512,
+        center_crop=False,
+        enable_random_resize_crop=True,
+        enable_horizontal_flip=True,
+        target_random_scale_ratio=((0.5, 1), (1.0, 1.0)),
+        source_transforms=get_stable_diffusion_transforms(resolution=512),
+        target_transforms=get_stable_diffusion_transforms(resolution=512),
+        reorder_segmentation=False,
+    )
+    soda_augmentation=Augmentation(
+        different_source_target_augmentation=True,
+        enable_random_resize_crop=True, 
+        enable_horizontal_flip=True,
+        source_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+        target_random_scale_ratio=((0.3, 0.6), (0.8, 1.2)),
+        enable_rand_augment=False,
+        enable_rotate=True,
+        target_transforms=get_stable_diffusion_transforms(resolution=512),
+        reorder_segmentation=True
+    )
     dataset = CocoPanoptic(
         shuffle=False,
         cfg=None,
-        split=Split.VALIDATION,
+        split=Split.TRAIN,
         num_workers=0,
-        batch_size=16,
+        batch_size=12,
         tokenizer=tokenizer,
-        resolution=256,
-        augmentation=Augmentation(
-            different_source_target_augmentation=False,
-            enable_random_resize_crop=True, 
-            enable_horizontal_flip=True,
-            source_random_scale_ratio=None, # ((0.8, 1.0), (0.9, 1.1)),
-            target_random_scale_ratio=((0.9, 0.9), (0.8, 1.2)),
-            enable_rand_augment=False,
-            target_normalization=get_stable_diffusion_transforms(resolution=512)
-        ),
+        augmentation=default_augmentation,
         single_return=False,
-        object_ignore_threshold=0.0,
-        top_n_masks_only=100,
         enable_orig_coco_processing=False,
         return_tensorclass=True,
-        load_custom_masks=True,
-        postprocess=True,
+        object_ignore_threshold=0.0,
+        top_n_masks_only=96,
+        use_preprocessed_masks=True,
+        postprocess=False,
+        preprocessed_mask_type="hipie",
+        erode_dialate_preprocessed_masks=False,
+        num_overlapping_masks=3,
     )
 
     import time
-    start_time = time.time()
     generator = torch.Generator().manual_seed(0)
-    dataloader = dataset.get_dataloader(generator=generator)
+    dataloader = dataset.get_dataloader(generator=generator, pin_memory=False) #.to(torch.device('cuda:0'))
 
+    start_time = time.time()
     for step, batch in enumerate(dataloader):
         print(f'Time taken: {time.time() - start_time}')
-        visualize_input_data(batch, name=f'coco_orig_{step}', show_background_foreground_only=True)
+        names = [f'{batch.metadata["scene_id"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
+        visualize_input_data(batch, names=names, show_overlapping_masks=True)
         start_time = time.time()
-
-        if step > 1:
+        if step > 2:
             break

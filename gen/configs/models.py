@@ -119,6 +119,7 @@ class ModelConfig:
     add_grid_to_input_channels: bool = False
     num_layer_queries: int = 1
     dropout_grid_conditioning: Optional[float] = 0.15
+    masked_self_attention: bool = False
 
 @dataclass
 class ControlNetConfig(ModelConfig):
@@ -169,6 +170,7 @@ store_child_config(
         img_size=None,
         return_only=None,
         pretrained=False,
+        gradient_checkpointing=True,
         return_nodes={
             "blocks": "blocks",
             "norm": "norm",
@@ -196,6 +198,8 @@ store_child_config(
             "norm": "norm",
         },
         populate_full_signature=False,
+        num_classes=0, 
+        global_pool=''
     ),
     encoder_dim=192,
 )

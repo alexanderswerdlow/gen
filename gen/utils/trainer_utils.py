@@ -17,13 +17,16 @@ from image_utils import Im
 
 from gen.utils.decoupled_utils import is_main_process
 from gen.utils.logging_utils import log_info, log_error
-from accelerate.utils.modeling import load_checkpoint_in_model
+
 
 if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
 
 
 def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, load_model: bool) -> int:
+    """
+    Loads the model [or just returns the checkpoint global step]
+    """
     if cfg.trainer.ckpt == "latest":
         # Get the most recent checkpoint
         dirs = os.listdir(cfg.checkpoint_dir)
@@ -41,10 +44,16 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, 
         raise FileNotFoundError
     else:
         log_info(f"Resuming from checkpoint {path}")
+
+        # TODO: @Tsung-Wei Ke tested this and found that it doesn't work, at least in some of the cases we used.
+        # We should see if we can still load the optimizer states.
+
+        # from accelerate.utils.modeling import load_checkpoint_in_model
         # if path.is_file() or cfg.trainer.load_weights_only_no_state:
         #     load_checkpoint_in_model(model, str(path))
         # else:
         #     accelerator.load_state(path)
+
         if load_model:
             state_dict = torch.load(path, map_location='cpu')
             model.load_state_dict(state_dict, strict=cfg.trainer.strict_load)
@@ -185,6 +194,26 @@ def unwrap(model):
         else:
             return model
 
+def print_memory(verbose: bool = False):
+    max_cur, max_peak = -1, -1
+    max_cur_device, max_peak_device = -1, -1
+    for device in range(torch.cuda.device_count()):
+        current_reserved_memory_MB = torch.cuda.memory_reserved(device=torch.device(f'cuda:{device}')) / (2**20)
+        peak_reserved_memory_MB = torch.cuda.max_memory_reserved(device=torch.device(f'cuda:{device}')) / (2**20)
+
+        if current_reserved_memory_MB > max_cur:
+            max_cur = current_reserved_memory_MB
+            max_cur_device = device
+        
+        if peak_reserved_memory_MB > max_peak:
+            max_peak = peak_reserved_memory_MB
+            max_peak_device = device
+
+    if verbose:
+        log_info(torch.cuda.memory_summary(abbreviated=False))
+    log_info(f"GPU Memory Current: {max_cur:.2f} MB on rank {max_cur_device}, Peak Reserved: {max_peak:.2f} MB on rank {max_peak_device}")
+    
+
 if __name__ == "__main__":
     # assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10)
     # assert not check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10, run_first=True)
@@ -197,3 +226,4 @@ if __name__ == "__main__":
     for i in range(50000):
         if check_every_n_steps(TrainingState(epoch_step=i, num_epoch_steps=10, global_step=i, epoch=0, true_step=i), 500, decay_steps=True):
             print(i)
+            

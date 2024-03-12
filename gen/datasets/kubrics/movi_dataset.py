@@ -320,8 +320,8 @@ if __name__ == "__main__":
             different_source_target_augmentation=True,
             source_random_scale_ratio=((0.9, 0.9), (0.9, 1.1)),
             target_random_scale_ratio=((0.5, 0.5), (0.8, 1.2)),
-            source_normalization=ViTFeatureExtractor(model_name="vit_small_patch16_224").transform,
-            target_normalization=get_stable_diffusion_transforms(resolution=512)
+            source_transforms=ViTFeatureExtractor(model_name="vit_small_patch16_224").transform,
+            target_transforms=get_stable_diffusion_transforms(resolution=512)
         ),
         multi_camera_format=True,
         cache_in_memory=True,

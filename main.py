@@ -26,7 +26,7 @@ from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig
 from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint, set_timing_builtins
-from gen.utils.logging_utils import log_error, log_info, log_warn, set_logger
+from gen.utils.logging_utils import log_error, log_info, log_warn, set_log_file, set_logger
 from inference import inference
 from train import Trainer
 
@@ -78,21 +78,25 @@ def main(cfg: BaseConfig):
     cfg.logging_dir = Path(cfg.output_dir, cfg.logging_dir)
     if is_main_process():
         if cfg.checkpoint_dir.is_absolute():
-            cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name
-            if cfg.checkpoint_dir.exists() and not cfg.trainer.resume:
-                cfg.checkpoint_dir = cfg.checkpoint_dir / "".join(random.choices(string.ascii_letters, k=10))
-            
+            if cfg.trainer.resume:
+                cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name + "".join(random.choices(string.ascii_letters, k=10))
+            elif cfg.checkpoint_dir.exists():
+                cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name / "".join(random.choices(string.ascii_letters, k=10))
+            else:
+                cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name
+
             cfg.checkpoint_dir.mkdir(exist_ok=True, parents=True)
-            symlink_dir = cfg.output_dir / "checkpoints"
-            symlink_dir.symlink_to(cfg.checkpoint_dir)
+            if not cfg.trainer.resume:
+                symlink_dir = cfg.output_dir / "checkpoints"
+                symlink_dir.symlink_to(cfg.checkpoint_dir)
         else:
             cfg.checkpoint_dir = Path(cfg.output_dir, cfg.checkpoint_dir)
     else:
         cfg.checkpoint_dir = None
 
-    # log_file_path = logging_dir / "output.log"
-    # log_file_path.parent.mkdir(parents=True, exist_ok=True)
-    # set_log_file(log_file_path)
+    log_file_path = cfg.logging_dir / "output.log"
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    set_log_file(log_file_path)
 
     if is_main_process() and cfg.reference_dir is not None:
         try:
@@ -108,7 +112,7 @@ def main(cfg: BaseConfig):
         np.random.seed(cfg.trainer.seed)
         random.seed(cfg.trainer.seed)
         torch.manual_seed(cfg.trainer.seed)
-        torch.cuda.manual_seed_all(cfg.trainer.seed)
+        torch.cuda.manual_seed(cfg.trainer.seed)
         cudnn.deterministic = False
         log_warn("We are seeding training but disabling the CUDNN deterministic setting for performance reasons.")
 

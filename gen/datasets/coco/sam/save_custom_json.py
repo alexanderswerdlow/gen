@@ -27,6 +27,14 @@ def mask_to_poly(masks):
     polys.append(segmentation)
   return polys
 
+def update_with_inference_single(masks, image_id, annotations, annotation_id, image_size):
+    category_id = 1
+    contours = mask_to_poly(masks.cpu().numpy())
+    for j, contour in enumerate(contours):
+        annotation = create_annotation_format(contour, image_id, category_id, annotation_id, image_size)
+        annotations.append(annotation)
+        annotation_id += 1
+    return annotations, annotation_id
 
 def create_annotation_format(contour, image_id_, category_id, annotation_id, image_size, use_rle: bool = True):
     height, width = image_size
@@ -65,12 +73,12 @@ def update_with_inference_batch(inference_batch, annotations, annotation_id, ori
 
     return annotations, annotation_id
 
-def save_json(coco_root_dir, coco_slice_name, annotations, split_idx):
-    train_id_root = f"{str(coco_root_dir)}/annotations"
-    json_data = json.load(open(os.path.join(train_id_root, 'instances_{}.json'.format(coco_slice_name))))
+def save_json(coco_root_dir, coco_slice_name, annotations, split_idx, prefix='sam'):
+    custom_data_root = f"{str(coco_root_dir)}/annotations"
+    json_data = json.load(open(os.path.join(custom_data_root, 'instances_{}.json'.format(coco_slice_name))))
     del json_data["annotations"]
     json_data["annotations"] = annotations
     output_dir = Path(coco_root_dir)
 
-    with open(output_dir / "annotations" / f"custom_split_{split_idx}_{coco_slice_name}.json", "w") as outfile:
-        json.dump(json_data, outfile, sort_keys=True, indent=4)
+    with open(output_dir / "annotations" / f"{prefix}_split_{split_idx}_{coco_slice_name}.json", "w") as outfile:
+        json.dump(json_data, outfile, sort_keys=True)

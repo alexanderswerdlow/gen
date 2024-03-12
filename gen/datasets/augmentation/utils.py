@@ -26,14 +26,16 @@ def get_viz_keypoints(B, H, W, step=4):
 
 
 def process_output_keypoints(keypoints: Keypoints, B: int, input_H: int, input_W: int, output_H: int, output_W: int, fill_value: int = -1):
-    y_coords, x_coords = torch.meshgrid(torch.arange(input_W), torch.arange(input_H), indexing="ij")
+    device = keypoints._data.device
+
+    y_coords, x_coords = torch.meshgrid(torch.arange(input_W, device=device), torch.arange(input_H, device=device), indexing="ij")
     coords = torch.stack((x_coords, y_coords), dim=-1).unsqueeze(0).repeat(B, 1, 1, 1).reshape(B, -1, 2)  # YX Order
 
     # Round valid keypoints to nearest pixel and mask out invalid keypoints
-    arr = torch.round(keypoints.to_tensor()[keypoints.valid_mask]).int()  # Coordinates for the target image
-    coords_arr = coords[keypoints.valid_mask]  # Coordinates for the source image
+    arr = torch.round(keypoints.to_tensor()[keypoints.valid_mask]).int().to(device)  # Coordinates for the target image
+    coords_arr = coords[keypoints.valid_mask.to(arr.device)]  # Coordinates for the source image
 
-    inverted_arr = torch.full((B, output_H, output_W, 2), fill_value, dtype=torch.long) # TODO: BUG HERE
+    inverted_arr = torch.full((B, output_H, output_W, 2), fill_value, dtype=torch.long, device=device) # TODO: BUG HERE
     # warnings.warn("Kornia uses XY order for Keypoints. Be Careful.")
     inverted_arr[torch.nonzero(keypoints.valid_mask)[:, 0], arr[:, 1], arr[:, 0]] = coords_arr
     inverted_arr = torch.flip(inverted_arr, dims=(-1,))
@@ -57,7 +59,7 @@ def process_output_segmentation(keypoints: Keypoints, output_segmentation: torch
     filter_mask = filter_bounds(arr, h, w)
     arr = arr[filter_mask]
 
-    output_segmentation[torch.nonzero(~keypoints.valid_mask)[filter_mask][:, 0], arr[:, 1], arr[:, 0]] = fill_value
+    output_segmentation[torch.nonzero(~keypoints.valid_mask)[filter_mask][:, 0], ..., arr[:, 1], arr[:, 0]] = fill_value
     return output_segmentation
 
 

@@ -1,5 +1,7 @@
 load_time = __import__("time").time()
 
+from functools import partial
+from importlib.util import find_spec
 import itertools
 import math
 import os
@@ -26,8 +28,8 @@ from diffusers.utils.import_utils import is_xformers_available
 from gen.configs import BaseConfig, ModelType
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.models.cross_attn.base_model import BaseMapper
-from gen.models.utils import get_model_from_cfg
-from gen.utils.decoupled_utils import Profiler, get_rank, is_main_process, save_memory_profile, write_to_file
+from gen.models.utils import get_model_from_cfg, set_default_inference_func, set_inference_func
+from gen.utils.decoupled_utils import Profiler, get_num_gpus, get_rank, is_main_process, save_memory_profile, write_to_file
 from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.trainer_utils import (
     Trainable,
@@ -36,6 +38,7 @@ from gen.utils.trainer_utils import (
     check_every_n_steps,
     handle_checkpointing_dirs,
     load_from_ckpt,
+    print_memory,
     unwrap,
 )
 from inference import run_inference_dataloader
@@ -96,8 +99,11 @@ class Trainer:
             case ModelType.BASE_MAPPER:
                 model = get_model_from_cfg(self.cfg)
                 self.models.append(model)
+
+                # TODO: We also call load_from_ckpt in train() [but load_model is False]. This may be due to an issue calling it at that location.
                 if self.cfg.trainer.ckpt:
                     _ = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=model, load_model=True)
+
                 self.model = self.accelerator.prepare(model)
                 self.tokenizer = unwrap(model).tokenizer
 
@@ -125,10 +131,10 @@ class Trainer:
         if self.cfg.dataset.overfit:
             self.validation_dataset_holder.get_dataset = lambda: self.train_dataloader.dataset
 
-        self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus, self.cfg.dataset.validation_dataset.batch_size)
         g = torch.Generator()
         g.manual_seed(0 + get_rank())
         self.validation_dataset_holder.batch_size = self.cfg.dataset.validation_dataset.batch_size
+        self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.validation_dataset_holder.batch_size, self.cfg.dataset.validation_dataset.batch_size)
         self.validation_dataloader = self.validation_dataset_holder.get_dataloader(generator=g, pin_memory=False)
         self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
 
@@ -138,9 +144,23 @@ class Trainer:
         kwargs = dict()
         module_name, class_name = self.cfg.trainer.optimizer_cls.path.rsplit(".", 1)
         optimizer_class = getattr(importlib.import_module(module_name), class_name)
+            
         if optimizer_class == torch.optim.AdamW:
             kwargs['eps'] = self.cfg.trainer.adam_epsilon
             kwargs['betas'] = (self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2)
+
+        # Check that both fused and 8bit are not both true
+        assert not (self.cfg.trainer.use_fused_adam and self.cfg.trainer.use_8bit_adam)
+
+        if self.cfg.trainer.use_fused_adam and find_spec("apex"):
+            from apex.optimizers import FusedAdam
+            optimizer_class = FusedAdam
+            log_info("Using FusedAdam...")
+
+        if self.cfg.trainer.use_8bit_adam and find_spec("bitsandbytes"):
+            import bitsandbytes as bnb
+            optimizer_class = bnb.optim.AdamW8bit
+            log_info("Using 8bit AdamW...")
         
         if self.cfg.trainer.momentum is not None:
             kwargs['momentum'] = self.cfg.trainer.momentum
@@ -206,6 +226,7 @@ class Trainer:
         if self.cfg.dataset.reset_validation_dataset_every_epoch:
             g = torch.Generator()
             g.manual_seed(state.global_step + get_rank())
+            self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.validation_dataset_holder.batch_size, self.cfg.dataset.validation_dataset.batch_size)
             self.validation_dataloader = self.validation_dataset_holder.get_dataloader(generator=g, pin_memory=False)
             self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
 
@@ -218,6 +239,9 @@ class Trainer:
             prefix="val/",
         )
 
+        if self.cfg.dataset.reset_validation_dataset_every_epoch:
+            del self.validation_dataloader
+
         if self.cfg.trainer.validate_training_dataset:
             self.validate_train_dataloader(state)
 
@@ -226,6 +250,16 @@ class Trainer:
         log_info(
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.get('wandb_url', None)}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
         )
+
+    @torch.no_grad()
+    def validate_compose(self, state: TrainingState):
+        assert self.cfg.dataset.reset_validation_dataset_every_epoch
+        from gen.models.cross_attn.base_inference import compose_two_images
+        set_inference_func(unwrap(self.model), partial(compose_two_images))
+        self.validation_dataset_holder.batch_size = 2
+        self.validate(state=state)
+        self.validation_dataset_holder.batch_size = self.cfg.dataset.validation_dataset.batch_size
+        set_default_inference_func(unwrap(self.model), self.cfg)
 
     def validate_train_dataloader(self, state: TrainingState):
         self.train_dataloader_holder.subset_size = self.validation_dataset_holder.subset_size
@@ -363,11 +397,9 @@ class Trainer:
         global_step = 0
         first_epoch = 0
 
-        # Potentially load in the weights and states from a previous save
+        # Potentially load in the weights and states from a previous save. Due to an accelerate bug, we actually load the model in init_models and only fetch the step here.
         if tr.ckpt:
-            initial_global_step = load_from_ckpt(
-                cfg=self.cfg, accelerator=self.accelerator,
-                model=self.model, load_model=False)
+            initial_global_step = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=self.model, load_model=False)
         else:
             initial_global_step = 0
 
@@ -442,22 +474,35 @@ class Trainer:
                 if self.accelerator.sync_gradients:
                     unwrap(self.model).on_sync_gradients(state)
 
+                    if self.cfg.trainer.profile_memory and global_step + 1 >= tr.max_train_steps:
+                        break
+
                     if self.cfg.profile and profiler.step(global_step):
                         log_info(f"Profiling finished at step: {global_step}")
                         break
 
                     if check_every_n_steps(state, tr.checkpointing_steps, run_first=False, all_processes=False):
-                        del batch, loss, losses
-                        torch.cuda.empty_cache()
-                        print(torch.cuda.memory_summary(abbreviated=True))
                         self.checkpoint(state)
-                        print(torch.cuda.memory_summary(abbreviated=True))
 
                     if check_every_n_steps(
                         state, tr.eval_every_n_steps, run_first=tr.eval_on_start, all_processes=True, decay_steps=tr.eval_decay_steps
                     ) or check_every_n_epochs(state, tr.eval_every_n_epochs, all_processes=True):
-                        print(torch.cuda.memory_summary(abbreviated=True))
-                        self.validate(state)
+                        del batch, loss, losses
+                        torch.cuda.empty_cache()
+                        print_memory()
+
+                        try:
+                            self.validate(state)
+                            if self.cfg.trainer.compose_inference:
+                                self.validate_compose(state)
+                        except Exception as e:
+                            if get_num_gpus() > 1:
+                                log_error(f"Error during validation: {e}. Continuing...")
+                            else:
+                                raise
+
+                        torch.cuda.empty_cache()
+                        print_memory()
 
                     if check_every_n_steps(state, tr.custom_inference_every_n_steps, run_first=tr.eval_on_start, all_processes=True):
                         self.base_model_validate(state)
@@ -488,6 +533,7 @@ class Trainer:
         self.accelerator.wait_for_everyone()
 
         if self.cfg.trainer.profile_memory:
+            print_memory(verbose=True)
             save_memory_profile(self.cfg.output_dir / "profile")
 
         if self.cfg.profile:

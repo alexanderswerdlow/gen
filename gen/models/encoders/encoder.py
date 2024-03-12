@@ -304,12 +304,16 @@ class ResNet18TorchVision(TorchVisionModel):
 
 
 class FeatureExtractorModel(BaseModel):
-    def __init__(self, return_nodes, **kwargs):
+    def __init__(self, return_nodes, gradient_checkpointing: bool = True, **kwargs):
         self.return_nodes = return_nodes
+        self.gradient_checkpointing = gradient_checkpointing
         super().__init__(**kwargs)
 
     def create_model(self, **kwargs):
         self.base_model = super().create_model(**kwargs)
+        if self.gradient_checkpointing:
+            print("Setting grad checkpointing")
+            self.base_model.set_grad_checkpointing(enable=True)
         return create_feature_extractor(self.base_model, return_nodes=self.return_nodes)
 
     def get_nodes(self):

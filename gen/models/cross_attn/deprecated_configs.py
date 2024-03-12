@@ -75,16 +75,16 @@ def attention_masking(batch: InputData, cond: Optional[ConditioningData]):
         tensor_nhw[:, (~tensor_nhw.any(dim=0))] = True
         all_masks.append(tensor_nhw.to(device))
 
-    cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attention_mask"] = torch.stack(all_masks, dim=0).to(dtype=torch.bool)
+    cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].cross_attention_mask = torch.stack(all_masks, dim=0).to(dtype=torch.bool)
 
 
 def handle_attention_masking_dropout(cond: Optional[ConditioningData], dropout_idx):
-    attn_mask = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attention_mask"]
+    attn_mask = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].cross_attention_mask
     attn_mask[dropout_idx] = torch.ones((77, 64, 64)).to(device=cond.encoder_hidden_states.device, dtype=torch.bool)
 
 
-def handle_attn_proc_masking(attn_meta, hidden_states, attn, query, batch_size):
-    attention_mask = attn_meta["attention_mask"]
+def handle_attn_proc_cross_attn_masking(attn_meta, hidden_states, attn, query, batch_size):
+    attention_mask = attn_meta.cross_attention_mask
     resized_attention_masks = []
     latent_dim = round(math.sqrt(hidden_states.shape[1]))
     for b in range(attention_mask.shape[0]):

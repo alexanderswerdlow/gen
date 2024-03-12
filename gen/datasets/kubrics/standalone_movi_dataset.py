@@ -12,7 +12,7 @@ from gen import MOVI_DATASET_PATH
 
 torchvision.disable_beta_transforms_warning()
 import torchvision.transforms.v2 as transforms
-from image_utils import Im, get_layered_image_from_binary_mask
+from image_utils import Im, onehot_to_color
 from torchvision.tv_tensors import (BoundingBoxes, BoundingBoxFormat, Image,
                                     Mask)
 
@@ -117,6 +117,6 @@ if __name__ == "__main__":
     dataset = MoviDataset(root=MOVI_DATASET_PATH, dataset='movi_e', split='validation', augment=False, num_frames=24)
     for i in range(len(dataset)):
         data = dataset.__getitem__(i)
-        Im.concat_horizontal(draw_boxes(Im((data['image'] + 1) / 2).np, data['bbox']), Im(get_layered_image_from_binary_mask(data['segmentation']))).save(f'{i}')
+        Im.concat_horizontal(draw_boxes(Im((data['image'] + 1) / 2).np, data['bbox']), Im(onehot_to_color(data['segmentation']))).save(f'{i}')
         
     from ipdb import set_trace; set_trace()

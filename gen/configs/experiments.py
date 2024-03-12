@@ -1,19 +1,13 @@
 from functools import partial
+
+import torch
 from hydra_zen import builds
 
-from gen import (
-    IMAGENET_PATH,
-    MOVI_DATASET_PATH,
-    MOVI_MEDIUM_PATH,
-    MOVI_MEDIUM_SINGLE_OBJECT_PATH,
-    MOVI_OVERFIT_DATASET_PATH,
-    MOVI_MEDIUM_TWO_OBJECTS_PATH,
-)
-from gen.configs.utils import mode_store, store_child_config
+from gen import (IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH,
+                 MOVI_OVERFIT_DATASET_PATH)
+from gen.configs.utils import mode_store
+from gen.models.cross_attn.base_inference import compose_two_images, interpolate_latents
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
-import torch
-from gen.models.cross_attn.base_inference import run_qualitative_inference, compose_two_images, interpolate_latents
-from gen.models.encoders.extra_encoders import ViTWithExtraChannelsFeatureExtractor
 
 
 def get_override_dict(**kwargs):
@@ -237,26 +231,44 @@ def get_datasets():  # TODO: These do not need to be global configs
         name="coco_panoptic",
         dataset=dict(
             train_dataset=dict(
-                num_objects=133,
+                object_ignore_threshold=0.0,
+                top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
+                use_preprocessed_masks=True,
+                preprocessed_mask_type="hipie",
+                erode_dialate_preprocessed_masks=False,
+                num_overlapping_masks=3,
                 augmentation=dict(
                     initial_resolution=512,
+                    center_crop=False,
+                    reorder_segmentation=True,
                     enable_random_resize_crop=True,
                     enable_horizontal_flip=True,
-                    target_random_scale_ratio=((0.4, 1), (0.8, 1.0)),
+                    enable_square_crop=True,
+                    source_random_scale_ratio=None,
+                    target_random_scale_ratio=((0.4, 1), (0.9, 1.1)),
                 )
             ),
             validation_dataset=dict(
-                num_objects=133,
+                object_ignore_threshold=0.0,
+                top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
+                use_preprocessed_masks=True,
+                preprocessed_mask_type="hipie",
+                erode_dialate_preprocessed_masks=False,
+                num_overlapping_masks=3,
                 augmentation=dict(
                     initial_resolution=512,
+                    center_crop=True,
+                    reorder_segmentation=True,
                     enable_random_resize_crop=True,
                     enable_horizontal_flip=False,
-                    target_random_scale_ratio=((0.6, 0.8), (1.0, 1.0)),
+                    enable_square_crop=True,
+                    source_random_scale_ratio=None,
+                    target_random_scale_ratio=((0.6, 1.0), (1.0, 1.0)),
                 )
             ),
         ),
         model=dict(
-            segmentation_map_size=134,
+            segmentation_map_size=36,
         ),
         hydra_defaults=[
             "_self_",
@@ -353,7 +365,7 @@ def get_experiments():
 
     mode_store(
         name="unet_lora",
-        model=dict(unet_lora=True, lora_rank=256, gated_cross_attn=False, unfreeze_gated_cross_attn=False),
+        model=dict(freeze_unet=True, unet_lora=True, lora_rank=256, gated_cross_attn=False, unfreeze_gated_cross_attn=False),
         trainer=dict(learning_rate=1e-6),
         dataset=dict(train_dataset=dict(batch_size=20)),
     )
@@ -769,6 +781,7 @@ def get_experiments():
             # use_sd_15_tokenizer_encoder=True,
         ),
         dataset=dict(
+            reset_validation_dataset_every_epoch=True,
             train_dataset=dict(
                 batch_size=36,
             ),
@@ -781,7 +794,10 @@ def get_experiments():
             checkpointing_steps=5000, 
             eval_every_n_steps=2000, 
             max_train_steps=1000000,
-            validate_training_dataset=False
+            validate_training_dataset=True,
+            compile=True,
+            use_fused_adam=False,
+            use_8bit_adam=True,
         ),
         hydra_defaults=["no_movi_augmentation", "multiscale", "low_res",  "coco_panoptic", "debug_vit_base_clip"], # "sd_15"
     )
@@ -809,7 +825,6 @@ def get_experiments():
             eval_every_n_steps=100,
             validate_training_dataset=True
         ),
-        hydra_defaults=["coco_recon_only"],
     )
 
     mode_store(
@@ -902,6 +917,38 @@ def get_experiments():
     )
 
     mode_store(
+        name="old_coco_masks",
+        dataset=dict(
+            train_dataset=dict(
+                use_preprocessed_masks=False,
+                object_ignore_threshold=0.2,
+                top_n_masks_only=8,
+                augmentation=dict(
+                    different_source_target_augmentation=False,
+                    enable_random_resize_crop=True, 
+                    enable_horizontal_flip=True,
+                    target_random_scale_ratio=((0.5, 0.9), (0.9, 1.1)),
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                )
+            ),
+            validation_dataset=dict(
+                use_preprocessed_masks=False,
+                object_ignore_threshold=0.2,
+                top_n_masks_only=8,
+                augmentation=dict(
+                    different_source_target_augmentation=False,
+                    enable_random_resize_crop=True, 
+                    enable_horizontal_flip=True,
+                    target_random_scale_ratio=((0.5, 0.9), (1.0, 1.0)),
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                )
+            ),
+        ),
+    )
+
+    mode_store(
         name="soda_coco",
         model=dict(
             add_pos_emb=False,
@@ -924,12 +971,134 @@ def get_experiments():
             train_dataset=dict(
                 batch_size=36,
                 augmentation=dict(
+                    different_source_target_augmentation=True,
                     enable_random_resize_crop=True, 
                     enable_horizontal_flip=True,
-                    target_random_scale_ratio=((0.75, 1.75), (0.9, 1.1)),
-                    enable_rand_augment=False
+                    source_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                    target_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
+                    enable_rand_augment=False,
+                    enable_rotate=True,
+                )
+            ),
+            validation_dataset=dict(
+                augmentation=dict(
+                    different_source_target_augmentation=True,
+                    enable_random_resize_crop=True, 
+                    enable_horizontal_flip=True,
+                    source_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                    target_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
+                    enable_rand_augment=False,
+                    enable_rotate=True,
                 )
             ),
         ),
+        trainer=dict(
+            eval_every_n_steps=500,
+        ),
         hydra_defaults=["coco_recon_only",  {"override /model": "basemapper_vit_extra_channels"}],
+    )
+
+    mode_store(
+        name="high_res_coco_trained",
+        model=dict(
+            encoder=dict(
+                model_name="vit_base_patch14_reg4_dinov2.lvd142m",
+                img_size=518,
+            ),
+            encoder_latent_dim=37,
+            encoder_resolution=518,
+            pretrained_model_name_or_path="lambdalabs/sd-image-variations-diffusers",
+            token_embedding_dim=768,
+            use_sd_15_tokenizer_encoder=True,
+            # We pretrained by fine-tuning all layers.
+            # unfreeze_last_n_clip_layers=None,
+            # freeze_clip=False,
+            freeze_clip=True,
+            unfreeze_last_n_clip_layers=2,
+            masked_self_attention=True
+        ),
+        trainer=dict(
+            learning_rate=1e-4,
+            lr_warmup_steps=2000,
+            compile=False,
+            use_8bit_adam=True,
+            use_fused_adam=False,
+        ),
+        dataset=dict(
+            train_dataset=dict(
+                batch_size=24,
+            ),
+        ),
+        inference=dict(
+            guidance_scale=5.0
+        )
+    )
+
+    mode_store(
+        name="profile_high_res_coco",
+        model=dict(
+            encoder=dict(
+                model_name="vit_small_patch14_reg4_dinov2.lvd142m",
+                img_size=392,
+                gradient_checkpointing=True,
+            ),
+            encoder_latent_dim=28,
+            encoder_resolution=392,
+            encoder_dim=384,
+            freeze_clip=True,
+            unfreeze_last_n_clip_layers=4,
+            pretrained_model_name_or_path="lambdalabs/sd-image-variations-diffusers",
+            token_embedding_dim=768,
+            use_sd_15_tokenizer_encoder=True,
+            decoder_transformer=dict(
+                embed_dim=512,
+            ),
+        ),
+        trainer=dict(
+            learning_rate=1e-4,
+            lr_warmup_steps=2000,
+            enable_timing=True,
+            fast_eval=True,
+            profile_memory=True,
+            eval_on_start=False,
+            eval_every_n_steps=1,
+            max_train_steps=3,
+            enable_dynamic_grad_accum=False,
+            validate_training_dataset=False,
+            gradient_accumulation_steps=1,
+        ),
+        inference=dict(
+            visualize_embeds=False,
+            infer_new_prompts=False,
+            save_prompt_embeds=False,
+            num_images_per_prompt=1,
+            num_masks_to_remove=None,
+            vary_cfg_plot=False,
+            visualize_attention_map=False,
+        ),
+        dataset=dict(
+            train_dataset=dict(
+                batch_size=36,
+                augmentation=dict(
+                    reorder_segmentation=False,
+                )
+            ),
+            validation_dataset=dict(
+                augmentation=dict(
+                    reorder_segmentation=False,
+                )
+            ),
+        ),
+    )
+
+    mode_store(
+        name="memory",
+        trainer=dict(
+            fast_eval=True,
+            profile_memory=True,
+            max_train_steps=3,
+            enable_dynamic_grad_accum=False,
+            validate_training_dataset=False,
+            gradient_accumulation_steps=1,
+        ),
     )

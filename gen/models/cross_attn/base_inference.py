@@ -10,14 +10,14 @@ import torch
 import torch.nn.functional as F
 from einops import repeat
 from einx import mean, rearrange, softmax
-from image_utils import ChannelRange, Im, get_layered_image_from_binary_mask
+from image_utils import ChannelRange, Im, onehot_to_color
 from PIL import Image
 from torchvision import utils
 from gen import GSO_PCD_PATH
 
 from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_attention_vis
 from gen.models.cross_attn.losses import get_relative_rot_data, token_cls_loss, token_rot_loss
-from gen.utils.data_defs import get_gen_grid, integer_to_one_hot
+from gen.utils.data_defs import get_gen_grid, integer_to_one_hot, undo_normalization_given_transforms, visualize_input_data
 from gen.utils.decoupled_utils import load_tensor_dict
 from gen.utils.logging_utils import log_info
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
@@ -31,13 +31,17 @@ if TYPE_CHECKING:
 
 gso_pcds = None
 
+def label_to_color_image(label, colormap=None):
+    if label.ndim != 2: raise ValueError('Expect 2-D input label. Got {}'.format(label.shape))
+    if colormap is None: raise ValueError('Expect a valid colormap.')
+    return colormap[label]
 
 def repeat_batch(batch: InputData, bs: int):
     return batch.clone().expand(bs)
 
 def get_composited_mask(batch: dict, b: int, j: int):
     orig_image = ((batch.gen_pixel_values + 1) / 2)[b]
-    mask_image = Im(get_layered_image_from_binary_mask(batch.one_hot_gen_segmentation[b, ..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+    mask_image = Im(onehot_to_color(batch.one_hot_gen_segmentation[b, ..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
     mask_rgb = np.full((mask_image.height, mask_image.width, 3), (255, 0, 0), dtype=np.uint8)
     mask_alpha = (batch.one_hot_gen_segmentation[b, ..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
     composited_image = Im(orig_image).pil.copy().convert("RGBA")
@@ -86,14 +90,15 @@ def infer_batch(
         kwargs["num_images_per_prompt"] = num_images_per_prompt
 
     if "return_attn_probs" in kwargs:
-        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["return_attn_probs"] = kwargs["return_attn_probs"]
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].return_attn_probs = kwargs["return_attn_probs"]
         del kwargs["return_attn_probs"]
 
     # CFG must be enabled when masking as we make this assumption in attn_proc
     if self.cfg.model.attention_masking:
         assert kwargs["guidance_scale"] > 1
 
-    if len(cond.unet_kwargs.get('cross_attention_kwargs', {}).get('attn_meta', {})) == 0:
+    attn_meta = cond.unet_kwargs.get('cross_attention_kwargs', {}).get('attn_meta', None)
+    if attn_meta is None or attn_meta.layer_idx is None:
         if 'cross_attention_kwargs' in cond.unet_kwargs and 'attn_meta' in cond.unet_kwargs['cross_attention_kwargs']:
             del cond.unet_kwargs['cross_attention_kwargs']['attn_meta']
 
@@ -115,9 +120,9 @@ def infer_batch(
     if (
         "cross_attention_kwargs" in cond.unet_kwargs
         and "attn_meta" in cond.unet_kwargs["cross_attention_kwargs"]
-        and "return_attn_probs" in cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]
+        and cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].return_attn_probs is not None
     ):
-        del cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["return_attn_probs"]
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].return_attn_probs = None
 
     return images, cond
 
@@ -159,39 +164,20 @@ def run_quantitative_inference(self: BaseMapper, batch: InputData, state: Traini
 
     return ret
 
-def label_to_color_image(label, colormap=None):
-    """Adds color defined by the dataset colormap to the label.
-    Args:
-        label: A 2D array with integer type, storing the segmentation label.
-        colormap: A colormap for visualizing segmentation results.
-    Returns:
-        result: A 2D array with floating type. The element of the array
-            is the color indexed by the corresponding element in the input label
-            to the dataset color map.
-    Raises:
-        ValueError: If label is not of rank 2 or its value is larger than color
-            map maximum entry.
-    """
-    if label.ndim != 2:
-        raise ValueError('Expect 2-D input label. Got {}'.format(label.shape))
-
-    if colormap is None:
-        raise ValueError('Expect a valid colormap.')
-
-    return colormap[label]
-
 @torch.no_grad()
-def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingState):
+def run_qualitative_inference(self: BaseMapper, batch: InputData, state: TrainingState):
     """
     TODO: Support batched inference at some point. Right now it is batched under the hood (for CFG and if num_images_per_prompt > 1) but we can likely do much better.
     """
 
     assert batch.input_ids.shape[0] == 1 or self.cfg.model.predict_rotation_from_n_frames is not None
-    batch.one_hot_gen_segmentation = integer_to_one_hot(batch.gen_segmentation, num_classes=self.cfg.model.segmentation_map_size)
+    batch.one_hot_gen_segmentation = integer_to_one_hot(batch.gen_segmentation, num_channels=self.cfg.model.segmentation_map_size)
 
     ret = {}
-    orig_image = Im((batch.gen_pixel_values + 1) / 2)
-    orig_disc_image = Im((batch.disc_pixel_values + 1) / 2)
+
+    # We hope that the train/val source_transforms are the same.
+    orig_image = Im(undo_normalization_given_transforms(self.cfg.dataset.validation_dataset.augmentation.source_transforms, batch.gen_pixel_values.clone()))
+    orig_disc_image = Im(undo_normalization_given_transforms(self.cfg.dataset.validation_dataset.augmentation.source_transforms, batch.disc_pixel_values.clone()))
 
     if self.cfg.model.token_rot_pred_loss:
         with torch.cuda.amp.autocast():
@@ -291,11 +277,15 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     if self.cfg.model.unet is False:
         return ret
 
-
     bs_ = batch.input_ids.shape[0]
-    gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], get_layered_image_from_binary_mask(batch.one_hot_gen_segmentation[b_])).write_text(text="GT") for b_ in range(bs_)])
-    if self.cfg.model.eschernet:
-        gt_info = Im.concat_horizontal(orig_disc_image.write_text("Source").torch, gt_info)
+    b_ = 0
+    gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], onehot_to_color(batch.one_hot_gen_segmentation[b_])).write_text(text="Target") for b_ in range(bs_)])
+    if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels:
+        disc_one_hot = integer_to_one_hot(batch.disc_segmentation + 1, batch.disc_segmentation.max() + 1)
+        disc_seg = Im(onehot_to_color(disc_one_hot[b_].squeeze(0))).torch[None]
+        disc_info = Im.concat_vertical(orig_disc_image, disc_seg).write_text("Source")
+        gt_info = Im.concat_horizontal(disc_info, gt_info, spacing=20)
+
     ret["validation"] = gt_info
 
     added_kwargs = dict()
@@ -307,7 +297,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     prompt_image, cond = self.infer_batch(batch=batch, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, **added_kwargs)
 
     if self.cfg.inference.visualize_attention_map:
-        attn = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"]["attn_probs"]
+        attn = cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].attn_probs
         target_size = (self.cfg.model.decoder_latent_dim, self.cfg.model.decoder_latent_dim)
         all_attn = []
         bs = len(prompt_image)
@@ -340,7 +330,7 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
     generated_images = Im.concat_vertical(
         Im.concat_vertical(
             prompt_image_, 
-            Im(get_layered_image_from_binary_mask(
+            Im(onehot_to_color(
                 batch.one_hot_gen_segmentation[i if use_idx else 0])
             )).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)
     )
@@ -366,7 +356,8 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
             )
             scale_images.append(Im.concat_vertical(prompt_images).write_text(f"CFG Scale: {scale:.1f}"))
 
-        ret["cfg_scale"] = Im.concat_horizontal(orig_image.to("cpu").copy.write_text("GT"), *scale_images)
+        assert batch.bs == 1
+        ret["cfg_scale"] = Im.concat_horizontal(orig_image.to("cpu").copy.write_text("GT")[0], *scale_images)
 
     if self.cfg.model.break_a_scene_cross_attn_loss:
         batch_size = (2 if self.cfg.inference.guidance_scale > 1.0 else 1) * self.cfg.inference.num_images_per_prompt
@@ -398,17 +389,26 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     if self.cfg.inference.num_masks_to_remove is not None:
         modified_batches = []
-        idxs = torch.unique(batch.gen_segmentation)[:self.cfg.inference.num_masks_to_remove]
+        idxs = torch.unique(batch.gen_segmentation).long()
+        
+        assert batch.valid.shape[0] == 1
+        valid_indices = torch.cat([torch.Tensor([0]).to(batch.device).long(), torch.Tensor(batch.valid.all(dim=0).nonzero()[:, 0] + 1)])
+        idxs_valid_mask = torch.isin(idxs, valid_indices).to(batch.device)
+        idxs = idxs[idxs_valid_mask][:self.cfg.inference.num_masks_to_remove]
+
         for _, j in enumerate(idxs):
             batch_ = batch.clone()
-            # We only create tokens for segmentation channels with more than 0 valid pixels and -1 is always ignored.
-            batch_.gen_segmentation[batch_.gen_segmentation == j] = -1
-            batch_.disc_segmentation[batch_.disc_segmentation == j] = -1
+            # We only create tokens for segmentation channels with more than 0 valid pixels so 255 is always ignored.
+            batch_.gen_segmentation[batch_.gen_segmentation == j] = 255
+            batch_.disc_segmentation[batch_.disc_segmentation == j] = 255
+
+            if (batch_.disc_segmentation != 255).sum() == 0 and torch.isin(torch.unique(batch_.disc_segmentation[batch_.disc_segmentation > 255]), valid_indices).any():
+                continue
             modified_batches.append(batch_)
 
-        modified_batches = torch.cat(modified_batches, dim=0)
+        modified_batches = torch.cat(modified_batches, dim=0) if len(modified_batches) > 0 else modified_batches
 
-        if modified_batches.shape[0] != 0:
+        if len(modified_batches) != 0:
             prompt_images, _ = self.infer_batch(batch=modified_batches, num_images_per_prompt=1)
             if self.cfg.model.break_a_scene_cross_attn_loss:
                 self.controller.reset()
@@ -418,11 +418,11 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
                 bs_ = batch.input_ids.shape[0]
                 img_ = []
                 for b_ in range(bs_):
-                    mask_image = Im(get_layered_image_from_binary_mask(orig_gen_segmentation[b_, ..., [j]]), channel_range=ChannelRange.UINT8).torch.to(batch.device)
-                    seg_ = modified_batches[(i * bs_) + b_].gen_segmentation
-                    valid_indices_ = torch.cat([torch.tensor([0]).to(batch.device), modified_batches[(i * bs_) + b_].valid.nonzero()[:, 0] + 1])
-                    valid_seg_mask = seg_.unsqueeze(-1).eq(valid_indices_).any(-1)
-                    mask_image[:, valid_seg_mask] = 1.0
+                    mask_image = Im(onehot_to_color(orig_gen_segmentation[b_, ..., [j]]), channel_range=ChannelRange.UINT8).torch.to(batch.device)
+                    # seg_ = modified_batches[(i * bs_) + b_].gen_segmentation
+                    # valid_indices_ = torch.cat([torch.tensor([0]).to(batch.device), modified_batches[(i * bs_) + b_].valid.nonzero()[:, 0] + 1])
+                    # valid_seg_mask = seg_.unsqueeze(-1).eq(valid_indices_).any(-1).any(-1)
+                    # mask_image[:, valid_seg_mask] = 1.0
                     composited_image = get_composited_mask(batch, b_, j)
                     img_.append(Im.concat_vertical(prompt_images[(i * bs_) + b_], Im(mask_image.cpu()), composited_image, spacing=5, fill=(128, 128, 128)))
                 removed_mask_imgs.append(Im.concat_vertical(*img_))
@@ -455,35 +455,13 @@ def run_qualitative_inference(self: BaseMapper, batch: dict, state: TrainingStat
 
     img_ = []
     for b in range(len(batch.one_hot_gen_segmentation)):
-        seg = batch.one_hot_gen_segmentation[b].argmax(dim=-1).data.cpu().numpy()
+        seg = batch.one_hot_gen_segmentation[b].long().argmax(dim=-1).data.cpu().numpy()
         rgb_seg = label_to_color_image(seg, colormap=CocoPanoptic.create_label_colormap())
         rgb_img = Image.fromarray((((batch.gen_pixel_values[b] + 1) / 2).data.cpu().numpy() * 255).astype(np.uint8).transpose(1, 2, 0))
         img_.append(Im.concat_vertical(rgb_seg, rgb_img))
     ret["image_segmentation"] = Im.concat_horizontal(*img_)
 
     return ret
-
-
-def label_to_color_image(label, colormap=None):
-    """Adds color defined by the dataset colormap to the label.
-    Args:
-        label: A 2D array with integer type, storing the segmentation label.
-        colormap: A colormap for visualizing segmentation results.
-    Returns:
-        result: A 2D array with floating type. The element of the array
-            is the color indexed by the corresponding element in the input label
-            to the dataset color map.
-    Raises:
-        ValueError: If label is not of rank 2 or its value is larger than color
-            map maximum entry.
-    """
-    if label.ndim != 2:
-        raise ValueError('Expect 2-D input label. Got {}'.format(label.shape))
-
-    if colormap is None:
-        raise ValueError('Expect a valid colormap.')
-
-    return Image.fromarray(colormap[label])
 
 
 def take_from(slices: tuple[int, slice], data: tuple[dict]):
@@ -500,7 +478,7 @@ def take_from(slices: tuple[int, slice], data: tuple[dict]):
 
 
 @torch.no_grad()
-def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embed_path_1: Optional[Path] = None, embed_path_2: Optional[Path] = None):
+def compose_two_images(self: BaseMapper, batch: InputData, state: TrainingState, embed_path_1: Optional[Path] = None, embed_path_2: Optional[Path] = None):
     from gen.models.cross_attn.base_model import ConditioningData
 
     if embed_path_1 is not None and embed_path_2 is not None:
@@ -534,13 +512,18 @@ def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embe
                 composited_image = get_composited_mask(batch, b, j)
                 all_masks.append(composited_image.write_text(f"token_{j}").resize(self.cfg.model.decoder_resolution, self.cfg.model.decoder_resolution).np)
 
-            image_batch_tokens[b] = {"mask_tokens": orig_cond.mask_tokens, "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}
+            image_batch_tokens[b] = {"mask_tokens": orig_cond.mask_tokens[orig_cond.mask_batch_idx == b], "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}
+    
+    num_tokens_first, num_tokens_second = image_batch_tokens[0]['mask_tokens'].shape[0], image_batch_tokens[1]['mask_tokens'].shape[0]
+    num_elements_second = torch.randint(1, 3, (1,)).item()  # Take either 1 or 2 from second image
+    start_index = torch.randint(0, max(1, num_tokens_second - num_elements_second + 1), (1,)).item()
+    slices_to_take = (
+        (0, slice(0, torch.randint(max(1, num_tokens_first // 2), max(2, num_tokens_first + 1), (1,)).item())),
+        (1, slice(start_index, start_index + num_elements_second)),
+    )
 
     final_tokens, final_rgb = take_from(
-        slices=(
-            (0, slice(0, None)),
-            (1, slice(0, 1)),
-        ),
+        slices=slices_to_take,
         data=(image_batch_tokens[0], image_batch_tokens[1]),
     )
 
@@ -549,7 +532,8 @@ def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embe
         batch=batch[[0]], cond=ConditioningData(mask_tokens=final_tokens, mask_batch_idx=mask_batch_idx), num_images_per_prompt=4
     )
 
-    Im.concat_vertical(
+    slice_description = ", ".join([f"Took {sl_.start}:{sl_.stop} from {batch_idx}" for i, (batch_idx, sl_) in enumerate(slices_to_take)])
+    visualize_compose_img = Im.concat_vertical(
         Im.concat_horizontal(Im(prompt_image_).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)),
         Im(utils.make_grid(Im(final_rgb).torch)).write_text("Conditioning Masks [GT] used", size=0.45, position=(0.05, 0.01)),
         Im.concat_horizontal(
@@ -560,7 +544,11 @@ def compose_two_images(self: BaseMapper, batch: dict, state: TrainingState, embe
             Im(image_batch_tokens[1]["orig_image"]).write_text("Second Image GT", size=0.5),
             Im(orig_prompt_images[1]).write_text("Second Image Autoencoded", size=0.5),
         ),
-    ).save(f"compose_{state.epoch_step}.png")
+    ).write_text(slice_description, position=(0.9, 0.5), size=0.25)
+
+    ret = {}
+    ret["compose_two_images"] = visualize_compose_img
+    return ret
 
 
 @torch.no_grad()
