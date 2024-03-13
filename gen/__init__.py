@@ -31,5 +31,9 @@ if SCRATCH_OBJAVERSE_PATH.exists():
     OBJAVERSE_DATASET_PATH = SCRATCH_OBJAVERSE_PATH
     print(f"Using scratch objaverse path: {OBJAVERSE_DATASET_PATH}")
 
+OMNI3D_PATH = Path(os.getenv("OMNI3D_PATH", "/projects/katefgroup/aswerdlo/datasets/omni3d"))
+OMNI3D_DATASETS_PATH = os.getenv("OMNI3D_DATASETS_PATH") or OMNI3D_PATH / "datasets"
+OMNI3D_DATASET_OMNI3D_PATH = os.getenv("OMNI3D_DATASET_OMNI3D_PATH") or OMNI3D_DATASETS_PATH / "Omni3D"
+
 os.environ["EINX_WARN_ON_RETRACE"] = "25"
 os.environ["IMAGE_UTILS_DISABLE_WARNINGS"] = "1"
