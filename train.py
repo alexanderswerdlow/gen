@@ -29,7 +29,7 @@ from gen.configs import BaseConfig, ModelType
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.models.cross_attn.base_model import BaseMapper
 from gen.models.utils import get_model_from_cfg, set_default_inference_func, set_inference_func
-from gen.utils.decoupled_utils import Profiler, get_num_gpus, get_rank, is_main_process, save_memory_profile, write_to_file
+from gen.utils.decoupled_utils import Profiler, get_num_gpus, get_rank, is_main_process, save_memory_profile, show_memory_usage, write_to_file, print_memory
 from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.trainer_utils import (
     Trainable,
@@ -38,7 +38,6 @@ from gen.utils.trainer_utils import (
     check_every_n_steps,
     handle_checkpointing_dirs,
     load_from_ckpt,
-    print_memory,
     unwrap,
 )
 from inference import run_inference_dataloader
@@ -463,7 +462,8 @@ class Trainer:
                     if 'apex' not in self.cfg.trainer.optimizer_cls.path:
                         zero_grad_kwargs['set_to_none'] = tr.set_grads_to_none
                     else:
-                        print("not setting to none")
+                        log_warn("Not setting to none.")
+
                     self.optimizer.zero_grad(**zero_grad_kwargs)
 
                     global_step_metrics["backward_pass_time"] += time() - start_backward_time
@@ -488,21 +488,16 @@ class Trainer:
                         state, tr.eval_every_n_steps, run_first=tr.eval_on_start, all_processes=True, decay_steps=tr.eval_decay_steps
                     ) or check_every_n_epochs(state, tr.eval_every_n_epochs, all_processes=True):
                         del batch, loss, losses
-                        torch.cuda.empty_cache()
-                        print_memory()
-
-                        try:
-                            self.validate(state)
-                            if self.cfg.trainer.compose_inference:
-                                self.validate_compose(state)
-                        except Exception as e:
-                            if get_num_gpus() > 1:
-                                log_error(f"Error during validation: {e}. Continuing...")
-                            else:
-                                raise
-
-                        torch.cuda.empty_cache()
-                        print_memory()
+                        with show_memory_usage():
+                            try:
+                                self.validate(state)
+                                if self.cfg.trainer.compose_inference:
+                                    self.validate_compose(state)
+                            except Exception as e:
+                                if get_num_gpus() > 1 and state.global_step > 0:
+                                    log_error(f"Error during validation: {e}. Continuing...")
+                                else:
+                                    raise
 
                     if check_every_n_steps(state, tr.custom_inference_every_n_steps, run_first=tr.eval_on_start, all_processes=True):
                         self.base_model_validate(state)

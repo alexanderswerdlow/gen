@@ -33,9 +33,8 @@ from gen.utils.tokenization_utils import get_tokens
 
 torchvision.disable_beta_transforms_warning()
 
-memory = Memory(SCRATCH_CACHE_PATH, verbose=0)
-
-@memory.cache(ignore=["coco"])
+# memory = Memory(SCRATCH_CACHE_PATH, verbose=0)
+# @memory.cache(ignore=["coco"])
 def process(coco_split, coco, erode_dialate_preprocessed_masks, num_masks, num_overlapping_masks, image_id):
     annIds = coco.getAnnIds(imgIds=[image_id])
     anns = coco.loadAnns(ids=annIds)
@@ -49,7 +48,7 @@ def process(coco_split, coco, erode_dialate_preprocessed_masks, num_masks, num_o
     else:
         masks = torch.from_numpy(np.stack([coco.annToMask(anns[i]) for i in range(len(anns))])).bool().permute(1, 2, 0)
 
-        maximum_mask_threshold, min_coverage_threshold = 0.8, 0.5
+        maximum_mask_threshold, min_coverage_threshold = 0.9, 0.4
         num_pixels = masks[..., 0].numel()
 
         remove_large_masks = masks.sum(dim=[0, 1]) < (num_pixels * maximum_mask_threshold)
@@ -527,11 +526,10 @@ class CocoPanoptic(AbstractDataset, Dataset):
     
     def get_dataset(self):
         return self
-
+    
 
 def run_sam(dataloader):
     from einops import rearrange
-
     from gen.models.encoders.sam import HQSam
     from image_utils import Im
     hqsam = HQSam(model_type='vit_b')
@@ -546,14 +544,13 @@ def run_sam(dataloader):
             masks = sorted(masks, key=lambda d: d["area"], reverse=True)
             masks = masks[:32]  # We only have 77 tokens
             masks = np.array([masks[i]["segmentation"] for i in range(len(masks))]).transpose(1, 2, 0)
-            masks = one_hot_to_integer_np(masks)
+            masks = one_hot_to_integer(masks)
             batch.gen_segmentation[i] = torch.from_numpy(masks).long()
             torch.cuda.synchronize()
             print(f'Time taken per image: {time.time() - start_time}')
             show_anns(image, masks, output_path=Path(f"output/{step}_{i}.png"))
 
         visualize_input_data(batch, name=f'coco_sam_{step}')
-
 
     image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').pil
     image = Im(image.crop(((image.size[0]-image.size[1]) // 2, 0, image.size[0] - (image.size[0]-image.size[1]) // 2, image.size[1]))).resize(224, 224).np
@@ -570,6 +567,7 @@ if __name__ == "__main__":
 
     from image_utils import library_ops
     tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+    breakpoint()
     from gen.datasets.utils import get_stable_diffusion_transforms
     default_augmentation=Augmentation(
         initial_resolution=512,
@@ -595,21 +593,21 @@ if __name__ == "__main__":
     dataset = CocoPanoptic(
         shuffle=False,
         cfg=None,
-        split=Split.TRAIN,
+        split=Split.VALIDATION,
         num_workers=0,
-        batch_size=12,
+        batch_size=4,
         tokenizer=tokenizer,
         augmentation=default_augmentation,
         single_return=False,
         enable_orig_coco_processing=False,
         return_tensorclass=True,
-        object_ignore_threshold=0.0,
+        object_ignore_threshold=0.1,
         top_n_masks_only=96,
         use_preprocessed_masks=True,
-        postprocess=False,
-        preprocessed_mask_type="hipie",
+        postprocess=True,
+        preprocessed_mask_type="custom_postprocessed",
         erode_dialate_preprocessed_masks=False,
-        num_overlapping_masks=3,
+        num_overlapping_masks=2,
     )
 
     import time
@@ -620,7 +618,7 @@ if __name__ == "__main__":
     for step, batch in enumerate(dataloader):
         print(f'Time taken: {time.time() - start_time}')
         names = [f'{batch.metadata["scene_id"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
-        visualize_input_data(batch, names=names, show_overlapping_masks=True)
+        # visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False)
         start_time = time.time()
-        if step > 2:
+        if step > 1:
             break

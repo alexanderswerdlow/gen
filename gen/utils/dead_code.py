@@ -615,3 +615,13 @@ def viz():
 # breakpoint()
 
     # attention_mask = attention_mask.repeat_interleave(attn.heads, dim=0)
+
+        # num_channels = min(self.num_instances, seg.max() + 1) if self.num_instances is not None else seg.max() + 1
+        # seg = integer_to_one_hot(seg, num_channels=num_channels + 1, add_background_channel=True)
+
+        # try:
+#     import sys
+#     import IPython
+#     sys.breakpointhook = IPython.embed
+# except ImportError as e:
+#     pass

@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Dict, List, Optional, Union, Callable
+from typing import Any, ClassVar, Dict, List, Optional, Union, Callable
 from enum import Enum
 from dataclasses import dataclass, field
 from gen.configs.utils import auto_store, store_child_config
+from gen.datasets.test_dataloader import iterate_dataloader
 from gen.utils.trainer_utils import Trainable
 from gen.models.cross_attn.base_inference import run_qualitative_inference, compose_two_images, interpolate_latents
 from functools import partial
@@ -33,6 +34,7 @@ class InferenceConfig:
 
     use_custom_pipeline: bool = True
     inference_func: Callable[[Trainable], None] = run_qualitative_inference
+    dataloader_only_func: Callable[[Any], Any] = iterate_dataloader
 
 
 auto_store(InferenceConfig, name="basemapper")

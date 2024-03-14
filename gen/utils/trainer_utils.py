@@ -194,25 +194,7 @@ def unwrap(model):
         else:
             return model
 
-def print_memory(verbose: bool = False):
-    max_cur, max_peak = -1, -1
-    max_cur_device, max_peak_device = -1, -1
-    for device in range(torch.cuda.device_count()):
-        current_reserved_memory_MB = torch.cuda.memory_reserved(device=torch.device(f'cuda:{device}')) / (2**20)
-        peak_reserved_memory_MB = torch.cuda.max_memory_reserved(device=torch.device(f'cuda:{device}')) / (2**20)
 
-        if current_reserved_memory_MB > max_cur:
-            max_cur = current_reserved_memory_MB
-            max_cur_device = device
-        
-        if peak_reserved_memory_MB > max_peak:
-            max_peak = peak_reserved_memory_MB
-            max_peak_device = device
-
-    if verbose:
-        log_info(torch.cuda.memory_summary(abbreviated=False))
-    log_info(f"GPU Memory Current: {max_cur:.2f} MB on rank {max_cur_device}, Peak Reserved: {max_peak:.2f} MB on rank {max_peak_device}")
-    
 
 if __name__ == "__main__":
     # assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10)

@@ -1,30 +1,31 @@
-from functools import partial
+"""
+A collection of assorted utilities for deep learning with no required dependencies aside from PyTorch, NumPy and the Python stdlib.
+"""
+import contextlib
 import glob
 import hashlib
-from io import BytesIO
+import importlib
 import io
 import os
 import pickle
 import subprocess
 import sys
 from collections import defaultdict
+from functools import partial
 from importlib import import_module
 from importlib.util import find_spec
+from io import BytesIO
 from pathlib import Path
+import traceback
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-import ipdb
 import numpy as np
 import torch
 import torch.distributed as dist
-import wandb
-from jaxtyping import BFloat16
 from torch import Tensor
 
-from gen.utils.logging_utils import log_info
-
-log_func = log_info  # Can revert to standard print() if needed
+log_func = importlib.import_module("gen.utils.logging_utils").log_info if importlib.util.find_spec("gen") else print
 
 
 def get_info():
@@ -101,6 +102,7 @@ def save_tensor_dict(tensor_dict: dict, path: str | Path | BytesIO):
 
 
 def load_tensor_dict(path: Path, object_keys=[]):
+    from jaxtyping import BFloat16
     tensor_dict = {}
     np_dict = np.load(path, allow_pickle=True)
     for k, v in np_dict.items():
@@ -298,6 +300,7 @@ def tensorboard_trace_handler(dir_name: str, record_memory: bool = False, worker
 
 def save_memory_profile(profile_dir):
     if is_main_process():
+        import wandb
         print(f"Saving memory profile to {profile_dir}")
         os.makedirs(profile_dir, exist_ok=True)
         torch.cuda.memory._dump_snapshot(f"{profile_dir}/memory_snapshot.pickle")
@@ -342,6 +345,7 @@ class Profiler:
         if use_dist():
             torch.distributed.barrier()
         if is_main_process():
+            import wandb
             traces = glob.glob(f"{self.profile_dir}/*.pt.trace.json*")
             for trace in traces:
                 log_func(f"Adding {trace}")
@@ -397,12 +401,12 @@ def _breakpoint(rank: Optional[int] = None, traceback: Optional[Any] = None):
         if traceback is not None:
             get_pdb().post_mortem(traceback)
         else:
-            frame = sys._getframe()
-            log_func('Breakpoint triggered. You may need to type "up" to get to the correct frame')
-            get_pdb().set_trace(frame)
+            log_func("Breakpoint triggered. You may need to type \"up\" to get to the correct frame")
+            get_pdb().set_trace(sys._getframe(1))
 
 def set_global_breakpoint():
     import builtins
+    import ipdb
 
     builtins.breakpoint = _breakpoint
     builtins.st = ipdb.set_trace  # We import st everywhere
@@ -427,6 +431,51 @@ def end_timing(enable: bool = False, sync: bool = False, builtin: bool = False):
             torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
 
+@contextlib.contextmanager
+def breakpoint_on_error():
+    set_global_breakpoint()
+    try:
+        yield
+    except Exception as e:
+        print("Exception...", e)
+        traceback.print_exc()
+        breakpoint(traceback=e.__traceback__)
+        raise e 
+    
+
+def print_memory(verbose: bool = False):
+    max_cur, max_peak = -1, -1
+    max_cur_device, max_peak_device = -1, -1
+    for device in range(torch.cuda.device_count()):
+        current_reserved_memory_MB = torch.cuda.memory_reserved(device=torch.device(f'cuda:{device}')) / (2**20)
+        peak_reserved_memory_MB = torch.cuda.max_memory_reserved(device=torch.device(f'cuda:{device}')) / (2**20)
+
+        if current_reserved_memory_MB > max_cur:
+            max_cur = current_reserved_memory_MB
+            max_cur_device = device
+        
+        if peak_reserved_memory_MB > max_peak:
+            max_peak = peak_reserved_memory_MB
+            max_peak_device = device
+    
+    if is_main_process():
+        if verbose:
+            log_func(torch.cuda.memory_summary(abbreviated=False))
+        log_func(f"GPU Memory Current: {max_cur:.2f}MB on rank {max_cur_device}, Peak Reserved: {max_peak:.2f}MB on rank {max_peak_device}")
+
+@contextlib.contextmanager
+def show_memory_usage(empty_cache: bool = True, verbose: bool = False):
+    if empty_cache: torch.cuda.empty_cache()
+    print("Before context", end="")
+    print_memory(verbose)
+    
+    yield
+
+    if empty_cache: torch.cuda.empty_cache()
+    print("After context", end="")
+    print_memory(verbose)
+
+    
 def write_to_file(path: Path, text: str):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -495,3 +544,5 @@ map_chars = {
 
 def sanitize_filename(filename: str) -> str:
     return "".join(map_chars.get(c, c) for c in filename if c.isalnum() or map_chars.get(c, c) in (" ", ".", "_", "-", "__"))
+
+

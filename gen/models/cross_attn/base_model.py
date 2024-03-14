@@ -118,7 +118,7 @@ class BaseMapper(Trainable):
         if self.cfg.model.unet: self.add_unet_adapters()
 
         if self.cfg.trainer.compile:
-            print("Using torch.compile()...")
+            log_info("Using torch.compile()...")
             self.mapper = torch.compile(self.mapper, mode="reduce-overhead", fullgraph=True)
 
             if hasattr(self, "clip"):
@@ -1065,7 +1065,7 @@ class BaseMapper(Trainable):
         
         losses = dict()
         if self.cfg.model.unet:
-            if batch.gen_pad_mask is not None:
+            if batch.gen_pad_mask is not None and self.cfg.model.use_pad_mask_loss:
                 loss_mask = rearrange("b h w -> b () h w ", ~batch.gen_pad_mask)
                 loss_mask = F.interpolate(
                     loss_mask.float(),

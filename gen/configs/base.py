@@ -41,6 +41,7 @@ class BaseConfig:
     profile: bool = False
     overfit: bool = False
     run_inference: bool = False
+    run_dataloader_only: bool = False
 
     output_dir: Optional[Path] = None  # Auto generated but can be specified
     first_level_output_path: Path = Path("outputs")

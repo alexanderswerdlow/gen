@@ -282,7 +282,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], onehot_to_color(batch.one_hot_gen_segmentation[b_])).write_text(text="Target") for b_ in range(bs_)])
     if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels:
         disc_one_hot = integer_to_one_hot(batch.disc_segmentation + 1, batch.disc_segmentation.max() + 1)
-        disc_seg = Im(onehot_to_color(disc_one_hot[b_].squeeze(0))).torch[None]
+        disc_seg = Im(onehot_to_color(disc_one_hot[b_].squeeze(0)))
         disc_info = Im.concat_vertical(orig_disc_image, disc_seg).write_text("Source")
         gt_info = Im.concat_horizontal(disc_info, gt_info, spacing=20)
 
@@ -387,6 +387,8 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         if self.cfg.model.break_a_scene_cross_attn_loss:
             self.controller.reset()
 
+    log_info("Before multi-mask", main_process_only=False)
+
     if self.cfg.inference.num_masks_to_remove is not None:
         modified_batches = []
         idxs = torch.unique(batch.gen_segmentation).long()
@@ -427,9 +429,11 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
                     img_.append(Im.concat_vertical(prompt_images[(i * bs_) + b_], Im(mask_image.cpu()), composited_image, spacing=5, fill=(128, 128, 128)))
                 removed_mask_imgs.append(Im.concat_vertical(*img_))
             
-            removed_masks = Im.concat_horizontal(*removed_mask_imgs).write_text("Red masks are removed. White is kept.", size=0.25)
+            removed_masks = Im.concat_horizontal(*removed_mask_imgs).write_text("Red masks are removed. White is kept.", size=0.25, color=(0, 255, 0))
             ret["validation"] = Im.concat_horizontal(ret["validation"], removed_masks, spacing=15)
         
+    log_info("After multi-mask", main_process_only=False)
+
     if self.cfg.inference.infer_new_prompts:
         prompts = [prompt.format(self.cfg.model.placeholder_token) for prompt in new_prompts]
 

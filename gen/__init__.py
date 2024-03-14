@@ -1,3 +1,7 @@
+"""
+
+"""
+
 import os
 from pathlib import Path
 
@@ -34,6 +38,12 @@ if SCRATCH_OBJAVERSE_PATH.exists():
 OMNI3D_PATH = Path(os.getenv("OMNI3D_PATH", "/projects/katefgroup/aswerdlo/datasets/omni3d"))
 OMNI3D_DATASETS_PATH = os.getenv("OMNI3D_DATASETS_PATH") or OMNI3D_PATH / "datasets"
 OMNI3D_DATASET_OMNI3D_PATH = os.getenv("OMNI3D_DATASET_OMNI3D_PATH") or OMNI3D_DATASETS_PATH / "Omni3D"
+
+HYPERSIM_DATASET_PATH = Path(os.getenv("HYPERSIM_DATASET_PATH", "/projects/katefgroup/aswerdlo/datasets/hypersim"))
+SCRATCH_HYPERSIM_PATH = Path(os.getenv("SCRATCH_HYPERSIM_PATH", "/scratch/aswerdlo/hypersim"))
+if SCRATCH_HYPERSIM_PATH.exists():
+    HYPERSIM_DATASET_PATH = SCRATCH_HYPERSIM_PATH
+    print(f"Using scratch hypersim path: {HYPERSIM_DATASET_PATH}")
 
 os.environ["EINX_WARN_ON_RETRACE"] = "25"
 os.environ["IMAGE_UTILS_DISABLE_WARNINGS"] = "1"

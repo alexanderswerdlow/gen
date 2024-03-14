@@ -25,6 +25,7 @@ from image_utils import library_ops  # This overrides repr() for tensors
 from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig
+from gen.datasets.test_dataloader import iterate_dataloader
 from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint, set_timing_builtins
 from gen.utils.logging_utils import log_error, log_info, log_warn, set_log_file, set_logger
 from inference import inference
@@ -188,7 +189,7 @@ def main(cfg: BaseConfig):
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
-    if is_main_process():
+    if is_main_process() and cfg.run_dataloader_only is False:
         wandb_kwargs = dict(name=cfg.run_name, tags=cfg.tags, dir=cfg.first_level_output_path, sync_tensorboard=cfg.profile)
         if cfg.wandb_run_id is None:
             cfg.wandb_run_id = wandb.util.generate_id()
@@ -213,9 +214,10 @@ def main(cfg: BaseConfig):
         if cfg.trainer.wandb_log_code:
             wandb.run.log_code(include_fn=lambda path: any(path.endswith(f) for f in (".py", ".yaml", ".yml", ".txt", ".md")), exclude_fn=lambda path: "outputs/" in path)
         cfg.wandb_url = wandb.run.get_url()
-
-        log_info(OmegaConf.to_yaml(cfg))
         
+    if is_main_process():
+        log_info(OmegaConf.to_yaml(cfg.dataset if cfg.run_dataloader_only else cfg))
+
         with open(cfg.output_dir / '.hydra' / 'final_config.pkl', "wb") as f:
             cloudpickle.dump(cfg, f)
         
@@ -223,7 +225,6 @@ def main(cfg: BaseConfig):
         OmegaConf.save(config=cfg, f=cfg.output_dir / '.hydra' / 'final_config.yaml', resolve=False)
 
     check_gpu_memory_usage()
-
     log_info(accelerator.state, main_process_only=False)
 
     if is_main_process():
@@ -241,6 +242,8 @@ def main(cfg: BaseConfig):
     try:
         if cfg.run_inference:
             inference(cfg, accelerator)
+        elif cfg.run_dataloader_only:
+            hydra.utils.instantiate(cfg.inference.dataloader_only_func)(cfg, accelerator)
         else:
             train = Trainer(cfg=cfg, accelerator=accelerator)
             train.train()

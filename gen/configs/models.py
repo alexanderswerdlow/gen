@@ -120,6 +120,7 @@ class ModelConfig:
     num_layer_queries: int = 1
     dropout_grid_conditioning: Optional[float] = 0.15
     masked_self_attention: bool = False
+    use_pad_mask_loss: bool = True
 
 @dataclass
 class ControlNetConfig(ModelConfig):

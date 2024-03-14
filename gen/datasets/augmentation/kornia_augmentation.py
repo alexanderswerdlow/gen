@@ -141,13 +141,9 @@ class Augmentation:
 
         if self.reorder_segmentation:
             # This may result in a different ordering of the segmentation channels
-            try:
-                target_data.segmentation = reorder_segmentation(target_data.segmentation.clone().contiguous())
-                source_data.segmentation = reorder_segmentation(source_data.segmentation.clone().contiguous())
-            except Exception as e:
-                log_warn(f"Failed to reorder segmentation channels: {e}")
-                log_warn(f"Target: {target_data.segmentation.shape}, Source: {source_data.segmentation.shape}")
-
+            source_data.segmentation = reorder_segmentation(source_data.segmentation.clone().contiguous())
+            target_data.segmentation = reorder_segmentation(target_data.segmentation.clone().contiguous())
+            
         if self.source_transform is not None:
             # When we augment the source we need to also augment the target
             source_params = self.source_transform.forward_parameters(batch_shape=source_data.image.shape)
@@ -200,15 +196,30 @@ def crop_to_square(*args, center=True):
 
 def reorder_segmentation(tensor):
     # Re-order segmentation channels (except background). This is because during cropping, large segmentation masks may no longer be in view.
-    tensor = tensor.long()
-    unique, inverse, counts = tensor[tensor > 0].unique(return_inverse=True, return_counts=True)
-    counts_sorted, indices_sorted = counts.sort(descending=True)
-    new_ranks = torch.zeros(unique.max() + 1, dtype=torch.long, device=tensor.device)  # Adjusted for direct indexing
-    new_ranks[unique[indices_sorted]] = torch.arange(1, len(unique) + 1, device=tensor.device)
-    tensor_view = tensor.view(-1)
-    mask = tensor_view > 0
-    tensor_view[mask] = new_ranks[tensor_view[mask]]
-    return tensor.float()
+    if tensor.is_floating_point():
+        tensor = tensor.long()
+    
+    try:
+        unique, _, counts = tensor.unique(return_inverse=True, return_counts=True)
+        _, indices_sorted = counts.sort(descending=True)
+        new_ranks = torch.zeros(tensor.max() + 1, dtype=torch.long, device=tensor.device)  # Adjusted for direct indexing
+
+        # We always keep the 0th channel at 0.
+        zero_mask = unique != 0
+        new_ranks[unique[indices_sorted][zero_mask]] = torch.arange((~zero_mask).sum().item(), len(unique), device=tensor.device)
+    except Exception as e:
+        print(e)
+        print(tensor.min(), tensor.max(), unique)
+        print(zero_mask)
+        print(indices_sorted)
+        print(unique)
+        print(new_ranks)
+        breakpoint()
+    
+    tensor = new_ranks[tensor]
+    assert tensor.max() == len(unique) - 1
+    
+    return tensor.to(torch.float)
 
 def santitize_and_normalize_grid_values(tensor, patch_size = 4):
     tensor[tensor < 0] = torch.nan
@@ -305,7 +316,7 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
         keypoints._valid_mask = keypoints._valid_mask.to(input_data.image.device)
         
         if input_data.segmentation.ndim == 3:
-            input_data.segmentation = input_data.segmentation.unsqueeze(1).float()
+            input_data.segmentation = input_data.segmentation.unsqueeze(1)
 
     # output_tensor and output_segmentation are affected by resize but output_keypoints are not
     output_data = Data(image_only=input_data.image_only)
