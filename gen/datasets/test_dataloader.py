@@ -30,19 +30,19 @@ class MockTokenizer:
         return TokenizedOutput(input_ids=input_ids)
     
 def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
-    cfg.dataset.train_dataset.num_workers = 0
-    cfg.dataset.validation_dataset.num_workers = 0
+    cfg.dataset.train.num_workers = 0
+    cfg.dataset.val.num_workers = 0
 
-    cfg.dataset.train_dataset.return_tensorclass = True
-    cfg.dataset.validation_dataset.return_tensorclass = True
+    cfg.dataset.train.return_tensorclass = True
+    cfg.dataset.val.return_tensorclass = True
 
-    cfg.dataset.train_dataset.batch_size = 4
-    cfg.dataset.validation_dataset.batch_size = 4
+    cfg.dataset.train.batch_size = 4
+    cfg.dataset.val.batch_size = 4
 
-    cfg.dataset.train_dataset.subset_size = None
-    cfg.dataset.validation_dataset.subset_size = None
+    cfg.dataset.train.subset_size = None
+    cfg.dataset.val.subset_size = None
     
-    dataset: AbstractDataset = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=True)(
+    dataset: AbstractDataset = hydra.utils.instantiate(cfg.dataset.val, _recursive_=True)(
         cfg=cfg, split=Split.VALIDATION, tokenizer=MockTokenizer()
     )
     dataloader = dataset.get_dataloader()

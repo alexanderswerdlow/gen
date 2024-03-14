@@ -100,8 +100,8 @@ class ImageNetDataset(ImageNetBase):
         self.legacy_transforms = legacy_transforms
 
         if self.legacy_transforms:
-            self.gen_image_transforms = get_stable_diffusion_transforms(resolution)
-            self.disc_image_transforms = get_open_clip_transforms_v2()
+            self.tgt_image_transforms = get_stable_diffusion_transforms(resolution)
+            self.src_image_transforms = get_open_clip_transforms_v2()
         else:
             self.augmentation = augmentation
 
@@ -122,29 +122,29 @@ class ImageNetDataset(ImageNetBase):
         ret = super().__getitem__(index)
 
         if self.legacy_transforms:
-            gen_rgb = self.gen_image_transforms(Image(ret["image"]))
-            disc_rgb = self.disc_image_transforms(Image(ret["image"]))
+            tgt_rgb = self.tgt_image_transforms(Image(ret["image"]))
+            src_rgb = self.src_image_transforms(Image(ret["image"]))
             ret = {
-                "gen_pixel_values": gen_rgb,
-                "disc_pixel_values": disc_rgb,
+                "tgt_pixel_values": tgt_rgb,
+                "src_pixel_values": src_rgb,
                 "input_ids": get_tokens(self.tokenizer),
             }
 
         else:
-            source_data, target_data = self.augmentation(
-                source_data=Data(image=self.to_tensor(ret["image"])[None], image_only=True),
-                target_data=Data(image=self.to_tensor(ret["image"])[None], image_only=True),
+            src_data, tgt_data = self.augmentation(
+                src_data=Data(image=self.to_tensor(ret["image"])[None], image_only=True),
+                tgt_data=Data(image=self.to_tensor(ret["image"])[None], image_only=True),
             )
 
             ret = {
-                "gen_pixel_values": target_data.image.squeeze(0),
-                "disc_pixel_values": source_data.image.squeeze(0),
+                "tgt_pixel_values": tgt_data.image.squeeze(0),
+                "src_pixel_values": src_data.image.squeeze(0),
                 "input_ids": get_tokens(self.tokenizer),
             }
 
         # We make dummy segmentation maps to make things easier for now
-        ret["gen_segmentation"] = torch.ones((ret["gen_pixel_values"].shape[1], ret["gen_pixel_values"].shape[2], 1), dtype=torch.long)
-        ret["disc_segmentation"] = torch.ones((ret["disc_pixel_values"].shape[1], ret["disc_pixel_values"].shape[2], 1), dtype=torch.long)
+        ret["tgt_segmentation"] = torch.ones((ret["tgt_pixel_values"].shape[1], ret["tgt_pixel_values"].shape[2], 1), dtype=torch.long)
+        ret["src_segmentation"] = torch.ones((ret["src_pixel_values"].shape[1], ret["src_pixel_values"].shape[2], 1), dtype=torch.long)
 
         return ret
 
@@ -204,6 +204,6 @@ if __name__ == "__main__":
     for batch in dataloader:
         from image_utils import Im
 
-        gen_ = Im((batch["gen_pixel_values"] + 1) / 2)
-        disc_ = Im(batch["disc_pixel_values"]).denormalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
+        tgt_ = Im((batch["tgt_pixel_values"] + 1) / 2)
+        src_ = Im(batch["src_pixel_values"]).denormalize(mean=(0.48145466, 0.4578275, 0.40821073), std=(0.26862954, 0.26130258, 0.27577711))
         st()

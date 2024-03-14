@@ -15,18 +15,18 @@ from gen.datasets.abstract_dataset import AbstractDataset, Split
 
 
 def collate_fn(examples):
-    pixel_values = torch.stack([example["gen_pixel_values"] for example in examples])
+    pixel_values = torch.stack([example["tgt_pixel_values"] for example in examples])
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
 
-    disc_pixel_values = torch.stack([example["disc_pixel_values"] for example in examples])
-    disc_pixel_values = disc_pixel_values.to(memory_format=torch.contiguous_format).float()
+    src_pixel_values = torch.stack([example["src_pixel_values"] for example in examples])
+    src_pixel_values = src_pixel_values.to(memory_format=torch.contiguous_format).float()
 
     input_ids = torch.stack([example["input_ids"] for example in examples])
 
     return {
-        "gen_pixel_values": pixel_values,
-        "disc_pixel_values": pixel_values,
-        "disc_pixel_values": disc_pixel_values,
+        "tgt_pixel_values": pixel_values,
+        "src_pixel_values": pixel_values,
+        "src_pixel_values": src_pixel_values,
         "input_ids": input_ids,
     }
 
@@ -73,8 +73,8 @@ class ControlnetDataset(AbstractDataset):
         self.validation_image = validation_image
         self.cache_dir = cache_dir
         self.override_text = override_text
-        self.disc_image_transforms = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[-1]
-        self.gen_image_transforms = transforms.Compose([
+        self.src_image_transforms = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[-1]
+        self.tgt_image_transforms = transforms.Compose([
             transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(resolution),
             transforms.ToTensor(),
@@ -163,13 +163,13 @@ class ControlnetDataset(AbstractDataset):
 
         def preprocess_train(examples):
             images = [image.convert("RGB") for image in examples[image_column]]
-            images = [self.gen_image_transforms(image) for image in images]
+            images = [self.tgt_image_transforms(image) for image in images]
 
             conditioning_images = [image.convert("RGB") for image in examples[image_column]]
-            conditioning_images = [self.disc_image_transforms(image) for image in conditioning_images]
+            conditioning_images = [self.src_image_transforms(image) for image in conditioning_images]
 
-            examples["gen_pixel_values"] = images
-            examples["disc_pixel_values"] = conditioning_images
+            examples["tgt_pixel_values"] = images
+            examples["src_pixel_values"] = conditioning_images
             examples["input_ids"] = tokenize_captions(examples)
 
             return examples

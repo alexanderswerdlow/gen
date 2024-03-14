@@ -130,7 +130,7 @@ def attn_call2_0(
     if attention_mask is not None:
         attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
         # scaled_dot_product_attention expects attention_mask shape to be
-        # (batch, heads, source_length, target_length)
+        # (batch, heads, src_length, tgt_length)
         attention_mask = attention_mask.view(batch_size, attn.heads, -1, attention_mask.shape[-1])
 
     if attn.group_norm is not None:
@@ -337,7 +337,7 @@ def retrieve_attn_maps_per_timestep(image_size, timesteps, detach=True, chunk=Tr
     """
     global attn_maps
 
-    target_size = (image_size[0] // 8, image_size[1] // 8)
+    tgt_size = (image_size[0] // 8, image_size[1] // 8)
     attn_maps_per_timestep = []
 
     for t in range(timesteps):
@@ -355,7 +355,7 @@ def retrieve_attn_maps_per_timestep(image_size, timesteps, detach=True, chunk=Tr
             if len(attn_maps_layer_.shape) == 4:
                 attn_maps_layer_ = attn_maps_layer_.squeeze()
 
-            attn_maps_layer_ = mean_and_scale(attn_maps_layer_, target_size)  # (10,32*32,77) -> (77,64*64)
+            attn_maps_layer_ = mean_and_scale(attn_maps_layer_, tgt_size)  # (10,32*32,77) -> (77,64*64)
             attn_maps_layers.append(attn_maps_layer_)
 
         attn_maps_layers = torch.mean(torch.stack(attn_maps_layers, dim=0), dim=0)  # (77,64*64)
@@ -366,18 +366,18 @@ def retrieve_attn_maps_per_timestep(image_size, timesteps, detach=True, chunk=Tr
     return attn_maps_per_timestep
 
 
-def mean_and_scale(attn_map, target_size):
+def mean_and_scale(attn_map, tgt_size):
     """
     Average over the heads, rescale to resolution, and softmax over tokens. This contains the attention map for one layer and timestep.
     """
     attn_map = torch.mean(attn_map, dim=0)  # (10, 32*32, 77) -> (32*32, 77)
     attn_map = attn_map.permute(1, 0)  # (32*32, 77) -> (77, 32*32)
 
-    if target_size[0] * target_size[1] != attn_map.shape[1]:
+    if tgt_size[0] * tgt_size[1] != attn_map.shape[1]:
         temp_size = (int(math.sqrt(attn_map.shape[1])), int(math.sqrt(attn_map.shape[1])))
         attn_map = attn_map.view(attn_map.shape[0], *temp_size)  # (77, 32,32)
         attn_map = attn_map.unsqueeze(0)  # (77,32,32) -> (1,77,32,32)
-        attn_map = F.interpolate(attn_map.to(dtype=torch.float32), size=target_size, mode="bilinear", align_corners=False).squeeze()  # (77,64,64)
+        attn_map = F.interpolate(attn_map.to(dtype=torch.float32), size=tgt_size, mode="bilinear", align_corners=False).squeeze()  # (77,64,64)
     else:
         attn_map = attn_map.to(dtype=torch.float32)  # (77,64,64)
 
@@ -431,9 +431,9 @@ def save_net_attn_map(net_attn_maps, dir_name, tokenizer, tokens):
     log_info(f"total_attn_scores: {total_attn_scores}, tokens: {len(tokens)}, attn_maps_img: {len(net_attn_maps)}")
 
 
-def resize_net_attn_map(attn_map_by_timestep, target_size):
+def resize_net_attn_map(attn_map_by_timestep, tgt_size):
     return [
-        F.interpolate(net_attn_maps.to(dtype=torch.float32).unsqueeze(0), size=target_size, mode="bilinear", align_corners=False).squeeze()
+        F.interpolate(net_attn_maps.to(dtype=torch.float32).unsqueeze(0), size=tgt_size, mode="bilinear", align_corners=False).squeeze()
         for net_attn_maps in attn_map_by_timestep  # (77,64,64)
     ]
 

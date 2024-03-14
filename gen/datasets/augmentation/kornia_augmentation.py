@@ -54,7 +54,7 @@ class Augmentation:
     def __init__(
         self,
         initial_resolution: int = 256,
-        different_source_target_augmentation: bool = False,
+        different_src_tgt_augmentation: bool = False,
         return_grid: bool = True,
         center_crop: bool = True,
         enable_square_crop: bool = True,
@@ -63,18 +63,18 @@ class Augmentation:
         enable_horizontal_flip: bool = True,
         enable_rotate: bool = False,
         reorder_segmentation: bool = False,
-        source_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = None,
-        target_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = None,
+        src_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = None,
+        tgt_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = None,
         kornia_resize_mode: str = "BICUBIC",
-        source_resolution: Optional[int] = None, # By default, we keep initial_resolution and let source_transforms resize further if enabled
-        target_resolution: Optional[int] = None, # By default, we keep initial_resolution and let target_transforms resize further if enabled
-        source_transforms: Optional[Callable] = None,
-        target_transforms: Optional[Callable] = None,
+        src_resolution: Optional[int] = None, # By default, we keep initial_resolution and let src_transforms resize further if enabled
+        tgt_resolution: Optional[int] = None, # By default, we keep initial_resolution and let tgt_transforms resize further if enabled
+        src_transforms: Optional[Callable] = None,
+        tgt_transforms: Optional[Callable] = None,
     ):
-        self.source_resolution = source_resolution
-        self.source_transforms = source_transforms
-        self.target_resolution = target_resolution
-        self.target_transforms = target_transforms
+        self.src_resolution = src_resolution
+        self.src_transforms = src_transforms
+        self.tgt_resolution = tgt_resolution
+        self.tgt_transforms = tgt_transforms
         self.initial_resolution = initial_resolution
         self.kornia_resize_mode = kornia_resize_mode
         self.enable_square_crop = enable_square_crop
@@ -85,10 +85,10 @@ class Augmentation:
 
         if self.return_grid: assert self.enable_square_crop, "Grids only seem to work on square images for now."
 
-        if self.source_transforms is None or self.target_transforms is None:
-            log_warn("Warning: source_transforms and target_transforms are None. This is not recommended.")
+        if self.src_transforms is None or self.tgt_transforms is None:
+            log_warn("Warning: src_transforms and tgt_transforms are None. This is not recommended.")
         
-        self.different_source_target_augmentation = different_source_target_augmentation
+        self.different_src_tgt_augmentation = different_src_tgt_augmentation
 
         main_transforms = []
 
@@ -96,9 +96,9 @@ class Augmentation:
             main_transforms.append(K.RandomRotation(degrees=(-60, 60), p=0.5))
 
         if enable_random_resize_crop:
-            resize_resolution = self.target_resolution if different_source_target_augmentation and target_resolution is not None else self.initial_resolution
-            target_scale, target_ratio = target_random_scale_ratio
-            main_transforms.append(K.RandomResizedCrop(size=(resize_resolution, resize_resolution), scale=target_scale, ratio=target_ratio, resample=self.kornia_resize_mode, p=1.0))
+            resize_resolution = self.tgt_resolution if different_src_tgt_augmentation and tgt_resolution is not None else self.initial_resolution
+            tgt_scale, tgt_ratio = tgt_random_scale_ratio
+            main_transforms.append(K.RandomResizedCrop(size=(resize_resolution, resize_resolution), scale=tgt_scale, ratio=tgt_ratio, resample=self.kornia_resize_mode, p=1.0))
 
         if enable_horizontal_flip:
             main_transforms.append(K.RandomHorizontalFlip(p=0.5))
@@ -108,68 +108,68 @@ class Augmentation:
             main_transforms.append(RandAugment(n=2, m=10, policy=randaug_policy))
 
         # When we augment source/target differently, we want the target to be more augmented [e.g., a smaller crop]
-        if different_source_target_augmentation:
-            source_scale, source_ratio = source_random_scale_ratio
-            resize_resolution = self.source_resolution if self.source_resolution is not None else initial_resolution
-            source_transforms = [K.RandomResizedCrop(size=(resize_resolution, resize_resolution), scale=source_scale, ratio=source_ratio, resample=self.kornia_resize_mode, p=1.0)]
-            target_transforms = main_transforms
+        if different_src_tgt_augmentation:
+            src_scale, src_ratio = src_random_scale_ratio
+            resize_resolution = self.src_resolution if self.src_resolution is not None else initial_resolution
+            src_transforms = [K.RandomResizedCrop(size=(resize_resolution, resize_resolution), scale=src_scale, ratio=src_ratio, resample=self.kornia_resize_mode, p=1.0)]
+            tgt_transforms = main_transforms
         else:
             # If source == target, we use the target augmentations as they are generally heavier
-            assert source_random_scale_ratio is None
-            source_transforms = main_transforms
-            target_transforms = []
+            assert src_random_scale_ratio is None
+            src_transforms = main_transforms
+            tgt_transforms = []
 
-        self.source_transform = AugmentationSequential(*source_transforms) if len(source_transforms) > 0 else None
-        self.target_transform = AugmentationSequential(*target_transforms) if len(target_transforms) > 0 else None
+        self.src_transform = AugmentationSequential(*src_transforms) if len(src_transforms) > 0 else None
+        self.tgt_transform = AugmentationSequential(*tgt_transforms) if len(tgt_transforms) > 0 else None
         self.has_warned = False
 
     def kornia_augmentations_enabled(self) -> bool:
-        if not self.has_warned and self.source_transforms is not None and self.target_transforms is not None:
+        if not self.has_warned and self.src_transforms is not None and self.tgt_transforms is not None:
             self.has_warned = True
-            log_warn(f"Source image is being resized to {self.source_transforms.transforms[0].size}")
-            log_warn(f"Target image is being resized to {self.target_transforms.transforms[0].size}")
-        return self.source_transform is not None or self.target_transform is not None
+            log_warn(f"Source image is being resized to {self.src_transforms.transforms[0].size}")
+            log_warn(f"Target image is being resized to {self.tgt_transforms.transforms[0].size}")
+        return self.src_transform is not None or self.tgt_transform is not None
 
-    def __call__(self, source_data, target_data):
-        assert source_data.image.shape == target_data.image.shape, f"Source and target image shapes do not match: {source_data.image.shape} != {target_data.image.shape}"
-        initial_h, initial_w = source_data.image.shape[-2], source_data.image.shape[-1]
+    def __call__(self, src_data, tgt_data):
+        assert src_data.image.shape == tgt_data.image.shape, f"Source and target image shapes do not match: {src_data.image.shape} != {tgt_data.image.shape}"
+        initial_h, initial_w = src_data.image.shape[-2], src_data.image.shape[-1]
 
         if self.enable_square_crop:
-            assert source_data.mask is None and target_data.mask is None, "Square crop is not supported with masks"
-            assert source_data.grid is None and target_data.grid is None, "Square crop is not supported with grids"
-            source_data.image, source_data.segmentation, target_data.image, target_data.segmentation = crop_to_square(source_data.image, source_data.segmentation, target_data.image, target_data.segmentation, center=self.center_crop)
+            assert src_data.mask is None and tgt_data.mask is None, "Square crop is not supported with masks"
+            assert src_data.grid is None and tgt_data.grid is None, "Square crop is not supported with grids"
+            src_data.image, src_data.segmentation, tgt_data.image, tgt_data.segmentation = crop_to_square(src_data.image, src_data.segmentation, tgt_data.image, tgt_data.segmentation, center=self.center_crop)
 
         if self.reorder_segmentation:
             # This may result in a different ordering of the segmentation channels
-            source_data.segmentation = reorder_segmentation(source_data.segmentation.clone().contiguous())
-            target_data.segmentation = reorder_segmentation(target_data.segmentation.clone().contiguous())
+            src_data.segmentation = reorder_segmentation(src_data.segmentation.clone().contiguous())
+            tgt_data.segmentation = reorder_segmentation(tgt_data.segmentation.clone().contiguous())
             
-        if self.source_transform is not None:
+        if self.src_transform is not None:
             # When we augment the source we need to also augment the target
-            source_params = self.source_transform.forward_parameters(batch_shape=source_data.image.shape)
-            source_data = process(aug=self.source_transform, params=source_params, input_data=source_data)
-            if self.different_source_target_augmentation is False:
-                target_data = process(aug=self.source_transform, params=source_params, input_data=target_data)
+            src_params = self.src_transform.forward_parameters(batch_shape=src_data.image.shape)
+            src_data = process(aug=self.src_transform, params=src_params, input_data=src_data)
+            if self.different_src_tgt_augmentation is False:
+                tgt_data = process(aug=self.src_transform, params=src_params, input_data=tgt_data)
 
-        if self.different_source_target_augmentation and self.target_transform is not None:
-            target_params = self.target_transform.forward_parameters(batch_shape=target_data.image.shape)
-            target_data = process(aug=self.target_transform, params=target_params, input_data=target_data)
+        if self.different_src_tgt_augmentation and self.tgt_transform is not None:
+            tgt_params = self.tgt_transform.forward_parameters(batch_shape=tgt_data.image.shape)
+            tgt_data = process(aug=self.tgt_transform, params=tgt_params, input_data=tgt_data)
         
 
-        source_data = apply_normalization_transforms(source_data, self.source_transforms, initial_h, initial_w)
-        target_data = apply_normalization_transforms(target_data, self.target_transforms, initial_h, initial_w)
+        src_data = apply_normalization_transforms(src_data, self.src_transforms, initial_h, initial_w)
+        tgt_data = apply_normalization_transforms(tgt_data, self.tgt_transforms, initial_h, initial_w)
         
         try:
-            mask = target_data.grid >= 0
-            assert 0 <= target_data.grid[mask].min() <= target_data.grid.max() <= 1 and torch.all(target_data.grid[~mask] == -1)
+            mask = tgt_data.grid >= 0
+            assert 0 <= tgt_data.grid[mask].min() <= tgt_data.grid.max() <= 1 and torch.all(tgt_data.grid[~mask] == -1)
         except:
             pass
 
         if not self.return_grid:
-            source_data.grid = None
-            target_data.grid = None
+            src_data.grid = None
+            tgt_data.grid = None
 
-        return source_data, target_data
+        return src_data, tgt_data
     
 def crop_to_square(*args, center=True):
     """

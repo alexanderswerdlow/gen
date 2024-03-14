@@ -27,8 +27,8 @@ def diffusers_eval(
 ):
     
     unwrap(model.text_encoder).text_model.embeddings.mapper.eval()
-    batch["gen_pixel_values"] = torch.clamp(batch["gen_pixel_values"], -1, 1)
-    latents = vae.encode(batch["gen_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+    batch["tgt_pixel_values"] = torch.clamp(batch["tgt_pixel_values"], -1, 1)
+    latents = vae.encode(batch["tgt_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
     latents = latents * vae.config.scaling_factor
 
     # Split timesteps into smaller batches if n is larger than max_batch_size
@@ -85,7 +85,7 @@ def viz():
     outmap_max, _ = torch.max(outmap, dim=1, keepdim=True)
     outmap = (outmap - outmap_min) / (outmap_max - outmap_min)
     Im(outmap).save("pca")
-    sam_input = rearrange((((batch["gen_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c")
+    sam_input = rearrange((((batch["tgt_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c")
     Im(sam_input).save("rgb")
     Im(onehot_to_color(original.permute(1, 2, 0))).save("masks")
 
@@ -102,8 +102,8 @@ def viz():
 #         orig_input_ids = batch["input_ids"].clone()
 
 #         images = []
-#         orig_image = Im((batch["gen_pixel_values"].squeeze(0) + 1) / 2)
-#         gt_info = Im.concat_vertical(orig_image, onehot_to_color(batch["gen_segmentation"].squeeze(0))).write_text(
+#         orig_image = Im((batch["tgt_pixel_values"].squeeze(0) + 1) / 2)
+#         gt_info = Im.concat_vertical(orig_image, onehot_to_color(batch["tgt_segmentation"].squeeze(0))).write_text(
 #             text="GT", relative_font_scale=0.004
 #         )
 
@@ -117,7 +117,7 @@ def viz():
 #             num_images_per_prompt=cfg.inference.num_images_per_prompt,
 #         )
 
-#         full_seg = Im(onehot_to_color(batch["gen_segmentation"].squeeze(0)))
+#         full_seg = Im(onehot_to_color(batch["tgt_segmentation"].squeeze(0)))
 #         images.append(
 #             Im.concat_horizontal(
 #                 Im.concat_vertical(prompt_image_, full_seg).write_text(text=f"Gen {i}", relative_font_scale=0.004)
@@ -165,7 +165,7 @@ def viz():
 
 #             for _, (attn_map, token) in enumerate(zip(attn_maps_img_by_timestep[0], tokens)):
 #                 if token == model.cfg.inference.model.placeholder_token:
-#                     mask_bool = batch["gen_segmentation"][..., mask_idx].squeeze(0).cpu().bool().numpy()
+#                     mask_bool = batch["tgt_segmentation"][..., mask_idx].squeeze(0).cpu().bool().numpy()
 #                     orig_image_ = orig_image.np.copy()
 #                     orig_image_[~mask_bool] = 0
 #                     orig_image_ = Im(orig_image_, channel_range=ChannelRange.UINT8)
@@ -232,11 +232,11 @@ def viz():
 #                     log_warn("Nan likely found in embeds")
 
 #         if cfg.inference.num_masks_to_remove is not None:
-#             gen_segmentation = batch["gen_segmentation"]
+#             tgt_segmentation = batch["tgt_segmentation"]
 
-#             for j in range(gen_segmentation.shape[-1])[: cfg.inference.num_masks_to_remove]:
+#             for j in range(tgt_segmentation.shape[-1])[: cfg.inference.num_masks_to_remove]:
 #                 log_info(f"Generating with removed mask {j}")
-#                 batch["gen_segmentation"] = gen_segmentation[..., torch.arange(gen_segmentation.size(-1)) != j]
+#                 batch["tgt_segmentation"] = tgt_segmentation[..., torch.arange(tgt_segmentation.size(-1)) != j]
 #                 batch["input_ids"] = orig_input_ids.clone()
 #                 prompt_image, input_prompt, prompt_embeds = run_inference_batch(
 #                     batch=batch,
@@ -244,9 +244,9 @@ def viz():
 #                     pipeline=pipeline,
 #                     inference_cfg=cfg.inference,
 #                 )
-#                 mask_image = Im(onehot_to_color(gen_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
+#                 mask_image = Im(onehot_to_color(tgt_segmentation[..., [j]].squeeze(0)), channel_range=ChannelRange.UINT8)
 #                 mask_rgb = np.full((mask_image.shape[0], mask_image.shape[1], 3), (255, 0, 0), dtype=np.uint8)
-#                 mask_alpha = (gen_segmentation[..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
+#                 mask_alpha = (tgt_segmentation[..., [j]].squeeze() * (255 / 2)).cpu().numpy().astype(np.uint8)
 #                 composited_image = orig_image.pil.copy().convert("RGBA")
 #                 composited_image.alpha_composite(Image.fromarray(np.dstack((mask_rgb, mask_alpha))))
 #                 composited_image = composited_image.convert("RGB")
@@ -273,12 +273,12 @@ def viz():
 # im_path = f"/home/aswerdlo/repos/gen/output/masks/{img_idx}_mask.png"
 # from image_utils import Im
 # Im(loss_mask).save(im_path)
-# Im((batch["gen_pixel_values"] + 1) / 2).save(im_path.replace("_mask.png", ".png"))
+# Im((batch["tgt_pixel_values"] + 1) / 2).save(im_path.replace("_mask.png", ".png"))
 # img_idx += 1
     
             # from image_utils import Im
         # Im(max_masks[-1][..., None]).save(f'loss_{batch["state"].true_step}_{b}.png')
-        # Im((batch["gen_pixel_values"][b] + 1) / 2).save(f'img_{batch["state"].true_step}_{b}.png')
+        # Im((batch["tgt_pixel_values"][b] + 1) / 2).save(f'img_{batch["state"].true_step}_{b}.png')
     
                 # TODO: Something weird happens with webdataset:
             # UserWarning: Length of IterableDataset <abc.WebDataset_Length object at 0x7f0748da4640> was reported to be 2 (when accessing len(dataloader)), but 3 samples have been fetched.
@@ -350,8 +350,8 @@ def viz():
 #     pred_data: TokenPredData
 # ):
 
-#     bs = batch["gen_pixel_values"].shape[0]
-#     device = batch["gen_pixel_values"].device
+#     bs = batch["tgt_pixel_values"].shape[0]
+#     device = batch["tgt_pixel_values"].device
 
 #     assert cfg.model.background_mask_idx == 0
 
@@ -447,11 +447,11 @@ def viz():
     #     else:
     #         raise KeyError(f"{key} is not an extra field and cannot be deleted.")
             # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
-        # source_data.image = source_data.image.squeeze(0)
-        # source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
-        # target_data.image = target_data.image.squeeze(0)
-        # target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
-        # valid = (torch.sum(source_data.segmentation, dim=[0, 1]) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2)
+        # src_data.image = src_data.image.squeeze(0)
+        # src_data.segmentation = torch.nn.functional.one_hot(src_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        # tgt_data.image = tgt_data.image.squeeze(0)
+        # tgt_data.segmentation = torch.nn.functional.one_hot(tgt_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        # valid = (torch.sum(src_data.segmentation, dim=[0, 1]) > (src_data.segmentation.shape[0] * self.object_ignore_threshold)**2)
         # categories = torch.full((valid.shape), fill_value=-1)
         # categories[unique_instance] = unique_semantic - 1
         # categories[~valid] = -1

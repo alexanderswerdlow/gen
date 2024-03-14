@@ -249,34 +249,34 @@ class MoviDataset(AbstractDataset, Dataset):
 
         rgb = rearrange(rgb, "... h w c -> ... c h w") / 255.0  # [0, 1]
 
-        source_data, target_data = self.augmentation(
-            source_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
-            target_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
+        src_data, tgt_data = self.augmentation(
+            src_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
+            tgt_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
         )
 
         # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
-        source_data.image = source_data.image.squeeze(0)
-        source_data.segmentation = torch.nn.functional.one_hot(source_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
-        target_data.image = target_data.image.squeeze(0)
-        target_data.segmentation = torch.nn.functional.one_hot(target_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        src_data.image = src_data.image.squeeze(0)
+        src_data.segmentation = torch.nn.functional.one_hot(src_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        tgt_data.image = tgt_data.image.squeeze(0)
+        tgt_data.segmentation = torch.nn.functional.one_hot(tgt_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
 
         if self.use_single_mask:
-            source_data.segmentation = torch.ones_like(source_data.segmentation)[..., [0]]
-            target_data.segmentation = torch.ones_like(target_data.segmentation)[..., [0]]
+            src_data.segmentation = torch.ones_like(src_data.segmentation)[..., [0]]
+            tgt_data.segmentation = torch.ones_like(tgt_data.segmentation)[..., [0]]
 
-        ret['valid'] &= (torch.sum(source_data.segmentation[..., 1:], dim=[0, 1]) > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2).numpy()
+        ret['valid'] &= (torch.sum(src_data.segmentation[..., 1:], dim=[0, 1]) > (src_data.segmentation.shape[0] * self.object_ignore_threshold)**2).numpy()
         ret.update({
-            "gen_pixel_values": target_data.image,
-            "gen_segmentation": one_hot_to_integer(target_data.segmentation),
-            "gen_grid": target_data.grid,
-            "disc_pixel_values": source_data.image,
-            "disc_segmentation": one_hot_to_integer(source_data.segmentation),
-            "disc_grid": source_data.grid,
+            "tgt_pixel_values": tgt_data.image,
+            "tgt_segmentation": one_hot_to_integer(tgt_data.segmentation),
+            "tgt_grid": tgt_data.grid,
+            "src_pixel_values": src_data.image,
+            "src_segmentation": one_hot_to_integer(src_data.segmentation),
+            "src_grid": src_data.grid,
             "input_ids": get_tokens(self.tokenizer),
         })
 
-        if source_data.grid is not None: ret["disc_grid"] = source_data.grid.squeeze(0)
-        if target_data.grid is not None: ret["gen_grid"] = target_data.grid.squeeze(0)
+        if src_data.grid is not None: ret["src_grid"] = src_data.grid.squeeze(0)
+        if tgt_data.grid is not None: ret["tgt_grid"] = tgt_data.grid.squeeze(0)
 
         # Required for memory pinning
         ret = {k: torch.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in ret.items()}
@@ -317,11 +317,11 @@ if __name__ == "__main__":
             enable_rand_augment=False,
             enable_random_resize_crop=True,
             enable_horizontal_flip=True,
-            different_source_target_augmentation=True,
-            source_random_scale_ratio=((0.9, 0.9), (0.9, 1.1)),
-            target_random_scale_ratio=((0.5, 0.5), (0.8, 1.2)),
-            source_transforms=ViTFeatureExtractor(model_name="vit_small_patch16_224").transform,
-            target_transforms=get_stable_diffusion_transforms(resolution=512)
+            different_src_tgt_augmentation=True,
+            src_random_scale_ratio=((0.9, 0.9), (0.9, 1.1)),
+            tgt_random_scale_ratio=((0.5, 0.5), (0.8, 1.2)),
+            src_transforms=ViTFeatureExtractor(model_name="vit_small_patch16_224").transform,
+            tgt_transforms=get_stable_diffusion_transforms(resolution=512)
         ),
         multi_camera_format=True,
         cache_in_memory=True,

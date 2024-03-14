@@ -17,8 +17,8 @@ def get_deprecated_experiments():
         ),
         trainer=dict(enable_xformers_memory_efficient_attention=False, eval_every_n_steps=250, max_train_steps=10000, checkpointing_steps=1000),
         dataset=dict(
-            train_dataset=dict(batch_size=6, augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=True)),
-            validation_dataset=dict(augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=True)),
+            train=dict(batch_size=6, augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=True)),
+            val=dict(augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=True)),
         ),
         inference=dict(infer_new_prompts=True, num_masks_to_remove=6, save_prompt_embeds=False),
     )
@@ -36,7 +36,7 @@ def get_deprecated_experiments():
             checkpointing_steps=1000,
             log_gradients=25,
         ),
-        dataset=dict(train_dataset=dict(batch_size=20)),
+        dataset=dict(train=dict(batch_size=20)),
         hydra_defaults=["break_a_scene"],
     )
 
@@ -63,7 +63,7 @@ def get_deprecated_experiments():
             momentum=0.9,
         ),
         dataset=dict(
-            train_dataset=dict(batch_size=16),
+            train=dict(batch_size=16),
         ),
         inference=dict(
             visualize_attention_map=False
@@ -121,13 +121,13 @@ def get_deprecated_experiments():
             visualize_attention_map=False,
         ),
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 batch_size=36,
                 augmentation=dict(
                     reorder_segmentation=False,
                 )
             ),
-            validation_dataset=dict(
+            val=dict(
                 augmentation=dict(
                     reorder_segmentation=False,
                 )
@@ -153,7 +153,7 @@ def get_deprecated_experiments():
         name="token_pred",
         model=dict(token_cls_pred_loss=True, token_rot_pred_loss=True),
         trainer=dict(custom_inference_every_n_steps=100),
-        dataset=dict(train_dataset=dict(drop_last=False), validation_dataset=dict(drop_last=False)),
+        dataset=dict(train=dict(drop_last=False), val=dict(drop_last=False)),
         hydra_defaults=["cur_exp"],
     )
 
@@ -178,7 +178,7 @@ def get_deprecated_experiments():
             ),
         ),
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 subset_size=None,
                 cache_in_memory=True,
                 num_workers=2,
@@ -188,7 +188,7 @@ def get_deprecated_experiments():
                 batch_size=24,
                 cache_instances_in_memory=False,
             ),
-            validation_dataset=dict(
+            val=dict(
                 subset_size=None, return_multiple_frames=None, num_workers=2, cache_instances_in_memory=False, cache_in_memory=True
             ),
         ),
@@ -221,8 +221,8 @@ def get_deprecated_experiments():
             predict_rotation_from_n_frames=2,
         ),
         dataset=dict(
-            train_dataset=dict(return_multiple_frames=2),
-            validation_dataset=dict(return_multiple_frames=2),
+            train=dict(return_multiple_frames=2),
+            val=dict(return_multiple_frames=2),
         ),
     )
 
@@ -230,7 +230,7 @@ def get_deprecated_experiments():
         name="overfit_tokens",
         dataset=dict(
             overfit=True,
-            train_dataset=dict(
+            train=dict(
                 num_subset=None,
                 subset_size=200,
                 random_subset=False,
@@ -302,11 +302,11 @@ def get_deprecated_experiments():
             detach_features_before_cross_attn=True,
         ),
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 batch_size=16, 
                 cache_in_memory=False,
             ),
-            validation_dataset=dict(
+            val=dict(
                 cache_in_memory=False,
             )
         ),
@@ -315,7 +315,7 @@ def get_deprecated_experiments():
 
     mode_store(
         name="large_model",
-        dataset=dict(train_dataset=dict(batch_size=8, cache_in_memory=False), validation_dataset=dict(cache_in_memory=False)),
+        dataset=dict(train=dict(batch_size=8, cache_in_memory=False), val=dict(cache_in_memory=False)),
         model=dict(
             num_conditioning_pairs=8,
             diffusion_loss_weight=1.0,
@@ -342,7 +342,7 @@ def get_deprecated_experiments():
         name="overfit_coco",
         dataset=dict(
             overfit=False,
-            train_dataset=dict(
+            train=dict(
                 subset_size=10,
                 random_subset=False,
                 repeat_dataset_n_times=100,

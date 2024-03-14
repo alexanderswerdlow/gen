@@ -109,41 +109,41 @@ class Hypersim(AbstractDataset, Dataset):
         rgb = rearrange(rgb / 255, "h w c -> () c h w")
         seg = rearrange(seg.to(torch.float32), "h w -> () () h w")
         
-        source_data, target_data = self.augmentation(
-            source_data=Data(image=rgb, segmentation=seg),
-            target_data=Data(image=rgb, segmentation=seg),
+        src_data, tgt_data = self.augmentation(
+            src_data=Data(image=rgb, segmentation=seg),
+            tgt_data=Data(image=rgb, segmentation=seg),
         )
 
-        source_data.image = source_data.image.squeeze(0)
-        source_data.segmentation = rearrange(source_data.segmentation, "() c h w -> h w c")
-        target_data.image = target_data.image.squeeze(0)
-        target_data.segmentation = rearrange(target_data.segmentation, "() c h w -> h w c")
+        src_data.image = src_data.image.squeeze(0)
+        src_data.segmentation = rearrange(src_data.segmentation, "() c h w -> h w c")
+        tgt_data.image = tgt_data.image.squeeze(0)
+        tgt_data.segmentation = rearrange(tgt_data.segmentation, "() c h w -> h w c")
 
-        source_data.segmentation[source_data.segmentation >= self.top_n_masks_only] = 0
-        target_data.segmentation[target_data.segmentation >= self.top_n_masks_only] = 0
+        src_data.segmentation[src_data.segmentation >= self.top_n_masks_only] = 0
+        tgt_data.segmentation[tgt_data.segmentation >= self.top_n_masks_only] = 0
 
-        assert target_data.segmentation.max() < 255 and source_data.segmentation.max() < 255
-        source_data.segmentation[source_data.segmentation == -1] = 255
-        target_data.segmentation[target_data.segmentation == -1] = 255
-        source_pad_mask = ~(source_data.segmentation < 255).any(dim=-1)
-        target_pad_mask = ~(target_data.segmentation < 255).any(dim=-1)
+        assert tgt_data.segmentation.max() < 255 and src_data.segmentation.max() < 255
+        src_data.segmentation[src_data.segmentation == -1] = 255
+        tgt_data.segmentation[tgt_data.segmentation == -1] = 255
+        src_pad_mask = ~(src_data.segmentation < 255).any(dim=-1)
+        tgt_pad_mask = ~(tgt_data.segmentation < 255).any(dim=-1)
 
-        pixels = source_data.segmentation.long().contiguous().view(-1)
+        pixels = src_data.segmentation.long().contiguous().view(-1)
         pixels = pixels[(pixels < 255) & (pixels >= 0)]
-        source_bincount = torch.bincount(pixels, minlength=self.top_n_masks_only + 1)
-        valid = source_bincount > 0
+        src_bincount = torch.bincount(pixels, minlength=self.top_n_masks_only + 1)
+        valid = src_bincount > 0
 
         # We convert to uint8 to save memory.
-        source_data.segmentation = source_data.segmentation.to(torch.uint8)
-        target_data.segmentation = target_data.segmentation.to(torch.uint8)
+        src_data.segmentation = src_data.segmentation.to(torch.uint8)
+        tgt_data.segmentation = tgt_data.segmentation.to(torch.uint8)
         
         ret = {
-            "gen_pad_mask": target_pad_mask,
-            "gen_pixel_values": target_data.image,
-            "gen_segmentation": target_data.segmentation,
-            "disc_pad_mask": source_pad_mask,
-            "disc_pixel_values": source_data.image,
-            "disc_segmentation": source_data.segmentation,
+            "tgt_pad_mask": tgt_pad_mask,
+            "tgt_pixel_values": tgt_data.image,
+            "tgt_segmentation": tgt_data.segmentation,
+            "src_pad_mask": src_pad_mask,
+            "src_pixel_values": src_data.image,
+            "src_segmentation": src_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
             "valid": valid[..., 1:],
             "metadata": {
@@ -154,8 +154,8 @@ class Hypersim(AbstractDataset, Dataset):
             },
         }
 
-        if source_data.grid is not None: ret["disc_grid"] = source_data.grid.squeeze(0)
-        if target_data.grid is not None: ret["gen_grid"] = target_data.grid.squeeze(0)
+        if src_data.grid is not None: ret["src_grid"] = src_data.grid.squeeze(0)
+        if tgt_data.grid is not None: ret["tgt_grid"] = tgt_data.grid.squeeze(0)
         if self.return_raw_dataset_image: ret["raw_dataset_image"] = data["rgb"]
 
 
@@ -178,15 +178,15 @@ def main():
     soda_augmentation=Augmentation(
         enable_square_crop=True,
         center_crop=False,
-        different_source_target_augmentation=True,
+        different_src_tgt_augmentation=True,
         enable_random_resize_crop=True, 
         enable_horizontal_flip=True,
-        source_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
-        target_random_scale_ratio=((0.3, 0.6), (0.8, 1.2)),
+        src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+        tgt_random_scale_ratio=((0.3, 0.6), (0.8, 1.2)),
         enable_rand_augment=False,
         enable_rotate=True,
-        source_transforms=get_stable_diffusion_transforms(resolution=512),
-        target_transforms=get_stable_diffusion_transforms(resolution=512),
+        src_transforms=get_stable_diffusion_transforms(resolution=512),
+        tgt_transforms=get_stable_diffusion_transforms(resolution=512),
         reorder_segmentation=True
     )
     dataset = Hypersim(

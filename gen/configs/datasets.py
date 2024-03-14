@@ -26,16 +26,16 @@ from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtrac
 @dataclass
 class DatasetConfig:
     name: ClassVar[str] = "dataset"
-    train_dataset: AbstractDataset
-    validation_dataset: Optional[AbstractDataset]
+    train: AbstractDataset
+    val: Optional[AbstractDataset]
     num_validation_images: int = 2
     overfit: bool = False
-    reset_validation_dataset_every_epoch: bool = False
+    reset_val_dataset_every_epoch: bool = False
 
 
 @dataclass
 class HuggingFaceControlNetConfig(DatasetConfig):
-    _target_: str = "gen.datasets.controlnet_dataset"
+    _tgt_: str = "gen.datasets.controlnet_dataset"
 
 
 def get_dataset(cls, **kwargs):
@@ -44,18 +44,18 @@ def get_dataset(cls, **kwargs):
 
 def get_override_dict(**kwargs):
     return dict(
-        train_dataset=dict(**kwargs),
-        validation_dataset=dict(**kwargs),
+        train=dict(**kwargs),
+        val=dict(**kwargs),
     )
 
 
 
-auto_store(DatasetConfig, train_dataset=get_dataset(ControlnetDataset), validation_dataset=get_dataset(ControlnetDataset), name="controlnet")
+auto_store(DatasetConfig, train=get_dataset(ControlnetDataset), val=get_dataset(ControlnetDataset), name="controlnet")
 
 
 auto_store(
     DatasetConfig,
-    train_dataset=get_dataset(
+    train=get_dataset(
         ControlnetDataset,
         num_workers=2,
         batch_size=2,
@@ -64,7 +64,7 @@ auto_store(
         dataset_config_name="2m_random_5k",
         dataset_name="poloclub/diffusiondb",
     ),
-    validation_dataset=get_dataset(
+    val=get_dataset(
         ControlnetDataset,
         num_workers=2,
         batch_size=2,
@@ -79,41 +79,41 @@ auto_store(
 augmentation = builds(
     Augmentation,
     enable_rand_augment=False,
-    different_source_target_augmentation=False,
-    source_random_scale_ratio=None,
+    different_src_tgt_augmentation=False,
+    src_random_scale_ratio=None,
     enable_random_resize_crop=False,
     enable_horizontal_flip=False,
-    source_resolution=None,
-    target_resolution=None,
+    src_resolution=None,
+    tgt_resolution=None,
     # A little hacky but very useful. We instantiate the model to get the transforms, making sure
     # that we always have the right transform
-    source_transforms="${get_source_transform:model}",
-    target_transforms="${get_target_transform:model}",
+    src_transforms="${get_src_transform:model}",
+    tgt_transforms="${get_tgt_transform:model}",
     populate_full_signature=True,
 )
 
 auto_store(
     DatasetConfig,
-    train_dataset=get_dataset(MoviDataset, augmentation=augmentation),
-    validation_dataset=get_dataset(MoviDataset, augmentation=augmentation),
+    train=get_dataset(MoviDataset, augmentation=augmentation),
+    val=get_dataset(MoviDataset, augmentation=augmentation),
     name="movi_e",
 )
 
 auto_store(
     DatasetConfig,
-    train_dataset=get_dataset(ImageNetCustomDataset, augmentation=augmentation),
-    validation_dataset=get_dataset(ImageNetCustomDataset, augmentation=augmentation),
+    train=get_dataset(ImageNetCustomDataset, augmentation=augmentation),
+    val=get_dataset(ImageNetCustomDataset, augmentation=augmentation),
     name="imagenet",
 )
 
 
 auto_store(DatasetConfig, 
-    train_dataset=get_dataset(
+    train=get_dataset(
         CocoPanoptic,
         augmentation=augmentation,
         resolution="${model.decoder_resolution}",
     ), 
-    validation_dataset=get_dataset(
+    val=get_dataset(
         CocoPanoptic,
         augmentation=augmentation,
     ), 
@@ -121,12 +121,12 @@ auto_store(DatasetConfig,
 )
 
 auto_store(DatasetConfig, 
-    train_dataset=get_dataset(
+    train=get_dataset(
         ObjaverseData,
         augmentation=augmentation,
         resolution="${model.decoder_resolution}",
     ), 
-    validation_dataset=get_dataset(
+    val=get_dataset(
         ObjaverseData,
         augmentation=augmentation,
         resolution="${model.decoder_resolution}",
@@ -135,11 +135,11 @@ auto_store(DatasetConfig,
 )
 
 auto_store(DatasetConfig, 
-    train_dataset=get_dataset(
+    train=get_dataset(
         Hypersim,
         augmentation=augmentation,
     ), 
-    validation_dataset=get_dataset(
+    val=get_dataset(
         Hypersim,
         augmentation=augmentation,
     ), 
@@ -166,8 +166,8 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi",
         dataset=dict(
-            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False), multi_camera_format=False),
-            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False), multi_camera_format=False),
+            train=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False), multi_camera_format=False),
+            val=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False), multi_camera_format=False),
         ),
         model=dict(
             segmentation_map_size=24,
@@ -181,8 +181,8 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi_full",
         dataset=dict(
-            train_dataset=dict(custom_split="train", **shared_movi_args),
-            validation_dataset=dict(custom_split="validation", **shared_movi_args),
+            train=dict(custom_split="train", **shared_movi_args),
+            val=dict(custom_split="validation", **shared_movi_args),
         ),
         hydra_defaults=["movi"],
     )
@@ -190,8 +190,8 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi_overfit",
         dataset=dict(
-            train_dataset=dict(batch_size=20, subset_size=None, **shared_overfit_movi_args),
-            validation_dataset=dict(subset_size=4, **shared_overfit_movi_args),
+            train=dict(batch_size=20, subset_size=None, **shared_overfit_movi_args),
+            val=dict(subset_size=4, **shared_overfit_movi_args),
             overfit=True,
         ),
         hydra_defaults=["movi"],
@@ -199,36 +199,36 @@ def get_datasets():  # TODO: These do not need to be global configs
 
     mode_store(
         name="movi_single_scene",
-        dataset=dict(train_dataset=dict(subset=("video_0015",), fake_return_n=8), validation_dataset=dict(subset=("video_0015",), fake_return_n=8)),
+        dataset=dict(train=dict(subset=("video_0015",), fake_return_n=8), val=dict(subset=("video_0015",), fake_return_n=8)),
         hydra_defaults=["movi_overfit"],
     )
 
     mode_store(
         name="movi_single_frame",
-        dataset=dict(train_dataset=dict(num_dataset_frames=1, fake_return_n=256), validation_dataset=dict(num_dataset_frames=1, fake_return_n=256)),
+        dataset=dict(train=dict(num_dataset_frames=1, fake_return_n=256), val=dict(num_dataset_frames=1, fake_return_n=256)),
         hydra_defaults=["movi_single_scene"],
     )
 
     mode_store(
         name="movi_augmentation",
         dataset=dict(
-            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=True)),
-            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=True)),
+            train=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=True)),
+            val=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=True)),
         ),
     )
 
     mode_store(
         name="no_movi_augmentation",
         dataset=dict(
-            train_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),
-            validation_dataset=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),
+            train=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),
+            val=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),
         ),
     )
 
     mode_store(
         name="movi_validate_single_scene",
         dataset=dict(
-            validation_dataset=dict(
+            val=dict(
                 subset_size=4,
                 subset=("video_0018",),
                 fake_return_n=8,
@@ -242,7 +242,7 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi_medium",
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 custom_split="train",
                 augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False, enable_rand_augment=False),
                 path=MOVI_MEDIUM_PATH,
@@ -251,7 +251,7 @@ def get_datasets():  # TODO: These do not need to be global configs
                 num_cameras=2,
                 multi_camera_format=True,
             ),
-            validation_dataset=dict(
+            val=dict(
                 custom_split="validation",
                 subset_size=8,
                 random_subset=True,
@@ -275,11 +275,11 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="movi_medium_two_objects",
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 num_cameras=1,
                 path=MOVI_MEDIUM_TWO_OBJECTS_PATH,
             ),
-            validation_dataset=dict(
+            val=dict(
                 num_cameras=1,
                 path=MOVI_MEDIUM_TWO_OBJECTS_PATH,
             ),
@@ -290,19 +290,19 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="single_scene",
         dataset=dict(
-            train_dataset=dict(subset=("000001",), fake_return_n=8), validation_dataset=dict(subset=("000001",), fake_return_n=8), overfit=True
+            train=dict(subset=("000001",), fake_return_n=8), val=dict(subset=("000001",), fake_return_n=8), overfit=True
         ),
     )
 
     mode_store(
         name="movi_medium_single_object",
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 num_cameras=1,
                 num_frames=24,
                 path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
             ),
-            validation_dataset=dict(
+            val=dict(
                 num_cameras=1,
                 num_frames=24,
                 path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
@@ -314,8 +314,8 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="imagenet",
         dataset=dict(
-            train_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=False)),
-            validation_dataset=dict(path=IMAGENET_PATH, augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=False)),
+            train=dict(path=IMAGENET_PATH, augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=False)),
+            val=dict(path=IMAGENET_PATH, augmentation=dict(enable_random_resize_crop=False, enable_horizontal_flip=False)),
         ),
         hydra_defaults=[
             "_self_",
@@ -326,7 +326,7 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="coco_panoptic",
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 object_ignore_threshold=0.0,
                 top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
                 use_preprocessed_masks=True,
@@ -340,11 +340,11 @@ def get_datasets():  # TODO: These do not need to be global configs
                     enable_random_resize_crop=True,
                     enable_horizontal_flip=True,
                     enable_square_crop=True,
-                    source_random_scale_ratio=None,
-                    target_random_scale_ratio=((0.4, 1), (0.9, 1.1)),
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((0.4, 1), (0.9, 1.1)),
                 )
             ),
-            validation_dataset=dict(
+            val=dict(
                 object_ignore_threshold=0.0,
                 top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
                 use_preprocessed_masks=True,
@@ -358,8 +358,8 @@ def get_datasets():  # TODO: These do not need to be global configs
                     enable_random_resize_crop=True,
                     enable_horizontal_flip=False,
                     enable_square_crop=True,
-                    source_random_scale_ratio=None,
-                    target_random_scale_ratio=((0.6, 1.0), (1.0, 1.0)),
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((0.6, 1.0), (1.0, 1.0)),
                 )
             ),
         ),
@@ -377,7 +377,7 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="hypersim",
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 object_ignore_threshold=0.0,
                 top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
                 augmentation=dict(
@@ -387,11 +387,11 @@ def get_datasets():  # TODO: These do not need to be global configs
                     enable_random_resize_crop=True,
                     enable_horizontal_flip=True,
                     enable_square_crop=True,
-                    source_random_scale_ratio=None,
-                    target_random_scale_ratio=((0.4, 1), (0.9, 1.1)),
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((0.4, 1), (0.9, 1.1)),
                 )
             ),
-            validation_dataset=dict(
+            val=dict(
                 object_ignore_threshold=0.0,
                 top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
                 augmentation=dict(
@@ -401,8 +401,8 @@ def get_datasets():  # TODO: These do not need to be global configs
                     enable_random_resize_crop=True,
                     enable_horizontal_flip=False,
                     enable_square_crop=True,
-                    source_random_scale_ratio=None,
-                    target_random_scale_ratio=((0.6, 1.0), (1.0, 1.0)),
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((0.6, 1.0), (1.0, 1.0)),
                 )
             ),
         ),
@@ -418,13 +418,13 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="objaverse",
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 augmentation=dict(
                     enable_random_resize_crop=False,
                     enable_horizontal_flip=False,
                 )
             ),
-            validation_dataset=dict(
+            val=dict(
                 augmentation=dict(
                     enable_random_resize_crop=False,
                     enable_horizontal_flip=False,
@@ -443,28 +443,28 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="gt_coco_masks",
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 use_preprocessed_masks=False,
                 object_ignore_threshold=0.2,
                 top_n_masks_only=8,
                 augmentation=dict(
-                    different_source_target_augmentation=False,
+                    different_src_tgt_augmentation=False,
                     enable_random_resize_crop=True, 
                     enable_horizontal_flip=True,
-                    target_random_scale_ratio=((0.5, 0.9), (0.9, 1.1)),
+                    tgt_random_scale_ratio=((0.5, 0.9), (0.9, 1.1)),
                     enable_rand_augment=False,
                     enable_rotate=False,
                 )
             ),
-            validation_dataset=dict(
+            val=dict(
                 use_preprocessed_masks=False,
                 object_ignore_threshold=0.2,
                 top_n_masks_only=8,
                 augmentation=dict(
-                    different_source_target_augmentation=False,
+                    different_src_tgt_augmentation=False,
                     enable_random_resize_crop=True, 
                     enable_horizontal_flip=True,
-                    target_random_scale_ratio=((0.5, 0.9), (1.0, 1.0)),
+                    tgt_random_scale_ratio=((0.5, 0.9), (1.0, 1.0)),
                     enable_rand_augment=False,
                     enable_rotate=False,
                 )
@@ -475,7 +475,7 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="sam_coco_masks",
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 object_ignore_threshold=0.1,
                 top_n_masks_only=35,
                 use_preprocessed_masks=True,
@@ -483,15 +483,15 @@ def get_datasets():  # TODO: These do not need to be global configs
                 erode_dialate_preprocessed_masks=False,
                 num_overlapping_masks=2,
                 augmentation=dict(
-                    different_source_target_augmentation=False,
+                    different_src_tgt_augmentation=False,
                     enable_random_resize_crop=True, 
                     enable_horizontal_flip=True,
-                    target_random_scale_ratio=((0.5, 0.9), (0.9, 1.1)),
+                    tgt_random_scale_ratio=((0.5, 0.9), (0.9, 1.1)),
                     enable_rand_augment=False,
                     enable_rotate=False,
                 )
             ),
-            validation_dataset=dict(
+            val=dict(
                 object_ignore_threshold=0.1,
                 top_n_masks_only=35,
                 use_preprocessed_masks=True,
@@ -499,10 +499,10 @@ def get_datasets():  # TODO: These do not need to be global configs
                 erode_dialate_preprocessed_masks=False,
                 num_overlapping_masks=2,
                 augmentation=dict(
-                    different_source_target_augmentation=False,
+                    different_src_tgt_augmentation=False,
                     enable_random_resize_crop=True, 
                     enable_horizontal_flip=True,
-                    target_random_scale_ratio=((0.5, 0.9), (1.0, 1.0)),
+                    tgt_random_scale_ratio=((0.5, 0.9), (1.0, 1.0)),
                     enable_rand_augment=False,
                     enable_rotate=False,
                 )

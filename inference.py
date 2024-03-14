@@ -30,7 +30,7 @@ def inference(cfg: BaseConfig, accelerator: Accelerator):
         g = torch.Generator()
         g.manual_seed(int(time.time()))
 
-    validation_dataloader = hydra.utils.instantiate(cfg.dataset.validation_dataset, _recursive_=True)(
+    validation_dataloader = hydra.utils.instantiate(cfg.dataset.val_dataset, _recursive_=True)(
         cfg=cfg, split=Split.VALIDATION, tokenizer=model.tokenizer
     ).get_dataloader(generator=g)
 

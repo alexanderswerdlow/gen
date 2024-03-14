@@ -63,9 +63,9 @@ def process(coco_split, coco, erode_dialate_preprocessed_masks, num_masks, num_o
         instance_with_pad_mask = one_hot_to_integer(masks, num_overlapping_masks, assert_safe=False).permute(2, 0, 1) # Instances are 1...., 0 is background
 
     if erode_dialate_preprocessed_masks:
-        initial_target_one_hot_background = instance_with_pad_mask == 255
-        one_hot_background = process_mask(initial_target_one_hot_background, kernel_size=int(instance_with_pad_mask.shape[0] * 18/512))
-        instance_with_pad_mask[initial_target_one_hot_background] = -1
+        initial_tgt_one_hot_background = instance_with_pad_mask == 255
+        one_hot_background = process_mask(initial_tgt_one_hot_background, kernel_size=int(instance_with_pad_mask.shape[0] * 18/512))
+        instance_with_pad_mask[initial_tgt_one_hot_background] = -1
         instance_with_pad_mask[one_hot_background] = 0
         raise NotImplementedError
     
@@ -171,8 +171,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
         self.root = root
         self.single_return = single_return
         if self.single_return:
-            augmentation.source_transform = None
-            augmentation.target_transform = None
+            augmentation.src_transform = None
+            augmentation.tgt_transform = None
             enable_orig_coco_augmentation = False
 
         self.custom_data_root = custom_data_root
@@ -203,7 +203,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         self.raw_label_transform = None
         self.pre_augmentation_transform = None
         self.transform = None
-        self.target_transform = None
+        self.tgt_transform = None
         assert self.coco_split in _COCO_PANOPTIC_INFORMATION.splits_to_sizes.keys()
 
         self.num_classes = _COCO_PANOPTIC_INFORMATION.num_classes
@@ -260,9 +260,9 @@ class CocoPanoptic(AbstractDataset, Dataset):
             self.transform = build_transforms(self, self.is_train and enable_orig_coco_augmentation)
 
         if semantic_only:
-            self.target_transform = SemanticTargetGenerator(self.ignore_label, self.rgb2id)
+            self.tgt_transform = SemanticTargetGenerator(self.ignore_label, self.rgb2id)
         else:
-            self.target_transform = PanopticTargetGenerator(
+            self.tgt_transform = PanopticTargetGenerator(
                 self.ignore_label, self.rgb2id, _COCO_PANOPTIC_THING_LIST, sigma=8, ignore_stuff_in_offset=ignore_stuff_in_offset,
                 small_instance_area=small_instance_area, small_instance_weight=small_instance_weight
             )
@@ -386,8 +386,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
             return dataset_dict
 
         # Generate training target.
-        if self.target_transform is not None:
-            label_dict = self.target_transform(label, self.ins_list[index])
+        if self.tgt_transform is not None:
+            label_dict = self.tgt_transform(label, self.ins_list[index])
             for key in label_dict.keys():
                 dataset_dict[key] = label_dict[key]
 
@@ -449,51 +449,51 @@ class CocoPanoptic(AbstractDataset, Dataset):
             instance_with_pad_mask, unique_instance, unique_semantic = self.get_coco_label(index)
 
         # -1 is ignore, 0 is background
-        source_data, target_data = self.augmentation(
-            source_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
-            target_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
+        src_data, tgt_data = self.augmentation(
+            src_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
+            tgt_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
         )
 
-        source_data.image = source_data.image.squeeze(0)
-        source_data.segmentation = source_data.segmentation.squeeze(0).permute(1, 2, 0).long() # CHW -> HWC
-        target_data.image = target_data.image.squeeze(0)
-        target_data.segmentation = target_data.segmentation.squeeze(0).permute(1, 2, 0).long() # CHW -> HWC
+        src_data.image = src_data.image.squeeze(0)
+        src_data.segmentation = src_data.segmentation.squeeze(0).permute(1, 2, 0).long() # CHW -> HWC
+        tgt_data.image = tgt_data.image.squeeze(0)
+        tgt_data.segmentation = tgt_data.segmentation.squeeze(0).permute(1, 2, 0).long() # CHW -> HWC
 
         if self.use_preprocessed_masks:
             # In this mode, we have already performed pre-processing and any pixels not in a mask are ignored. This includes the "background" that we create from unused pixels.
-            source_data.segmentation[source_data.segmentation == -1] = 255
-            target_data.segmentation[target_data.segmentation == -1] = 255
-            source_pad_mask = (source_data.segmentation < 255).any(dim=-1)
-            target_pad_mask = (target_data.segmentation < 255).any(dim=-1)
+            src_data.segmentation[src_data.segmentation == -1] = 255
+            tgt_data.segmentation[tgt_data.segmentation == -1] = 255
+            src_pad_mask = (src_data.segmentation < 255).any(dim=-1)
+            tgt_pad_mask = (tgt_data.segmentation < 255).any(dim=-1)
 
-            pixels = source_data.segmentation.squeeze(0).long().contiguous().view(-1)
+            pixels = src_data.segmentation.squeeze(0).long().contiguous().view(-1)
             pixels = pixels[(pixels < 255) & (pixels >= 0)]
-            source_bincount = torch.bincount(pixels, minlength=num_masks + 1)
-            valid = source_bincount > (source_data.segmentation.shape[0] * self.object_ignore_threshold)
+            src_bincount = torch.bincount(pixels, minlength=num_masks + 1)
+            valid = src_bincount > (src_data.segmentation.shape[0] * self.object_ignore_threshold)
 
             # We convert to uint8 to save memory.
-            source_data.segmentation = source_data.segmentation.to(torch.uint8)
-            target_data.segmentation = target_data.segmentation.to(torch.uint8)
+            src_data.segmentation = src_data.segmentation.to(torch.uint8)
+            tgt_data.segmentation = tgt_data.segmentation.to(torch.uint8)
         else:
             # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
-            source_bincount = torch.bincount(source_data.segmentation.squeeze(0).long().view(-1) + 1, minlength=num_masks + 2)[1:]
-            source_pad_mask = source_data.segmentation == -1
-            target_pad_mask = target_data.segmentation == -1
+            src_bincount = torch.bincount(src_data.segmentation.squeeze(0).long().view(-1) + 1, minlength=num_masks + 2)[1:]
+            src_pad_mask = src_data.segmentation == -1
+            tgt_pad_mask = tgt_data.segmentation == -1
 
             # We remove instance masks that are too small
-            valid = source_bincount > (source_data.segmentation.shape[0] * self.object_ignore_threshold)**2
+            valid = src_bincount > (src_data.segmentation.shape[0] * self.object_ignore_threshold)**2
             
             # We optionally only take the largest n masks [if previously valid]
             if self.top_n_masks_only is not None:
-                remove_smaller_masks = torch.argsort(source_bincount)[:-self.top_n_masks_only]
+                remove_smaller_masks = torch.argsort(src_bincount)[:-self.top_n_masks_only]
                 valid[remove_smaller_masks] = False
 
             # For all pixels that belong to a instance that is too small, we set the pixel to 0 (background)
-            too_small_instance_pixels = get_one_hot_channels(source_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
-            source_data.segmentation[too_small_instance_pixels] = 0
+            too_small_instance_pixels = get_one_hot_channels(src_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
+            src_data.segmentation[too_small_instance_pixels] = 0
 
-            too_small_instance_pixels_ = get_one_hot_channels(target_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
-            target_data.segmentation[too_small_instance_pixels_] = 0
+            too_small_instance_pixels_ = get_one_hot_channels(tgt_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
+            tgt_data.segmentation[too_small_instance_pixels_] = 0
 
 
         categories = torch.full((valid.shape), fill_value=-1)
@@ -504,12 +504,12 @@ class CocoPanoptic(AbstractDataset, Dataset):
         categories = categories[..., 1:]
         
         ret = {
-            "gen_pad_mask": target_pad_mask,
-            "gen_pixel_values": target_data.image,
-            "gen_segmentation": target_data.segmentation,
-            "disc_pad_mask": source_pad_mask,
-            "disc_pixel_values": source_data.image,
-            "disc_segmentation": source_data.segmentation,
+            "tgt_pad_mask": tgt_pad_mask,
+            "tgt_pixel_values": tgt_data.image,
+            "tgt_segmentation": tgt_data.segmentation,
+            "src_pad_mask": src_pad_mask,
+            "src_pixel_values": src_data.image,
+            "src_segmentation": src_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
             "valid": valid,
             "categories": categories,
@@ -518,8 +518,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
             }
         }
 
-        if source_data.grid is not None: ret["disc_grid"] = source_data.grid.squeeze(0)
-        if target_data.grid is not None: ret["gen_grid"] = target_data.grid.squeeze(0)
+        if src_data.grid is not None: ret["src_grid"] = src_data.grid.squeeze(0)
+        if tgt_data.grid is not None: ret["tgt_grid"] = tgt_data.grid.squeeze(0)
 
         return ret
 
@@ -535,7 +535,7 @@ def run_sam(dataloader):
     hqsam = HQSam(model_type='vit_b')
     hqsam = hqsam.to('cuda')
     for step, batch in enumerate(dataloader):
-        images = rearrange(((batch.gen_pixel_values + 1) / 2) * 255, "b c h w -> b h w c").to(torch.uint8).cpu().detach().numpy()
+        images = rearrange(((batch.tgt_pixel_values + 1) / 2) * 255, "b c h w -> b h w c").to(torch.uint8).cpu().detach().numpy()
         for i in range(batch.bs):
             image = images[i]
             torch.cuda.synchronize()
@@ -545,7 +545,7 @@ def run_sam(dataloader):
             masks = masks[:32]  # We only have 77 tokens
             masks = np.array([masks[i]["segmentation"] for i in range(len(masks))]).transpose(1, 2, 0)
             masks = one_hot_to_integer(masks)
-            batch.gen_segmentation[i] = torch.from_numpy(masks).long()
+            batch.tgt_segmentation[i] = torch.from_numpy(masks).long()
             torch.cuda.synchronize()
             print(f'Time taken per image: {time.time() - start_time}')
             show_anns(image, masks, output_path=Path(f"output/{step}_{i}.png"))
@@ -574,20 +574,20 @@ if __name__ == "__main__":
         center_crop=False,
         enable_random_resize_crop=True,
         enable_horizontal_flip=True,
-        target_random_scale_ratio=((0.5, 1), (1.0, 1.0)),
-        source_transforms=get_stable_diffusion_transforms(resolution=512),
-        target_transforms=get_stable_diffusion_transforms(resolution=512),
+        tgt_random_scale_ratio=((0.5, 1), (1.0, 1.0)),
+        src_transforms=get_stable_diffusion_transforms(resolution=512),
+        tgt_transforms=get_stable_diffusion_transforms(resolution=512),
         reorder_segmentation=False,
     )
     soda_augmentation=Augmentation(
-        different_source_target_augmentation=True,
+        different_src_tgt_augmentation=True,
         enable_random_resize_crop=True, 
         enable_horizontal_flip=True,
-        source_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
-        target_random_scale_ratio=((0.3, 0.6), (0.8, 1.2)),
+        src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+        tgt_random_scale_ratio=((0.3, 0.6), (0.8, 1.2)),
         enable_rand_augment=False,
         enable_rotate=True,
-        target_transforms=get_stable_diffusion_transforms(resolution=512),
+        tgt_transforms=get_stable_diffusion_transforms(resolution=512),
         reorder_segmentation=True
     )
     dataset = CocoPanoptic(

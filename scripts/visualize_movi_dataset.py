@@ -49,8 +49,8 @@ class DebugTrainer(Trainer):
 
 def get_rotation_and_cropped_objects(batch):
     # disregard the first channel, which is the background
-    segmentation = batch['disc_segmentation'][:, :, 1:].numpy()
-    image = batch['disc_pixel_values'].numpy().transpose(1, 2, 0)
+    segmentation = batch['src_segmentation'][:, :, 1:].numpy()
+    image = batch['src_pixel_values'].numpy().transpose(1, 2, 0)
 
     std = np.array((0.26862954, 0.26130258, 0.27577711))
     mean = np.array((0.48145466, 0.4578275, 0.40821073))

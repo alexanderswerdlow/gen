@@ -37,7 +37,7 @@ from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
-from gen.utils.data_defs import InputData, get_dropout_grid, get_gen_grid, get_one_hot_channels, integer_to_one_hot
+from gen.utils.data_defs import InputData, get_dropout_grid, get_tgt_grid, get_one_hot_channels, integer_to_one_hot
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_info, log_warn
@@ -517,7 +517,7 @@ class BaseMapper(Trainable):
         cond: Optional[ConditioningData] = None,
     ):
         # Validate input
-        bs: int = batch.disc_pixel_values.shape[0]
+        bs: int = batch.src_pixel_values.shape[0]
         for field in dataclasses.fields(batch):
             if isinstance(getattr(batch, field.name), torch.Tensor):
                 assert getattr(batch, field.name).shape[0] == bs
@@ -528,7 +528,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.unet is False: return cond
 
-        bs = batch.disc_pixel_values.shape[0]
+        bs = batch.src_pixel_values.shape[0]
         cond.input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch.formatted_input_ids[y]) if "<|" not in x] for y in range(bs)]
 
         # passed to StableDiffusionPipeline/StableDiffusionControlNetPipeline
@@ -586,16 +586,16 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.use_dummy_mask:
             # Very hacky. We ignore masks with <= 32 pixels later on.
-            object_is_visible = (rearrange('b h w c -> b c (h w)', batch.disc_segmentation) > 0).sum(dim=-1) > 0
-            rearrange('b h w c -> b c (h w)', batch.disc_segmentation)[object_is_visible] = 1
+            object_is_visible = (rearrange('b h w c -> b c (h w)', batch.src_segmentation) > 0).sum(dim=-1) > 0
+            rearrange('b h w c -> b c (h w)', batch.src_segmentation)[object_is_visible] = 1
             return batch
         elif self.cfg.model.use_dataset_segmentation:
             return batch  # We already have segmentation
 
         # SAM requires NumPy [0, 255]
-        sam_input = rearrange("b c h w -> b h w c", (((batch.gen_pixel_values + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy())
+        sam_input = rearrange("b c h w -> b h w c", (((batch.tgt_pixel_values + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy())
         sam_seg = []
-        bs: int = batch.disc_pixel_values.shape[0]
+        bs: int = batch.src_pixel_values.shape[0]
         max_masks = 4
 
         for i in range(bs):
@@ -606,7 +606,7 @@ class BaseMapper(Trainable):
 
             if original.shape[0] == 0:  # Make dummy mask with all ones
                 original = (
-                    batch.disc_segmentation[i].new_ones((1, batch.disc_segmentation[i].shape[0], batch.disc_segmentation[i].shape[1])).cpu()
+                    batch.src_segmentation[i].new_ones((1, batch.src_segmentation[i].shape[0], batch.src_segmentation[i].shape[1])).cpu()
                 )
             else:  # Add additional mask to capture any pixels that are not part of any mask
                 original = torch.cat(((~original.any(dim=0))[None], original), dim=0)
@@ -616,7 +616,7 @@ class BaseMapper(Trainable):
                 sam_seg.append(torch.nn.functional.pad(seg_, (0, (max_masks + 1) - seg_.shape[-1]), "constant", 0))
 
         if len(sam_seg) > 0:
-            batch.disc_segmentation = torch.stack(sam_seg, dim=0)
+            batch.src_segmentation = torch.stack(sam_seg, dim=0)
 
         return batch
 
@@ -650,14 +650,14 @@ class BaseMapper(Trainable):
             - Gets CLIP features for K/V and flattens them
             - Updates our input tokens to be "A photo of mask_0 and mask_1" and so on
         """
-        bs: int = batch.disc_pixel_values.shape[0]
-        device = batch.gen_pixel_values.device
+        bs: int = batch.src_pixel_values.shape[0]
+        device = batch.tgt_pixel_values.device
         dtype = self.dtype
 
-        clip_input = batch.disc_pixel_values.to(device=device, dtype=dtype)
+        clip_input = batch.src_pixel_values.to(device=device, dtype=dtype)
 
         if self.cfg.model.add_grid_to_input_channels:
-            clip_input = torch.cat((clip_input, batch.disc_grid), dim=1)
+            clip_input = torch.cat((clip_input, batch.src_grid), dim=1)
 
         clip_feature_map = self.clip.forward_model(clip_input)  # b (h w) d
 
@@ -696,13 +696,13 @@ class BaseMapper(Trainable):
         dropout_background_only = self.cfg.model.dropout_background_only
         background_mask_idx = self.cfg.model.background_mask_idx
 
-        indices_ = batch.disc_segmentation.view(batch.batch_size[0], -1)
+        indices_ = batch.src_segmentation.view(batch.batch_size[0], -1)
         ones_ = torch.ones_like(indices_, dtype=torch.bool)
         all_non_empty_mask = ones_.new_zeros((batch.batch_size[0], 256))
         all_non_empty_mask.scatter_add_(1, indices_.long(), ones_)  # Perform batched bincount
         all_non_empty_mask = all_non_empty_mask[:, :self.cfg.model.segmentation_map_size]
 
-        assert batch.disc_segmentation is not None
+        assert batch.src_segmentation is not None
         for i in range(bs):
             one_hot_idx = torch.arange(segmentation_map_size, device=device)
             non_empty_mask = all_non_empty_mask[i] > 0
@@ -735,8 +735,8 @@ class BaseMapper(Trainable):
                 log_warn("Dropped out all masks for this image!")
                 continue
 
-            assert batch.disc_pixel_values.shape[-1] == batch.disc_pixel_values.shape[-2]
-            one_hot_mask = get_one_hot_channels(batch.disc_segmentation[i], one_hot_idx).permute(2, 0, 1)
+            assert batch.src_pixel_values.shape[-1] == batch.src_pixel_values.shape[-2]
+            one_hot_mask = get_one_hot_channels(batch.src_segmentation[i], one_hot_idx).permute(2, 0, 1)
             feature_map_mask_ = find_true_indices_batched(original=one_hot_mask, dh=latent_dim, dw=latent_dim)
             feature_map_masks.append(feature_map_mask_)
             mask_batch_idx.append(i * feature_map_mask_.new_ones((feature_map_mask_.shape[0]), dtype=torch.long))
@@ -906,7 +906,7 @@ class BaseMapper(Trainable):
             cond.encoder_hidden_states[:] = shift_scale_uncond_hidden_states(self)
 
         if self.cfg.model.eschernet:
-            attn_meta.posemb=[batch.gen_pose_out, batch.disc_pose_in]
+            attn_meta.posemb=[batch.tgt_pose_out, batch.src_pose_in]
 
         if self.cfg.model.masked_self_attention:
             attn_meta.self_attention_mask = cond.batch_attn_masks
@@ -942,7 +942,7 @@ class BaseMapper(Trainable):
         return cond
 
     def get_controlnet_conditioning(self, batch):
-        return batch.disc_segmentation.permute(0, 3, 1, 2).to(dtype=self.dtype)
+        return batch.src_segmentation.permute(0, 3, 1, 2).to(dtype=self.dtype)
 
     def dropout_cfg(self, cond: ConditioningData):
         device: torch.device = cond.encoder_hidden_states.device
@@ -980,7 +980,7 @@ class BaseMapper(Trainable):
             assert batch.bs % self.cfg.model.predict_rotation_from_n_frames == 0
             batch.num_frames = self.cfg.model.predict_rotation_from_n_frames
 
-        batch.gen_pixel_values = torch.clamp(batch.gen_pixel_values, -1, 1)
+        batch.tgt_pixel_values = torch.clamp(batch.tgt_pixel_values, -1, 1)
 
         # Sample a random timestep for each element in batch
         if self.cfg.model.use_inverted_noise_schedule:
@@ -1012,7 +1012,7 @@ class BaseMapper(Trainable):
         encoder_hidden_states = cond.encoder_hidden_states
 
         if self.cfg.model.unet:
-            latents = self.vae.encode(batch.gen_pixel_values.to(dtype=self.dtype)).latent_dist.sample() # Convert images to latent space
+            latents = self.vae.encode(batch.tgt_pixel_values.to(dtype=self.dtype)).latent_dist.sample() # Convert images to latent space
             latents = latents * self.vae.config.scaling_factor
 
             noise = torch.randn_like(latents) # Sample noise that we'll add to the latents
@@ -1026,7 +1026,7 @@ class BaseMapper(Trainable):
                     del cond.unet_kwargs['cross_attention_kwargs']['attn_meta']
 
             if self.cfg.model.add_grid_to_input_channels:
-                downsampled_grid = get_gen_grid(self.cfg, batch)
+                downsampled_grid = get_tgt_grid(self.cfg, batch)
                 if self.cfg.model.dropout_grid_conditioning is not None:
                     dropout = torch.rand(batch.bs, device=batch.device) < self.cfg.model.dropout_grid_conditioning
                     dropout_grid = get_dropout_grid(self.cfg.model.decoder_latent_dim).to(downsampled_grid)
@@ -1065,8 +1065,8 @@ class BaseMapper(Trainable):
         
         losses = dict()
         if self.cfg.model.unet:
-            if batch.gen_pad_mask is not None and self.cfg.model.use_pad_mask_loss:
-                loss_mask = rearrange("b h w -> b () h w ", ~batch.gen_pad_mask)
+            if batch.tgt_pad_mask is not None and self.cfg.model.use_pad_mask_loss:
+                loss_mask = rearrange("b h w -> b () h w ", ~batch.tgt_pad_mask)
                 loss_mask = F.interpolate(
                     loss_mask.float(),
                     size=(self.cfg.model.decoder_latent_dim, self.cfg.model.decoder_latent_dim),

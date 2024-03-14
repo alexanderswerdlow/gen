@@ -30,12 +30,12 @@ if TYPE_CHECKING:
 
 def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: InputData, controller: AttentionStore, cond: ConditioningData):
     attn_loss = 0
-    batch_size: int = batch.disc_pixel_values.shape[0]
-    gen_seg_ = rearrange(integer_to_one_hot(batch.gen_segmentation, cfg.model.segmentation_map_size), "b h w c -> b c () h w").float()
+    batch_size: int = batch.src_pixel_values.shape[0]
+    tgt_seg_ = rearrange(integer_to_one_hot(batch.tgt_segmentation, cfg.model.segmentation_map_size), "b h w c -> b c () h w").float()
     learnable_idxs = (batch.formatted_input_ids == cond.placeholder_token).nonzero(as_tuple=True)
 
     for batch_idx in range(batch_size):
-        GT_masks = F.interpolate(input=gen_seg_[batch_idx], size=(16, 16))  # We interpolate per mask separately
+        GT_masks = F.interpolate(input=tgt_seg_[batch_idx], size=(16, 16))  # We interpolate per mask separately
         agg_attn = aggregate_attention(controller, res=16, from_where=("up", "down"), is_cross=True, select=batch_idx, batch_size=batch_size)
 
         cur_batch_mask = learnable_idxs[0] == batch_idx  # Find the masks for this batch
@@ -89,13 +89,13 @@ def evenly_weighted_mask_loss(
 
     losses = []
 
-    for b in range(batch.gen_pixel_values.shape[0]):
+    for b in range(batch.tgt_pixel_values.shape[0]):
         if cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item():
             losses.append(F.mse_loss(pred[b], target[b], reduction="mean"))
             continue
 
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
-        object_masks = get_one_hot_channels(batch.gen_segmentation[b], mask_idxs_for_batch)
+        object_masks = get_one_hot_channels(batch.tgt_segmentation[b], mask_idxs_for_batch)
 
         gt_masks = F.interpolate(rearrange(object_masks, "h w c -> c () h w").float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim)).squeeze(1)
         gt_masks = rearrange(gt_masks, "c h w -> c (h w)") > 0.5
@@ -103,8 +103,8 @@ def evenly_weighted_mask_loss(
         batch_losses = []
         for i in range(object_masks.shape[-1]):
             pred_ = pred[b, :, gt_masks[i, :]]
-            target_ = target[b, :, gt_masks[i, :]]
-            loss = F.mse_loss(pred_, target_, reduction="mean")
+            tgt_ = target[b, :, gt_masks[i, :]]
+            loss = F.mse_loss(pred_, tgt_, reduction="mean")
             batch_losses.append(loss)
 
         if len(batch_losses) == 0:
@@ -118,9 +118,9 @@ def evenly_weighted_mask_loss(
 def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData):
     max_masks = []
     decoder_resolution = cfg.model.decoder_resolution
-    for b in range(batch.gen_pixel_values.shape[0]):
+    for b in range(batch.tgt_pixel_values.shape[0]):
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
-        object_masks = get_one_hot_channels(batch.gen_segmentation[b], mask_idxs_for_batch)
+        object_masks = get_one_hot_channels(batch.tgt_segmentation[b], mask_idxs_for_batch)
         if (
             cond.batch_cond_dropout is not None and cond.batch_cond_dropout[b].item()
         ):  # We do not have conditioning for this entire sample so put loss on everything
@@ -136,7 +136,7 @@ def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: Condition
     if cfg.model.viz and batch.state.true_step % 1 == 0:
         from image_utils import Im
 
-        rgb_ = Im((batch.gen_pixel_values + 1) / 2)
+        rgb_ = Im((batch.tgt_pixel_values + 1) / 2)
         mask_ = Im(loss_mask).resize(rgb_.height, rgb_.width)
         Im.concat_horizontal(rgb_.grid(), mask_.grid()).save(f'rgb_{batch.state.true_step}.png')
 
@@ -151,8 +151,8 @@ def token_cls_loss(
 ):
 
     cls_pred = pred_data.cls_pred
-    bs = batch.gen_pixel_values.shape[0]
-    device = batch.gen_pixel_values.device
+    bs = batch.tgt_pixel_values.shape[0]
+    device = batch.tgt_pixel_values.device
 
     assert cfg.model.background_mask_idx == 0
 
@@ -214,7 +214,7 @@ def get_relative_rot_data(cfg: BaseConfig, cond: ConditioningData, batch: InputD
     """
     group_size = cfg.model.predict_rotation_from_n_frames
     assert group_size == 2, "Only 2 frames are supported for now"
-    bs = batch.gen_pixel_values.shape[0]
+    bs = batch.tgt_pixel_values.shape[0]
     num_groups = bs // group_size
     all_rot_data = {}
     for group_idx in range(num_groups):
@@ -236,8 +236,8 @@ def get_relative_rot_data(cfg: BaseConfig, cond: ConditioningData, batch: InputD
 
 
 def get_gt_rot(cfg: BaseConfig, cond: ConditioningData, batch: InputData, pred_data: TokenPredData):
-    bs = batch.gen_pixel_values.shape[0]
-    device = batch.gen_pixel_values.device
+    bs = batch.tgt_pixel_values.shape[0]
+    device = batch.tgt_pixel_values.device
     gt_quat = batch.quaternions
     
     

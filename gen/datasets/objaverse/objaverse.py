@@ -67,9 +67,9 @@ def cartesian_to_spherical(xyz):
     azimuth = np.arctan2(xyz[:, 1], xyz[:, 0])
     return np.array([theta, azimuth, z])
 
-def get_pose(target_RT):
-    target_RT = target_RT[:3, :]
-    R, T = target_RT[:3, :3], target_RT[:, -1]
+def get_pose(tgt_RT):
+    tgt_RT = tgt_RT[:3, :]
+    R, T = tgt_RT[:3, :3], tgt_RT[:, -1]
     T_target = -R.T @ T
     theta_target, azimuth_target, z_target = cartesian_to_spherical(T_target[None, :])
     # assert if z_target is out of range
@@ -77,9 +77,9 @@ def get_pose(target_RT):
         # print('z_target out of range 1.5-2.2', z_target.item())
         z_target = np.clip(z_target.item(), 1.5, 2.2)
     # with log scale for radius
-    target_T = torch.tensor([theta_target.item(), azimuth_target.item(), (np.log(z_target.item()) - np.log(1.5))/(np.log(2.2)-np.log(1.5)) * torch.pi, torch.tensor(0)])
-    assert torch.all(target_T <= torch.pi) and torch.all(target_T >= -torch.pi)
-    return target_T.numpy()
+    tgt_T = torch.tensor([theta_target.item(), azimuth_target.item(), (np.log(z_target.item()) - np.log(1.5))/(np.log(2.2)-np.log(1.5)) * torch.pi, torch.tensor(0)])
+    assert torch.all(tgt_T <= torch.pi) and torch.all(tgt_T >= -torch.pi)
+    return tgt_T.numpy()
 
 
 @inherit_parent_args
@@ -182,8 +182,8 @@ class ObjaverseData(AbstractDataset, Dataset):
         azimuth = np.arctan2(xyz[:, 1], xyz[:, 0])
         return np.array([theta, azimuth, z])
 
-    def get_T(self, target_RT, cond_RT):
-        R, T = target_RT[:3, :3], target_RT[:, -1]
+    def get_T(self, tgt_RT, cond_RT):
+        R, T = tgt_RT[:3, :3], tgt_RT[:, -1]
         T_target = -R.T @ T
 
         R, T = cond_RT[:3, :3], cond_RT[:, -1]
@@ -199,8 +199,8 @@ class ObjaverseData(AbstractDataset, Dataset):
         d_T = torch.tensor([d_theta.item(), math.sin(d_azimuth.item()), math.cos(d_azimuth.item()), d_z.item()])
         return d_T
 
-    def get_pose(self, target_RT):
-        R, T = target_RT[:3, :3], target_RT[:, -1]
+    def get_pose(self, tgt_RT):
+        R, T = tgt_RT[:3, :3], tgt_RT[:, -1]
         T_target = -R.T @ T
         theta_target, azimuth_target, z_target = self.cartesian_to_spherical(T_target[None, :])
         # assert if z_target is out of range
@@ -208,9 +208,9 @@ class ObjaverseData(AbstractDataset, Dataset):
             # print('z_target out of range 1.5-2.2', z_target.item())
             z_target = np.clip(z_target.item(), 1.5, 2.2)
         # with log scale for radius
-        target_T = torch.tensor([theta_target.item(), azimuth_target.item(), (np.log(z_target.item()) - np.log(1.5))/(np.log(2.2)-np.log(1.5)) * torch.pi, torch.tensor(0)])
-        assert torch.all(target_T <= torch.pi) and torch.all(target_T >= -torch.pi)
-        return target_T
+        tgt_T = torch.tensor([theta_target.item(), azimuth_target.item(), (np.log(z_target.item()) - np.log(1.5))/(np.log(2.2)-np.log(1.5)) * torch.pi, torch.tensor(0)])
+        assert torch.all(tgt_T <= torch.pi) and torch.all(tgt_T >= -torch.pi)
+        return tgt_T
 
     def load_im(self, path, color):
         '''
@@ -250,8 +250,8 @@ class ObjaverseData(AbstractDataset, Dataset):
 
         try:
             input_ims = []
-            target_ims = []
-            target_Ts = []
+            tgt_ims = []
+            tgt_Ts = []
             cond_Ts = []
             for i, index_input in enumerate(index_inputs):
                 input_im = self.process_im(self.load_im(os.path.join(filename, '%03d.png' % index_input), color))
@@ -259,16 +259,16 @@ class ObjaverseData(AbstractDataset, Dataset):
                 input_RT = np.load(os.path.join(filename, '%03d.npy' % index_input))
                 cond_Ts.append(self.get_pose(input_RT))
             for i, index_target in enumerate(index_targets):
-                target_im = self.process_im(self.load_im(os.path.join(filename, '%03d.png' % index_target), color))
-                target_ims.append(target_im)
-                target_RT = np.load(os.path.join(filename, '%03d.npy' % index_target))
-                target_Ts.append(self.get_pose(target_RT))
+                tgt_im = self.process_im(self.load_im(os.path.join(filename, '%03d.png' % index_target), color))
+                tgt_ims.append(tgt_im)
+                tgt_RT = np.load(os.path.join(filename, '%03d.npy' % index_target))
+                tgt_Ts.append(self.get_pose(tgt_RT))
         except:
             print('error loading data ', filename)
             filename = os.path.join(self.root_dir, '3fa344c4fbc74e68a07b139d9920772f')  # this one we know is valid
             input_ims = []
-            target_ims = []
-            target_Ts = []
+            tgt_ims = []
+            tgt_Ts = []
             cond_Ts = []
             # very hacky solution, sorry about this
             for i, index_input in enumerate(index_inputs):
@@ -277,25 +277,25 @@ class ObjaverseData(AbstractDataset, Dataset):
                 input_RT = np.load(os.path.join(filename, '%03d.npy' % index_input))
                 cond_Ts.append(self.get_pose(input_RT))
             for i, index_target in enumerate(index_targets):
-                target_im = self.process_im(self.load_im(os.path.join(filename, '%03d.png' % index_target), color))
-                target_ims.append(target_im)
-                target_RT = np.load(os.path.join(filename, '%03d.npy' % index_target))
-                target_Ts.append(self.get_pose(target_RT))
+                tgt_im = self.process_im(self.load_im(os.path.join(filename, '%03d.png' % index_target), color))
+                tgt_ims.append(tgt_im)
+                tgt_RT = np.load(os.path.join(filename, '%03d.npy' % index_target))
+                tgt_Ts.append(self.get_pose(tgt_RT))
 
-        source_data, target_data = self.augmentation(
-            source_data=Data(image=torch.stack(input_ims, dim=0)),
-            target_data=Data(image=torch.stack(target_ims, dim=0)),
+        src_data, tgt_data = self.augmentation(
+            src_data=Data(image=torch.stack(input_ims, dim=0)),
+            tgt_data=Data(image=torch.stack(tgt_ims, dim=0)),
         )
 
         # stack to batch
-        assert source_data.image.shape[0] == 1
-        assert target_data.image.shape[0] == 1
-        data['disc_pixel_values'] = source_data.image[0]
-        data['gen_pixel_values'] = target_data.image[0]
-        data['disc_segmentation'] = data['disc_pixel_values'].new_zeros((data['disc_pixel_values'].shape[1], data['disc_pixel_values'].shape[2]), dtype=torch.long)
-        data['gen_segmentation'] = data['gen_pixel_values'].new_zeros((data['gen_pixel_values'].shape[1], data['gen_pixel_values'].shape[2]), dtype=torch.long)
-        data['gen_pose_out'] = torch.stack(target_Ts, dim=0)
-        data['disc_pose_in'] = torch.stack(cond_Ts, dim=0)
+        assert src_data.image.shape[0] == 1
+        assert tgt_data.image.shape[0] == 1
+        data['src_pixel_values'] = src_data.image[0]
+        data['tgt_pixel_values'] = tgt_data.image[0]
+        data['src_segmentation'] = data['src_pixel_values'].new_zeros((data['src_pixel_values'].shape[1], data['src_pixel_values'].shape[2]), dtype=torch.long)
+        data['tgt_segmentation'] = data['tgt_pixel_values'].new_zeros((data['tgt_pixel_values'].shape[1], data['tgt_pixel_values'].shape[2]), dtype=torch.long)
+        data['tgt_pose_out'] = torch.stack(tgt_Ts, dim=0)
+        data['src_pose_in'] = torch.stack(cond_Ts, dim=0)
         data['input_ids'] = get_tokens(self.tokenizer)
         data['valid'] = torch.full((1,), True, dtype=torch.bool)
 
@@ -329,13 +329,13 @@ if __name__ == "__main__":
         print(f'Time taken: {time.time() - start_time}')
         start_time = time.time()
         from image_utils import Im, onehot_to_color
-        gen_seg = integer_to_one_hot(batch["gen_segmentation"], 1)
-        disc_seg = integer_to_one_hot(batch["disc_segmentation"], 1)
-        for b in range(batch['gen_pixel_values'].shape[0]):        
-            gen_ = Im.concat_vertical(Im((batch['gen_pixel_values'][b] + 1) / 2), Im(onehot_to_color(gen_seg[b].squeeze(0))))
-            disc_ = Im.concat_vertical(Im((batch['disc_pixel_values'][b] + 1) / 2), Im(onehot_to_color(disc_seg[b].squeeze(0))))
-            print(gen_seg.sum() / gen_seg[b, ..., 0].numel(), disc_seg.sum() / disc_seg[b, ..., 0].numel())
-            Im.concat_horizontal(gen_, disc_).save(f'objaverse_{step}_{b}.png')
+        tgt_seg = integer_to_one_hot(batch["tgt_segmentation"], 1)
+        src_seg = integer_to_one_hot(batch["src_segmentation"], 1)
+        for b in range(batch['tgt_pixel_values'].shape[0]):        
+            tgt_ = Im.concat_vertical(Im((batch['tgt_pixel_values'][b] + 1) / 2), Im(onehot_to_color(tgt_seg[b].squeeze(0))))
+            src_ = Im.concat_vertical(Im((batch['src_pixel_values'][b] + 1) / 2), Im(onehot_to_color(src_seg[b].squeeze(0))))
+            print(tgt_seg.sum() / tgt_seg[b, ..., 0].numel(), src_seg.sum() / src_seg[b, ..., 0].numel())
+            Im.concat_horizontal(tgt_, src_).save(f'objaverse_{step}_{b}.png')
 
         if step > 1:
             break

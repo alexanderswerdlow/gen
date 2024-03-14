@@ -31,7 +31,7 @@ class CocoCaptions(AbstractDataset):
         self.allow_subset = False
         self.tokenizer = tokenizer
         self.path = path
-        self.gen_image_transforms = transforms.Compose([
+        self.tgt_image_transforms = transforms.Compose([
             transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(resolution),
             transforms.ToTensor(),
@@ -39,7 +39,7 @@ class CocoCaptions(AbstractDataset):
         ])
         
         # TODO: This is super inefficient as we load the entire model just to get the transforms!
-        self.disc_image_transforms = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[-1]
+        self.src_image_transforms = open_clip.create_model_and_transforms('ViT-L-14', pretrained='datacomp_xl_s13b_b90k')[-1]
         self.override_text = override_text
         if self.override_text:
             warnings.warn(f"Overriding text captions with {DEFAULT_PROMPT}")
@@ -57,12 +57,12 @@ class CocoCaptions(AbstractDataset):
     def collate_fn(self, batch):
         pixel_values = torch.stack([example[0] for example in batch])
         pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
-        disc_pixel_values = torch.stack([example[1] for example in batch])
-        disc_pixel_values = disc_pixel_values.to(memory_format=torch.contiguous_format).float()
+        src_pixel_values = torch.stack([example[1] for example in batch])
+        src_pixel_values = src_pixel_values.to(memory_format=torch.contiguous_format).float()
         input_ids = torch.stack([example[2] for example in batch]).squeeze(1)
-        return {"gen_pixel_values": pixel_values, "input_ids": input_ids, "disc_pixel_values": disc_pixel_values}
+        return {"tgt_pixel_values": pixel_values, "input_ids": input_ids, "src_pixel_values": src_pixel_values}
 
     def make_sample(self, sample, val=False):
         input_text = DEFAULT_PROMPT if self.override_text else sample['txt']
         inputs = self.tokenizer(input_text, max_length=self.tokenizer.model_max_length, padding="max_length", truncation=True, return_tensors="pt")
-        return self.gen_image_transforms(sample["jpg"]), self.disc_image_transforms(sample["jpg"]), inputs.input_ids
+        return self.tgt_image_transforms(sample["jpg"]), self.src_image_transforms(sample["jpg"]), inputs.input_ids

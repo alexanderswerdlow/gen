@@ -116,25 +116,25 @@ class Trainer:
 
     def init_dataloader(self):
         log_info("Creating train_dataset + self.train_dataloader")
-        self.train_dataloader_holder: AbstractDataset = hydra.utils.instantiate(self.cfg.dataset.train_dataset, _recursive_=True)(
+        self.train_dataloader_holder: AbstractDataset = hydra.utils.instantiate(self.cfg.dataset.train, _recursive_=True)(
             cfg=self.cfg, split=Split.TRAIN, tokenizer=self.tokenizer, accelerator=self.accelerator
         )
         self.train_dataloader: DataLoader = self.train_dataloader_holder.get_dataloader()
         assert len(self.train_dataloader) > 0
 
-        log_info("Creating validation_dataset + self.validation_dataloader")
-        self.validation_dataset_holder: AbstractDataset = hydra.utils.instantiate(self.cfg.dataset.validation_dataset, _recursive_=True)(
+        log_info("Creating val_dataset + self.validation_dataloader")
+        self.val_dataset_holder: AbstractDataset = hydra.utils.instantiate(self.cfg.dataset.val, _recursive_=True)(
             cfg=self.cfg, split=Split.VALIDATION, tokenizer=self.tokenizer, accelerator=self.accelerator
         )
 
         if self.cfg.dataset.overfit:
-            self.validation_dataset_holder.get_dataset = lambda: self.train_dataloader.dataset
+            self.val_dataset_holder.get_dataset = lambda: self.train_dataloader.dataset
 
         g = torch.Generator()
         g.manual_seed(0 + get_rank())
-        self.validation_dataset_holder.batch_size = self.cfg.dataset.validation_dataset.batch_size
-        self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.validation_dataset_holder.batch_size, self.cfg.dataset.validation_dataset.batch_size)
-        self.validation_dataloader = self.validation_dataset_holder.get_dataloader(generator=g, pin_memory=False)
+        self.val_dataset_holder.batch_size = self.cfg.dataset.val.batch_size
+        self.val_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.val_dataset_holder.batch_size, self.cfg.dataset.val.batch_size)
+        self.validation_dataloader = self.val_dataset_holder.get_dataloader(generator=g, pin_memory=False)
         self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
 
         assert len(self.validation_dataloader) > 0
@@ -222,11 +222,11 @@ class Trainer:
         
         validation_start_time = time()
 
-        if self.cfg.dataset.reset_validation_dataset_every_epoch:
+        if self.cfg.dataset.reset_val_dataset_every_epoch:
             g = torch.Generator()
             g.manual_seed(state.global_step + get_rank())
-            self.validation_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.validation_dataset_holder.batch_size, self.cfg.dataset.validation_dataset.batch_size)
-            self.validation_dataloader = self.validation_dataset_holder.get_dataloader(generator=g, pin_memory=False)
+            self.val_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.val_dataset_holder.batch_size, self.cfg.dataset.val.batch_size)
+            self.validation_dataloader = self.val_dataset_holder.get_dataloader(generator=g, pin_memory=False)
             self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
 
         run_inference_dataloader(
@@ -238,7 +238,7 @@ class Trainer:
             prefix="val/",
         )
 
-        if self.cfg.dataset.reset_validation_dataset_every_epoch:
+        if self.cfg.dataset.reset_val_dataset_every_epoch:
             del self.validation_dataloader
 
         if self.cfg.trainer.validate_training_dataset:
@@ -252,18 +252,18 @@ class Trainer:
 
     @torch.no_grad()
     def validate_compose(self, state: TrainingState):
-        assert self.cfg.dataset.reset_validation_dataset_every_epoch
+        assert self.cfg.dataset.reset_val_dataset_every_epoch
         from gen.models.cross_attn.base_inference import compose_two_images
         set_inference_func(unwrap(self.model), partial(compose_two_images))
-        self.validation_dataset_holder.batch_size = 2
+        self.val_dataset_holder.batch_size = 2
         self.validate(state=state)
-        self.validation_dataset_holder.batch_size = self.cfg.dataset.validation_dataset.batch_size
+        self.val_dataset_holder.batch_size = self.cfg.dataset.val.batch_size
         set_default_inference_func(unwrap(self.model), self.cfg)
 
     def validate_train_dataloader(self, state: TrainingState):
-        self.train_dataloader_holder.subset_size = self.validation_dataset_holder.subset_size
-        self.train_dataloader_holder.random_subset = self.validation_dataset_holder.random_subset
-        self.train_dataloader_holder.batch_size = self.validation_dataset_holder.batch_size
+        self.train_dataloader_holder.subset_size = self.val_dataset_holder.subset_size
+        self.train_dataloader_holder.random_subset = self.val_dataset_holder.random_subset
+        self.train_dataloader_holder.batch_size = self.val_dataset_holder.batch_size
         self.train_dataloader_holder.repeat_dataset_n_times = None
         self.train_dataloader = self.train_dataloader_holder.get_dataloader(pin_memory=False)
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
@@ -277,10 +277,10 @@ class Trainer:
             prefix="train/",
         )
 
-        self.train_dataloader_holder.subset_size = self.cfg.dataset.train_dataset.subset_size
-        self.train_dataloader_holder.random_subset = self.cfg.dataset.train_dataset.random_subset
-        self.train_dataloader_holder.batch_size = self.cfg.dataset.train_dataset.batch_size
-        self.train_dataloader_holder.repeat_dataset_n_times = self.cfg.dataset.train_dataset.repeat_dataset_n_times
+        self.train_dataloader_holder.subset_size = self.cfg.dataset.train.subset_size
+        self.train_dataloader_holder.random_subset = self.cfg.dataset.train.random_subset
+        self.train_dataloader_holder.batch_size = self.cfg.dataset.train.batch_size
+        self.train_dataloader_holder.repeat_dataset_n_times = self.cfg.dataset.train.repeat_dataset_n_times
         self.train_dataloader = self.train_dataloader_holder.get_dataloader()
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
@@ -294,14 +294,14 @@ class Trainer:
         g = torch.Generator()
         g.manual_seed(0)
         
-        subset_size = len(self.validation_dataset_holder)
-        subset_size = min(subset_size, self.cfg.dataset.validation_dataset.subset_size) if self.cfg.dataset.validation_dataset.subset_size is not None else subset_size
+        subset_size = len(self.val_dataset_holder)
+        subset_size = min(subset_size, self.cfg.dataset.val.subset_size) if self.cfg.dataset.val.subset_size is not None else subset_size
         subset_size = min(subset_size, self.cfg.trainer.custom_inference_dataset_size) if self.cfg.trainer.custom_inference_dataset_size is not None else subset_size
         batch_size = self.cfg.trainer.custom_inference_batch_size if self.cfg.trainer.custom_inference_batch_size is not None else self.train_dataloader_holder.batch_size
-        self.validation_dataset_holder.subset_size = subset_size
+        self.val_dataset_holder.subset_size = subset_size
         self.train_dataloader_holder.random_subset = self.cfg.trainer.custom_inference_fixed_shuffle
-        self.validation_dataset_holder.batch_size = batch_size
-        self.validation_dataloader = self.validation_dataset_holder.get_dataloader(pin_memory=False, generator=g)
+        self.val_dataset_holder.batch_size = batch_size
+        self.validation_dataloader = self.val_dataset_holder.get_dataloader(pin_memory=False, generator=g)
         self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
 
         run_inference_dataloader(
@@ -330,9 +330,9 @@ class Trainer:
             init_pipeline=False
         )
 
-        self.train_dataloader_holder.subset_size = self.cfg.dataset.train_dataset.subset_size
-        self.train_dataloader_holder.random_subset = self.cfg.dataset.train_dataset.random_subset
-        self.train_dataloader_holder.batch_size = self.cfg.dataset.train_dataset.batch_size
+        self.train_dataloader_holder.subset_size = self.cfg.dataset.train.subset_size
+        self.train_dataloader_holder.random_subset = self.cfg.dataset.train.random_subset
+        self.train_dataloader_holder.batch_size = self.cfg.dataset.train.batch_size
         self.train_dataloader = self.train_dataloader_holder.get_dataloader()
         self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
 
@@ -377,13 +377,13 @@ class Trainer:
     def train(self):
         tr = self.cfg.trainer
 
-        total_batch_size = self.cfg.dataset.train_dataset.batch_size * tr.num_gpus * tr.gradient_accumulation_steps
+        total_batch_size = self.cfg.dataset.train.batch_size * tr.num_gpus * tr.gradient_accumulation_steps
 
         log_info("***** Running training *****")
         log_info(f"  Num examples = {len(self.train_dataloader.dataset)}")
         log_info(f"  Num batches each epoch = {len(self.train_dataloader)}")
         log_info(f"  Num Epochs = {tr.num_train_epochs}")
-        log_info(f"  Instantaneous batch size per device = {self.cfg.dataset.train_dataset.batch_size}")
+        log_info(f"  Instantaneous batch size per device = {self.cfg.dataset.train.batch_size}")
         log_info(f"  Gradient Accumulation steps = {tr.gradient_accumulation_steps}")
         log_info(f"  Num GPUs = {tr.num_gpus}")
         log_info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")

@@ -14,8 +14,8 @@ from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtrac
 
 def get_override_dict(**kwargs):
     return dict(
-        train_dataset=dict(**kwargs),
-        validation_dataset=dict(**kwargs),
+        train=dict(**kwargs),
+        val=dict(**kwargs),
     )
 
 
@@ -42,12 +42,12 @@ def get_experiments():
             fused_bias_fc=False,
         ),
         trainer=dict(use_fused_adam=False),
-        dataset=dict(train_dataset=dict(batch_size=2, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
+        dataset=dict(train=dict(batch_size=2, num_workers=0), val=dict(batch_size=1, num_workers=0)),
     )
 
     mode_store(
         name="small_gpu",
-        dataset=dict(train_dataset=dict(batch_size=1, num_workers=0), validation_dataset=dict(batch_size=1, num_workers=0)),
+        dataset=dict(train=dict(batch_size=1, num_workers=0), val=dict(batch_size=1, num_workers=0)),
         model=dict(
             decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False),
             pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5",
@@ -77,7 +77,7 @@ def get_experiments():
 
     mode_store(
         name="unet_finetune",
-        dataset=dict(train_dataset=dict(batch_size=8)),
+        dataset=dict(train=dict(batch_size=8)),
         trainer=dict(learning_rate=1e-7),
         model=dict(freeze_unet=False, unet_lora=False),
     )
@@ -86,14 +86,14 @@ def get_experiments():
         name="unet_lora",
         model=dict(freeze_unet=True, unet_lora=True, lora_rank=256, gated_cross_attn=False, unfreeze_gated_cross_attn=False),
         trainer=dict(learning_rate=1e-6),
-        dataset=dict(train_dataset=dict(batch_size=20)),
+        dataset=dict(train=dict(batch_size=20)),
     )
 
     mode_store(
         name="unet_no_lora",
         model=dict(unet_lora=False),
         trainer=dict(learning_rate=1e-5),
-        dataset=dict(train_dataset=dict(batch_size=18)),
+        dataset=dict(train=dict(batch_size=18)),
     )
 
     mode_store(
@@ -270,8 +270,8 @@ def get_experiments():
             # use_sd_15_tokenizer_encoder=True,
         ),
         dataset=dict(
-            reset_validation_dataset_every_epoch=True,
-            train_dataset=dict(
+            reset_val_dataset_every_epoch=True,
+            train=dict(
                 batch_size=36,
             ),
         ),
@@ -293,7 +293,7 @@ def get_experiments():
 
     mode_store(
         name="new_unet_finetune",
-        dataset=dict(train_dataset=dict(batch_size=9)),
+        dataset=dict(train=dict(batch_size=9)),
         trainer=dict(learning_rate=1e-7),
         model=dict(freeze_unet=False, unet_lora=False),
     )
@@ -302,14 +302,14 @@ def get_experiments():
         name="new_unet_lora",
         model=dict(freeze_unet=True, unet_lora=True, lora_rank=256),
         trainer=dict(learning_rate=1e-6),
-        dataset=dict(train_dataset=dict(batch_size=20)),
+        dataset=dict(train=dict(batch_size=20)),
     )
 
     mode_store(
         name="disable_all_cond",
         model=dict(layer_specialization=False, per_layer_queries=False, mask_token_conditioning=False, freeze_clip=False, num_token_cls=2),
         trainer=dict(learning_rate=1e-4, eval_on_start=False, max_train_steps=10, gradient_accumulation_steps=1, enable_dynamic_grad_accum=False, profiler_active_steps=2),
-        dataset=dict(train_dataset=dict(batch_size=2)),
+        dataset=dict(train=dict(batch_size=2)),
         hydra_defaults=["new_unet_lora", "sd_15"],
     )
 
@@ -364,7 +364,7 @@ def get_experiments():
             learning_rate=7.5e-5,
             enable_dynamic_grad_accum=False,
         ),
-        dataset=dict(train_dataset=dict(batch_size=128)),
+        dataset=dict(train=dict(batch_size=128)),
         hydra_defaults=["coco_recon_only", "objaverse", "vit_small_scratch"],
     )
 
@@ -388,25 +388,25 @@ def get_experiments():
             freeze_clip=False,
         ),
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 batch_size=36,
                 augmentation=dict(
-                    different_source_target_augmentation=True,
+                    different_src_tgt_augmentation=True,
                     enable_random_resize_crop=True, 
                     enable_horizontal_flip=True,
-                    source_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
-                    target_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
+                    src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                    tgt_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
                     enable_rand_augment=False,
                     enable_rotate=True,
                 )
             ),
-            validation_dataset=dict(
+            val=dict(
                 augmentation=dict(
-                    different_source_target_augmentation=True,
+                    different_src_tgt_augmentation=True,
                     enable_random_resize_crop=True, 
                     enable_horizontal_flip=True,
-                    source_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
-                    target_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
+                    src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                    tgt_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
                     enable_rand_augment=False,
                     enable_rotate=True,
                 )
@@ -446,7 +446,7 @@ def get_experiments():
             eval_every_n_steps=1000,
         ),
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 batch_size=24,
             ),
         ),
@@ -468,7 +468,7 @@ def get_experiments():
             compile=False,
         ),
         dataset=dict(
-            train_dataset=dict(
+            train=dict(
                 batch_size=24,
             ),
         ),

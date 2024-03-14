@@ -22,13 +22,13 @@ if TYPE_CHECKING:
 
 @tensorclass
 class InputData:
-    gen_pixel_values: Float[Tensor, "b c h w"]
-    gen_segmentation: Integer[Tensor, "b h w"]
-    disc_pixel_values: Float[Tensor, "b c h w"]
-    disc_segmentation: Integer[Tensor, "b h w"]
+    tgt_pixel_values: Float[Tensor, "b c h w"]
+    tgt_segmentation: Integer[Tensor, "b h w"]
+    src_pixel_values: Float[Tensor, "b c h w"]
+    src_segmentation: Integer[Tensor, "b h w"]
     input_ids: Integer[Tensor, "b l"]
-    gen_grid: Optional[Float[Tensor, "b h w 2"]] = None
-    disc_grid: Optional[Float[Tensor, "b h w 2"]] = None
+    tgt_grid: Optional[Float[Tensor, "b h w 2"]] = None
+    src_grid: Optional[Float[Tensor, "b h w 2"]] = None
     state: Optional[TrainingState] = None
     dtype: Optional[torch.dtype]  = None
     bs: Optional[int] = None
@@ -43,27 +43,27 @@ class InputData:
     asset_id: Optional[Integer] = None
     metadata: Optional[dict[str, Any]] = None
     formatted_input_ids: Optional[Integer[Tensor, "b l"]] = None
-    gen_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
-    disc_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
-    one_hot_gen_segmentation: Optional[Integer[Tensor, "b h w c"]] = None
-    gen_pose_out: Optional[Float[Tensor, "b t 4"]] = None
-    disc_pose_in: Optional[Float[Tensor, "b t 4"]] = None
+    tgt_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
+    src_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
+    one_hot_tgt_segmentation: Optional[Integer[Tensor, "b h w c"]] = None
+    tgt_pose_out: Optional[Float[Tensor, "b t 4"]] = None
+    src_pose_in: Optional[Float[Tensor, "b t 4"]] = None
     raw_dataset_image: Optional[Integer[Tensor, "b h w c"]] = None
 
     @staticmethod
     def from_dict(batch: dict):
         batch = InputData(
             num_frames=1,
-            batch_size=[batch["gen_pixel_values"].shape[0]],
-            bs=batch["gen_pixel_values"].shape[0],
+            batch_size=[batch["tgt_pixel_values"].shape[0]],
+            bs=batch["tgt_pixel_values"].shape[0],
             **batch,
         )
         return batch
     
     def validate(self):
-        assert -1 <= self.gen_pixel_values.min() <= self.gen_pixel_values.max() <= 1
-        assert self.gen_segmentation.dtype == torch.uint8
-        assert self.disc_segmentation.dtype == torch.uint8
+        assert -1 <= self.tgt_pixel_values.min() <= self.tgt_pixel_values.max() <= 1
+        assert self.tgt_segmentation.dtype == torch.uint8
+        assert self.src_segmentation.dtype == torch.uint8
 
 
 def one_hot_to_integer(mask, num_overlapping_channels: int = 1, assert_safe: bool = True):
@@ -149,60 +149,60 @@ def visualize_input_data(
     ):
 
     if show_background_foreground_only:
-        batch.gen_segmentation[batch.gen_segmentation > 0] = 1
-        batch.disc_segmentation[batch.disc_segmentation > 0] = 1
-        batch.gen_segmentation[batch.gen_segmentation < 0] = 1
-        batch.disc_segmentation[batch.disc_segmentation < 0] = 1
+        batch.tgt_segmentation[batch.tgt_segmentation > 0] = 1
+        batch.src_segmentation[batch.src_segmentation > 0] = 1
+        batch.tgt_segmentation[batch.tgt_segmentation < 0] = 1
+        batch.src_segmentation[batch.src_segmentation < 0] = 1
     
     if remove_invalid:
-        batch.gen_segmentation = replace_invalid(batch.gen_segmentation, batch.valid)
-        batch.disc_segmentation = replace_invalid(batch.disc_segmentation, batch.valid)
+        batch.tgt_segmentation = replace_invalid(batch.tgt_segmentation, batch.valid)
+        batch.src_segmentation = replace_invalid(batch.src_segmentation, batch.valid)
 
     if cfg is not None:
-        gen_rgb = undo_normalization_given_transforms(cfg.dataset.validation_dataset.augmentation.source_transforms, batch.gen_pixel_values)
-        disc_rgb = undo_normalization_given_transforms(cfg.dataset.validation_dataset.augmentation.source_transforms, batch.disc_pixel_values)
+        tgt_rgb = undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, batch.tgt_pixel_values)
+        src_rgb = undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, batch.src_pixel_values)
     else:
-        gen_rgb = (batch.gen_pixel_values + 1) / 2
-        disc_rgb = Im(batch.gen_pixel_values).denormalize().torch
+        tgt_rgb = (batch.tgt_pixel_values + 1) / 2
+        src_rgb = Im(batch.tgt_pixel_values).denormalize().torch
     
-    if batch.gen_grid is not None:
-        batch.gen_grid = (batch.gen_grid + 1) / 2
+    if batch.tgt_grid is not None:
+        batch.tgt_grid = (batch.tgt_grid + 1) / 2
 
-    if batch.disc_grid is not None:
-        batch.disc_grid = (batch.disc_grid + 1) / 2
+    if batch.src_grid is not None:
+        batch.src_grid = (batch.src_grid + 1) / 2
 
     override_colors = {0: (128, 128, 128), 255: (0, 0, 0)}
 
     from image_utils import Im, onehot_to_color
     for b in range(batch.bs):
-        gen_one_hot = integer_to_one_hot(batch.gen_segmentation[b], add_background_channel=False)
-        disc_one_hot = integer_to_one_hot(batch.disc_segmentation[b], add_background_channel=False)
+        tgt_one_hot = integer_to_one_hot(batch.tgt_segmentation[b], add_background_channel=False)
+        src_one_hot = integer_to_one_hot(batch.src_segmentation[b], add_background_channel=False)
 
         if names is not None:
             name = names[b]
             
-        gen_ = Im.concat_vertical(
-            Im(gen_rgb[b]), 
-            Im(onehot_to_color(gen_one_hot.squeeze(0), override_colors=override_colors)),
+        tgt_ = Im.concat_vertical(
+            Im(tgt_rgb[b]), 
+            Im(onehot_to_color(tgt_one_hot.squeeze(0), override_colors=override_colors)),
         )
-        if batch.gen_grid is not None:
-            gen_ = Im.concat_vertical(
-                gen_, Im(torch.cat((batch.gen_grid[b], batch.gen_grid.new_zeros((1, *batch.gen_grid.shape[2:]))), dim=0))
+        if batch.tgt_grid is not None:
+            tgt_ = Im.concat_vertical(
+                tgt_, Im(torch.cat((batch.tgt_grid[b], batch.tgt_grid.new_zeros((1, *batch.tgt_grid.shape[2:]))), dim=0))
             )
 
-        disc_ = Im.concat_vertical(
-            Im(disc_rgb[b]), 
-            Im(onehot_to_color(disc_one_hot.squeeze(0), override_colors=override_colors)),
+        src_ = Im.concat_vertical(
+            Im(src_rgb[b]), 
+            Im(onehot_to_color(src_one_hot.squeeze(0), override_colors=override_colors)),
         )
 
-        if batch.disc_grid is not None:
-            disc_ = Im.concat_vertical(
-                disc_, Im(torch.cat((batch.disc_grid[b], batch.disc_grid.new_zeros((1, *batch.disc_grid.shape[2:]))), dim=0))
+        if batch.src_grid is not None:
+            src_ = Im.concat_vertical(
+                src_, Im(torch.cat((batch.src_grid[b], batch.src_grid.new_zeros((1, *batch.src_grid.shape[2:]))), dim=0))
             )
         
-        output_img = Im.concat_horizontal(disc_, gen_)
+        output_img = Im.concat_horizontal(src_, tgt_)
         if show_overlapping_masks:
-            masks = rearrange(gen_one_hot, "h w c -> c h w")
+            masks = rearrange(tgt_one_hot, "h w c -> c h w")
             initial_num_classes = masks.sum(axis=0).max() + 1
             initial_image = integer_to_color(masks.sum(axis=0), colormap='hot', num_classes=initial_num_classes, ignore_empty=False)
             first_hist = hist(np.sum(masks.cpu().numpy(), axis=0).reshape(-1), save=False)
@@ -232,9 +232,9 @@ def create_coordinate_array(H, W):
 def get_dropout_grid(latent_dim):
     return create_coordinate_array(latent_dim, latent_dim)
 
-def get_gen_grid(cfg, batch):
+def get_tgt_grid(cfg, batch):
     downsampled_grid = F.interpolate(
-        batch.gen_grid,
+        batch.tgt_grid,
         size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim),
         mode='bilinear'
     )

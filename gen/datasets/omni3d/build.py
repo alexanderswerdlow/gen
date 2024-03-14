@@ -68,8 +68,8 @@ def _train_loader_from_config(cfg, mapper=None, *, dataset=None, sampler=None, d
         if balance_datasets:
             assert dataset_id_to_src is not None, 'Need dataset sources.'
 
-            dataset_source_to_int = {val:i for i, val in enumerate(set(dataset_id_to_src.values()))}
-            dataset_ids_per_img = [dataset_source_to_int[dataset_id_to_src[img['dataset_id']]] for img in dataset]
+            dataset_src_to_int = {val:i for i, val in enumerate(set(dataset_id_to_src.values()))}
+            dataset_ids_per_img = [dataset_src_to_int[dataset_id_to_src[img['dataset_id']]] for img in dataset]
             dataset_ids = np.unique(dataset_ids_per_img)
 
             # only one source? don't re-weight then.

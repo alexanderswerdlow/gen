@@ -156,8 +156,8 @@ def main(cfg: BaseConfig):
         )
 
     if cfg.trainer.scale_lr_batch_size:
-        cfg.trainer.learning_rate = cfg.trainer.learning_rate * cfg.dataset.train_dataset.batch_size
-        log_info(f"Scaling learning rate by {cfg.dataset.train_dataset.batch_size} to {cfg.trainer.learning_rate}.")
+        cfg.trainer.learning_rate = cfg.trainer.learning_rate * cfg.dataset.train.batch_size
+        log_info(f"Scaling learning rate by {cfg.dataset.train.batch_size} to {cfg.trainer.learning_rate}.")
 
     if cfg.trainer.finetune_learning_rate is not None:
         scale_factor = cfg.trainer.learning_rate / cfg.trainer.initial_learning_rate

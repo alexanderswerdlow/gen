@@ -83,20 +83,20 @@ def get_run_dir(_, *, _root_: BaseConfig):
         _root_.run_name = _root_.run_name + f'{datetime.now().strftime("%Y-%m-%d_%H_%M_%S")}'
         return Path(_root_.first_level_output_path) / _root_.second_level_output_path / _root_.run_name
 
-def get_source_transform(_, *, _root_: BaseConfig):
+def get_src_transform(_, *, _root_: BaseConfig):
     """
     We instantiate the model container (without actually loading the params) to get the transforms.
     """
     model: TimmModel = hydra.utils.instantiate(OmegaConf.to_container(_root_.model.encoder), deferred_init=True)
     return model.transform
 
-def get_target_transform(_, *, _root_: BaseConfig):
+def get_tgt_transform(_, *, _root_: BaseConfig):
     from gen.datasets.utils import get_stable_diffusion_transforms
     return get_stable_diffusion_transforms(resolution=_root_.model.decoder_resolution)
 
 OmegaConf.register_new_resolver("get_run_dir", get_run_dir)
-OmegaConf.register_new_resolver("get_source_transform", get_source_transform)
-OmegaConf.register_new_resolver("get_target_transform", get_target_transform)
+OmegaConf.register_new_resolver("get_src_transform", get_src_transform)
+OmegaConf.register_new_resolver("get_tgt_transform", get_tgt_transform)
 OmegaConf.register_new_resolver("eval", eval)
 
 store(get_hydra_config())
@@ -124,9 +124,9 @@ exp_store(
     ),
     dataset=dict(
         num_validation_images=1,
-        train_dataset=dict(batch_size=8),
-        validation_dataset=dict(batch_size=1, subset_size=4),
-        reset_validation_dataset_every_epoch=True,
+        train=dict(batch_size=8),
+        val=dict(batch_size=1, subset_size=4),
+        reset_val_dataset_every_epoch=True,
     ),
     inference=dict(
         empty_string_cfg=True,
@@ -169,7 +169,7 @@ mode_store(
     debug=True,
     trainer=dict(num_train_epochs=1, eval_every_n_epochs=1, eval_every_n_steps=None),
     dataset=dict(
-        train_dataset=dict(batch_size=8, subset_size=16, num_workers=0), validation_dataset=dict(batch_size=1, subset_size=2, num_workers=0)
+        train=dict(batch_size=8, subset_size=16, num_workers=0), val=dict(batch_size=1, subset_size=2, num_workers=0)
     ),
 )
 
@@ -183,7 +183,7 @@ mode_store(
         checkpointing_steps=1000,
     ),
     dataset=dict(
-        train_dataset=dict(batch_size=4, subset_size=8, num_workers=0),
+        train=dict(batch_size=4, subset_size=8, num_workers=0),
         overfit=True,
     ),
 )

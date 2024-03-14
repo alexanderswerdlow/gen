@@ -37,7 +37,7 @@ class DebugTrainer(Trainer):
         self.tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch16")
 
     def init_dataloader(self):
-        self.train_dataloader_holder: AbstractDataset = hydra.utils.instantiate(self.cfg.dataset.train_dataset, _recursive_=True)(
+        self.train_dataloader_holder: AbstractDataset = hydra.utils.instantiate(self.cfg.dataset.train, _recursive_=True)(
             cfg=self.cfg, split=Split.TRAIN, tokenizer=self.tokenizer, accelerator=self.accelerator
         )
         self.train_dataloader: DataLoader = self.train_dataloader_holder.get_dataloader()
@@ -99,37 +99,37 @@ def pca(embeddings, num_components=3, principal_components=None):
 
     return embeddings
 
-def resize_with_padding(input_array, target_size=(64, 64)):
+def resize_with_padding(input_array, tgt_size=(64, 64)):
     image = Image.fromarray(input_array)
     input_aspect = image.width / image.height
-    target_aspect = target_size[0] / target_size[1]
-    if input_aspect > target_aspect:
+    tgt_aspect = tgt_size[0] / tgt_size[1]
+    if input_aspect > tgt_aspect:
         # Width is the limiting dimension
-        resize_width = target_size[0]
+        resize_width = tgt_size[0]
         resize_height = round(resize_width / input_aspect)
     else:
         # Height is the limiting dimension
-        resize_height = target_size[1]
+        resize_height = tgt_size[1]
         resize_width = round(resize_height * input_aspect)
     
     image_resized = image.resize((resize_width, resize_height), Image.LANCZOS)
-    new_image = Image.new("RGB", target_size, (0, 0, 0))
-    top_left_x = (target_size[0] - resize_width) // 2
-    top_left_y = (target_size[1] - resize_height) // 2
+    new_image = Image.new("RGB", tgt_size, (0, 0, 0))
+    top_left_x = (tgt_size[0] - resize_width) // 2
+    top_left_y = (tgt_size[1] - resize_height) // 2
     new_image.paste(image_resized, (top_left_x, top_left_y))
     result_array = np.array(new_image)
     return result_array
 
 def get_rotation_and_cropped_objects(batch):
     # disregard the first channel, which is the background
-    segmentation = batch['disc_segmentation'][:, :, 1:].numpy()
-    image = batch['disc_pixel_values'].numpy().transpose(1, 2, 0)
+    segmentation = batch['src_segmentation'][:, :, 1:].numpy()
+    image = batch['src_pixel_values'].numpy().transpose(1, 2, 0)
 
     std = np.array((0.26862954, 0.26130258, 0.27577711))
     mean = np.array((0.48145466, 0.4578275, 0.40821073))
     image = (image * std) + mean
     image = (image * 255).astype(np.uint8)
-    target_size = (96, 96)
+    tgt_size = (96, 96)
 
     mask = segmentation.sum(axis=(0, 1)) > 768
     if mask.any():
@@ -145,12 +145,12 @@ def get_rotation_and_cropped_objects(batch):
                 min_y, max_y = max(0, ys.min() - 8), min(ys.max() + 8, image.shape[0])
                 min_x, max_x = max(0, xs.min() - 8), min(xs.max() + 8, image.shape[1])
                 curr_obj = image[min_y:max_y, min_x:max_x, :]
-                curr_obj = resize_with_padding(curr_obj, target_size=target_size)
+                curr_obj = resize_with_padding(curr_obj, tgt_size=tgt_size)
                 objects.append(curr_obj)
         objects = np.stack(objects, axis=0)
     else:
         rot_mat = np.zeros((0, 9))
-        objects = np.zeros((0, *target_size, 3))
+        objects = np.zeros((0, *tgt_size, 3))
 
     return rot_mat, objects
 
