@@ -37,6 +37,7 @@ class ModelConfig:
     unet: bool = True  # Allow not loading a U-Net [e.g., for comparison exps without diffusion]
     controlnet: bool = False  # Add a controlnet on top of the main U-Net
     freeze_unet: bool = True
+    unfreeze_single_unet_layer: bool = False # Lets us debug on a 12GB GPU
     unet_lora: bool = False  # Perform low-rank adaptation on the main U-Net
     lora_rank: int = 4
     freeze_mapper: bool = False  # Freezes the cross-attention mapper itself. Useful for debugging.
@@ -115,6 +116,7 @@ class ModelConfig:
     custom_conditioning_map: bool = False
     encoder_latent_dim: int = 16 # resolution // patch_size
     eschernet: bool = False
+    eschernet_6dof: bool = False
     use_sd_15_tokenizer_encoder: bool = False
     add_grid_to_input_channels: bool = False
     num_layer_queries: int = 1

@@ -38,5 +38,6 @@ rich
 peft
 einx
 beartype
+sysrsync
 git+https://github.com/alexanderswerdlow/kornia.git@keypoint_visibility_rebased
 git+https://github.com/TUI-NICR/nicr-scene-analysis-datasets#[withpreparation,with3d]

@@ -19,7 +19,7 @@ from gen.models.cross_attn.break_a_scene import aggregate_attention, save_cross_
 from gen.models.cross_attn.losses import get_relative_rot_data, token_cls_loss, token_rot_loss
 from gen.utils.data_defs import get_tgt_grid, integer_to_one_hot, undo_normalization_given_transforms, visualize_input_data
 from gen.utils.decoupled_utils import load_tensor_dict
-from gen.utils.logging_utils import log_info
+from gen.utils.logging_utils import log_info, log_warn
 from gen.utils.rotation_utils import compute_rotation_matrix_from_ortho6d, visualize_rotations, visualize_rotations_pcds
 from gen.utils.tokenization_utils import get_tokens
 from gen.utils.trainer_utils import TrainingState
@@ -111,8 +111,8 @@ def infer_batch(
     if self.cfg.model.add_grid_to_input_channels:
         kwargs["concat_latent_along_channel_dim"] = get_tgt_grid(self.cfg, batch)
 
-    desired_context = torch.cuda.amp.autocast() if self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_gated_cross_attn else nullcontext()
-    with desired_context:
+    needs_autocast = self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_single_unet_layer or self.cfg.model.unfreeze_gated_cross_attn
+    with torch.cuda.amp.autocast(dtype=self.dtype) if needs_autocast else nullcontext():
         images = self.pipeline(**cond.unet_kwargs, **kwargs).images
 
     batch.formatted_input_ids = None
@@ -171,6 +171,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     """
 
     assert batch.input_ids.shape[0] == 1 or self.cfg.model.predict_rotation_from_n_frames is not None
+    orig_batch = batch.clone()
     batch.one_hot_tgt_segmentation = integer_to_one_hot(batch.tgt_segmentation, num_channels=self.cfg.model.segmentation_map_size)
 
     ret = {}
@@ -404,7 +405,8 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
             batch_.tgt_segmentation[batch_.tgt_segmentation == j] = 255
             batch_.src_segmentation[batch_.src_segmentation == j] = 255
 
-            if (batch_.src_segmentation != 255).sum() == 0 and torch.isin(torch.unique(batch_.src_segmentation[batch_.src_segmentation > 255]), valid_indices).any():
+            if (batch_.src_segmentation != 255).sum() == 0 and not torch.isin(torch.unique(batch_.src_segmentation[batch_.src_segmentation < 255]), valid_indices).any():
+                log_warn("Skipping permutting masks...", main_process_only=False)
                 continue
             modified_batches.append(batch_)
 

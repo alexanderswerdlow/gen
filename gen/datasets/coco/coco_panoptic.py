@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import cv2
+from einops import rearrange
 import numpy as np
 import torch
 import torchvision
@@ -144,7 +145,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
             single_return: bool = False,
             top_n_masks_only: Optional[int] = 8,
             use_preprocessed_masks: bool = False,
-            preprocessed_mask_type: str = "",
+            preprocessed_mask_type: Optional[str] = None,
             erode_dialate_preprocessed_masks: bool = False,
             num_overlapping_masks: int = 1,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
@@ -268,7 +269,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
             )
         self.raw_label_transform = SemanticTargetGenerator(self.ignore_label, self.rgb2id) # Generates semantic label for evaluation.
 
-        if self.preprocessed_mask_type:
+        if self.preprocessed_mask_type is not None:
             self.custom_coco_json_path = Path(self.custom_data_root) / f'{self.preprocessed_mask_type}_{self.coco_split}.json'
             if self.custom_coco_json_path.with_suffix('.json.gz').exists(): # We want to load the gzipped version if it exists
                 self.custom_coco_json_path = self.custom_coco_json_path.with_suffix('.json.gz')
@@ -362,8 +363,6 @@ class CocoPanoptic(AbstractDataset, Dataset):
         if self.raw_label_transform is not None:
             raw_label = self.raw_label_transform(raw_label, self.ins_list[index])['semantic']
 
-        size = image.shape
-        dataset_dict['raw_size'] = np.array(size)
         dataset_dict['name'] = os.path.splitext(os.path.basename(self.ann_list[index]))[0]
 
         # Resize and pad image to the same size before data augmentation.
@@ -371,8 +370,6 @@ class CocoPanoptic(AbstractDataset, Dataset):
             image, label = self.pre_augmentation_transform(image, label)
             size = image.shape
             dataset_dict['size'] = np.array(size)
-        else:
-            dataset_dict['size'] = dataset_dict['raw_size']
 
         if self.transform is not None: # Apply data augmentation.
             image, label = self.transform(image, label)
@@ -380,7 +377,9 @@ class CocoPanoptic(AbstractDataset, Dataset):
         pad_mask = (label == np.array(self.label_pad_value).reshape(1, 1, 3)).all(axis=-1)
         label[pad_mask] = self.post_label_pad_value
 
-        dataset_dict['image'] = image
+        if self.pre_augmentation_transform is not None or  self.transform is not None:
+            dataset_dict['image'] = image
+            
         if not self.has_instance:
             dataset_dict['semantic'] = torch.as_tensor(label.astype('long'))
             return dataset_dict
@@ -398,16 +397,12 @@ class CocoPanoptic(AbstractDataset, Dataset):
         # At this point, we have 133 categories. For some reason the range is 0-132 + 255
         # 0-132 are valid [e.g., 0 is person]. 255 is invalid/ignore. We treat this as background. The convention in this codebase is that the 0th segmentation mask is the background.
         # However, the class category remains unchanged (internally we always do seg_idx + 1 == cls_idx)
-        mask_ = ((dataset_dict['semantic'] == 255) & (~pad_mask)).bool()
-        dataset_dict['semantic'][mask_] = 0
-        rgb = dataset_dict['image']
+                
+        # mask_ = ((dataset_dict['semantic'] == 255) & (~pad_mask)).bool()
+        # dataset_dict['semantic'][mask_] = 0
+        # dataset_dict['instance'][mask_] = 0 # We want 0 to be only background. 255 means either background or ignore.
 
-        if 'instance' in dataset_dict.keys():
-            dataset_dict['instance'][mask_] = 0 # We want 0 to be only background. 255 means either background or ignore.
-            instance = dataset_dict['instance']
-        else:
-            instance = dataset_dict['semantic']
-
+        instance = dataset_dict.get('instance', dataset_dict['semantic'])
         semantic = dataset_dict['semantic']
 
         # Aside from using rgb, we can represent panoptic labels in terms of
@@ -427,7 +422,6 @@ class CocoPanoptic(AbstractDataset, Dataset):
     def __getitem__(self, index):
         if self.single_return:
             index = 2186
-
         
         assert os.path.exists(self.img_list[index]), 'Path does not exist: {}'.format(self.img_list[index])
         rgb = self.read_image(self.img_list[index], 'RGB').copy()
@@ -455,34 +449,22 @@ class CocoPanoptic(AbstractDataset, Dataset):
         )
 
         src_data.image = src_data.image.squeeze(0)
-        src_data.segmentation = src_data.segmentation.squeeze(0).permute(1, 2, 0).long() # CHW -> HWC
+        src_data.segmentation = rearrange(src_data.segmentation.long(), "() c h w -> h w c")
         tgt_data.image = tgt_data.image.squeeze(0)
-        tgt_data.segmentation = tgt_data.segmentation.squeeze(0).permute(1, 2, 0).long() # CHW -> HWC
+        tgt_data.segmentation = rearrange(tgt_data.segmentation.long(), "() c h w -> h w c")
 
-        if self.use_preprocessed_masks:
-            # In this mode, we have already performed pre-processing and any pixels not in a mask are ignored. This includes the "background" that we create from unused pixels.
-            src_data.segmentation[src_data.segmentation == -1] = 255
-            tgt_data.segmentation[tgt_data.segmentation == -1] = 255
-            src_pad_mask = (src_data.segmentation < 255).any(dim=-1)
-            tgt_pad_mask = (tgt_data.segmentation < 255).any(dim=-1)
+        src_data.segmentation[src_data.segmentation >= num_masks] = 0
+        tgt_data.segmentation[tgt_data.segmentation >= num_masks] = 0
 
-            pixels = src_data.segmentation.squeeze(0).long().contiguous().view(-1)
-            pixels = pixels[(pixels < 255) & (pixels >= 0)]
-            src_bincount = torch.bincount(pixels, minlength=num_masks + 1)
-            valid = src_bincount > (src_data.segmentation.shape[0] * self.object_ignore_threshold)
+        src_data.segmentation[src_data.segmentation == -1] = 255
+        tgt_data.segmentation[tgt_data.segmentation == -1] = 255
 
-            # We convert to uint8 to save memory.
-            src_data.segmentation = src_data.segmentation.to(torch.uint8)
-            tgt_data.segmentation = tgt_data.segmentation.to(torch.uint8)
-        else:
-            # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
-            src_bincount = torch.bincount(src_data.segmentation.squeeze(0).long().view(-1) + 1, minlength=num_masks + 2)[1:]
-            src_pad_mask = src_data.segmentation == -1
-            tgt_pad_mask = tgt_data.segmentation == -1
+        pixels = src_data.segmentation.squeeze(0).long().contiguous().view(-1)
+        src_bincount = torch.bincount(pixels[(pixels < 255) & (pixels >= 0)], minlength=num_masks + 1)
 
-            # We remove instance masks that are too small
-            valid = src_bincount > (src_data.segmentation.shape[0] * self.object_ignore_threshold)**2
-            
+        valid = src_bincount > (src_data.segmentation.shape[0] * self.object_ignore_threshold)**2 # We remove instance masks that are too small
+
+        if self.use_preprocessed_masks is False:
             # We optionally only take the largest n masks [if previously valid]
             if self.top_n_masks_only is not None:
                 remove_smaller_masks = torch.argsort(src_bincount)[:-self.top_n_masks_only]
@@ -496,14 +478,26 @@ class CocoPanoptic(AbstractDataset, Dataset):
             tgt_data.segmentation[too_small_instance_pixels_] = 0
 
 
-        categories = torch.full((valid.shape), fill_value=-1)
+        src_pad_mask = (src_data.segmentation < 255).any(dim=-1)
+        tgt_pad_mask = (tgt_data.segmentation < 255).any(dim=-1)
+
+        # We convert to uint8 to save memory.
+        src_data.segmentation = src_data.segmentation.to(torch.uint8)
+        tgt_data.segmentation = tgt_data.segmentation.to(torch.uint8)
+
+        ret = {}
+
         if self.use_preprocessed_masks is False:
+            categories = torch.full((valid.shape), fill_value=-1, dtype=torch.long)
+            unique_instance, unique_semantic = unique_instance[:num_masks], unique_semantic[:num_masks]
             categories[unique_instance] = unique_semantic - 1
             categories[~valid] = -1
+            categories = categories[..., 1:]
+            ret["categories"] = categories
+
         valid = valid[..., 1:]
-        categories = categories[..., 1:]
         
-        ret = {
+        ret.update({
             "tgt_pad_mask": tgt_pad_mask,
             "tgt_pixel_values": tgt_data.image,
             "tgt_segmentation": tgt_data.segmentation,
@@ -512,11 +506,11 @@ class CocoPanoptic(AbstractDataset, Dataset):
             "src_segmentation": src_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
             "valid": valid,
-            "categories": categories,
             "metadata" : {
+                "name": str(image_id),
                 "scene_id": str(image_id)
             }
-        }
+        })
 
         if src_data.grid is not None: ret["src_grid"] = src_data.grid.squeeze(0)
         if tgt_data.grid is not None: ret["tgt_grid"] = tgt_data.grid.squeeze(0)

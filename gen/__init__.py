@@ -1,9 +1,10 @@
-"""
-
-"""
 
 import os
 from pathlib import Path
+from gen.utils.logging_utils import log_info
+
+os.environ["EINX_WARN_ON_RETRACE"] = "25"
+os.environ["IMAGE_UTILS_DISABLE_WARNINGS"] = "1"
 
 REPO_DIR = Path(__file__).parent.parent
 CHECKPOINT_DIR = Path(os.getenv("CHECKPOINT_DIR", "checkpoints"))
@@ -16,7 +17,7 @@ COCO_CUSTOM_PATH = Path(os.getenv("COCO_CUSTOM_PATH", "/projects/katefgroup/aswe
 if SCRATCH_COCO_PATH.exists(): 
     COCO_DATASET_PATH = SCRATCH_COCO_PATH
     COCO_CUSTOM_PATH = SCRATCH_COCO_PATH / "annotations"
-    print(f"Using scratch coco path: {COCO_DATASET_PATH}")
+    log_info(f"Using scratch coco path: {COCO_DATASET_PATH}")
 
 SCRATCH_CACHE_PATH = Path(os.getenv("SCRATCH_CACHE_PATH", "/scratch/aswerdlo/cache"))
 MOVI_DATASET_PATH = Path(os.getenv("MOVI_DATASET_PATH", "/projects/katefgroup/datasets/movi"))
@@ -33,7 +34,7 @@ OBJAVERSE_DATASET_PATH = Path(os.getenv("OBJAVERSE_DATASET_PATH", "/projects/kat
 SCRATCH_OBJAVERSE_PATH = Path(os.getenv("SCRATCH_OBJAVERSE_PATH", "/scratch/aswerdlo/objaverse"))
 if SCRATCH_OBJAVERSE_PATH.exists():
     OBJAVERSE_DATASET_PATH = SCRATCH_OBJAVERSE_PATH
-    print(f"Using scratch objaverse path: {OBJAVERSE_DATASET_PATH}")
+    log_info(f"Using scratch objaverse path: {OBJAVERSE_DATASET_PATH}")
 
 OMNI3D_PATH = Path(os.getenv("OMNI3D_PATH", "/projects/katefgroup/aswerdlo/datasets/omni3d"))
 OMNI3D_DATASETS_PATH = os.getenv("OMNI3D_DATASETS_PATH") or OMNI3D_PATH / "datasets"
@@ -43,7 +44,7 @@ HYPERSIM_DATASET_PATH = Path(os.getenv("HYPERSIM_DATASET_PATH", "/projects/katef
 SCRATCH_HYPERSIM_PATH = Path(os.getenv("SCRATCH_HYPERSIM_PATH", "/scratch/aswerdlo/hypersim"))
 if SCRATCH_HYPERSIM_PATH.exists():
     HYPERSIM_DATASET_PATH = SCRATCH_HYPERSIM_PATH
-    print(f"Using scratch hypersim path: {HYPERSIM_DATASET_PATH}")
+    log_info(f"Using scratch hypersim path: {HYPERSIM_DATASET_PATH}")
 
-os.environ["EINX_WARN_ON_RETRACE"] = "25"
-os.environ["IMAGE_UTILS_DISABLE_WARNINGS"] = "1"
+SCANNETPP_DATASET_PATH =  Path(os.getenv("SCANNETPP_DATASET_PATH", "/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data"))
+SCANNETPP_CUSTOM_DATA_PATH =  Path(os.getenv("SCANNETPP_DATASET_PATH", "/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom"))

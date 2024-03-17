@@ -1,22 +1,20 @@
-from dataclasses import dataclass
 import os
+import random
+from dataclasses import dataclass
 from typing import Any, Callable, List
-from einops import rearrange
 
 import kornia.augmentation as K
-from kornia.constants import Resample
 import torch
+import torchvision.transforms.v2 as transforms
+from einops import rearrange
 from git import Optional
-from image_utils import Im
 from kornia.augmentation.auto.rand_augment.rand_augment import RandAugment
 from kornia.augmentation.container import AugmentationSequential
-import torchvision.transforms.v2 as transforms
+from kornia.constants import Resample
 
 from gen.datasets.augmentation.utils import get_keypoints, get_viz_keypoints, process_output_keypoints, process_output_segmentation, viz
-import warnings
-import random
-
 from gen.utils.logging_utils import log_warn
+from image_utils import Im
 
 randaug_policy: List[Any] = [
     [("auto_contrast", 0, 1)],
@@ -43,8 +41,6 @@ class Data:
     segmentation: Optional[torch.Tensor] = None
     grid: Optional[torch.Tensor] = None
     mask: Optional[torch.Tensor] = None
-    image_only: bool = False
-
 
 class Augmentation:
     """
@@ -55,7 +51,7 @@ class Augmentation:
         self,
         initial_resolution: int = 256,
         different_src_tgt_augmentation: bool = False,
-        return_grid: bool = True,
+        return_grid: bool = False,
         center_crop: bool = True,
         enable_square_crop: bool = True,
         enable_rand_augment: bool = False,
@@ -111,7 +107,8 @@ class Augmentation:
         if different_src_tgt_augmentation:
             src_scale, src_ratio = src_random_scale_ratio
             resize_resolution = self.src_resolution if self.src_resolution is not None else initial_resolution
-            src_transforms = [K.RandomResizedCrop(size=(resize_resolution, resize_resolution), scale=src_scale, ratio=src_ratio, resample=self.kornia_resize_mode, p=1.0)]
+            src_resize_tr = K.RandomResizedCrop(size=(resize_resolution, resize_resolution), scale=src_scale, ratio=src_ratio, resample=self.kornia_resize_mode, p=1.0)
+            src_transforms = [(src_resize_tr if isinstance(tr, K.RandomResizedCrop) else tr) for tr in main_transforms]
             tgt_transforms = main_transforms
         else:
             # If source == target, we use the target augmentations as they are generally heavier
@@ -149,11 +146,11 @@ class Augmentation:
             src_params = self.src_transform.forward_parameters(batch_shape=src_data.image.shape)
             src_data = process(aug=self.src_transform, params=src_params, input_data=src_data)
             if self.different_src_tgt_augmentation is False:
-                tgt_data = process(aug=self.src_transform, params=src_params, input_data=tgt_data)
+                tgt_data = process(aug=self.src_transform, params=src_params, input_data=tgt_data, return_grid=self.return_grid)
 
         if self.different_src_tgt_augmentation and self.tgt_transform is not None:
             tgt_params = self.tgt_transform.forward_parameters(batch_shape=tgt_data.image.shape)
-            tgt_data = process(aug=self.tgt_transform, params=tgt_params, input_data=tgt_data)
+            tgt_data = process(aug=self.tgt_transform, params=tgt_params, input_data=tgt_data, return_grid=self.return_grid)
         
 
         src_data = apply_normalization_transforms(src_data, self.src_transforms, initial_h, initial_w)
@@ -258,9 +255,10 @@ def apply_normalization_transforms(data: Data, normalization_transform, initial_
         if data.grid is not None:
             data.grid = apply_non_image_normalization_transforms(data.grid, normalization_transform)
 
-    data.grid[:, 0][data.grid[:, 0] >= 0] /= (initial_h - 1)
-    data.grid[:, 1][data.grid[:, 1] >= 0] /= (initial_w - 1)
-    data.grid = santitize_and_normalize_grid_values(data.grid)
+    if data.grid is not None:
+        data.grid[:, 0][data.grid[:, 0] >= 0] /= (initial_h - 1)
+        data.grid[:, 1][data.grid[:, 1] >= 0] /= (initial_w - 1)
+        data.grid = santitize_and_normalize_grid_values(data.grid)
 
     return data
 
@@ -302,32 +300,36 @@ def apply_non_image_normalization_transforms(tensor_, normalization_transform):
     tensor_ = tensor_ - 1
     return tensor_
 
-def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = False, params: Optional[List[Any]] = None, **kwargs):
+def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = False, params: Optional[List[Any]] = None, return_grid: bool = False, **kwargs):
     """
     Args:
         input_image: (B, C, H, W)
         input_segmentation_mask: (B, H, W)
     """
 
-    if not input_data.image_only:
+    if return_grid: 
         B, _, H, W = input_data.image.shape
         keypoints = get_keypoints(B, H, W)
         keypoints._data = keypoints._data.to(input_data.image.device)
         keypoints._valid_mask = keypoints._valid_mask.to(input_data.image.device)
-        
-        if input_data.segmentation.ndim == 3:
-            input_data.segmentation = input_data.segmentation.unsqueeze(1)
+    
+    if input_data.segmentation is not None and input_data.segmentation.ndim == 3:
+        input_data.segmentation = input_data.segmentation.unsqueeze(1)
 
     # output_tensor and output_segmentation are affected by resize but output_keypoints are not
-    output_data = Data(image_only=input_data.image_only)
-    if input_data.image_only:
+    output_data = Data()
+    if input_data.segmentation is None and return_grid is False:
         output_data.image = aug(input_data.image, data_keys=["image"], params=params)
+    elif return_grid is False:
+        output_data.image, output_data.segmentation = aug(
+            input_data.image, input_data.segmentation, data_keys=["image", "image"], params=params
+        )
     else:
         output_data.image, output_data.segmentation, output_keypoints = aug(
             input_data.image, input_data.segmentation, keypoints, data_keys=["image", "mask", "keypoints"], params=params
         )
 
-    if not input_data.image_only:
+    if return_grid:
         output_data.grid, output_data.mask = process_output_keypoints(output_keypoints, B, H, W, output_data.image.shape[-2], output_data.image.shape[-1])
         output_data.segmentation = process_output_segmentation(output_keypoints, output_data.segmentation, output_data.image.shape[-2], output_data.image.shape[-1], -1)
 

@@ -41,9 +41,13 @@ def get_logger_(main_process_only: bool) -> logging.Logger:
         if logger is not None:
             return logger
         else:
-            return logging.getLogger(__name__ if is_main_process() else __name__ + f"_rank_{get_rank()}")
+            return logging.getLogger(__name__ if not main_process_only else __name__ + f"_rank_{get_rank()}")
     else:
         return Dummy()
+
+
+def log_debug(msg, main_process_only: bool = True, **kwargs):
+    get_logger_(main_process_only=main_process_only).debug(msg, **kwargs)
 
 
 def log_info(msg, main_process_only: bool = True, **kwargs):

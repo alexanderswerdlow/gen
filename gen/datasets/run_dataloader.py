@@ -29,6 +29,9 @@ class MockTokenizer:
         TokenizedOutput = namedtuple('TokenizedOutput', ['input_ids'])
         return TokenizedOutput(input_ids=input_ids)
     
+def coco_colormap_viz(batch: InputData):
+    pass
+
 def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
     cfg.dataset.train.num_workers = 0
     cfg.dataset.val.num_workers = 0
@@ -41,14 +44,24 @@ def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
 
     cfg.dataset.train.subset_size = None
     cfg.dataset.val.subset_size = None
+
+    cfg.dataset.train.shuffle = True
+    cfg.dataset.val.shuffle = True
     
-    dataset: AbstractDataset = hydra.utils.instantiate(cfg.dataset.val, _recursive_=True)(
+    g = torch.Generator()
+    g.manual_seed(int(time.time()))
+    
+    train: AbstractDataset = hydra.utils.instantiate(cfg.dataset.train, _recursive_=True)(
+        cfg=cfg, split=Split.TRAIN, tokenizer=MockTokenizer()
+    )
+    val: AbstractDataset = hydra.utils.instantiate(cfg.dataset.train, _recursive_=True)(
         cfg=cfg, split=Split.VALIDATION, tokenizer=MockTokenizer()
     )
-    dataloader = dataset.get_dataloader()
+    dataset = train
+    dataloader = dataset.get_dataloader(generator=g)
 
     batch: InputData
-    for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):  
-        names = [f'{batch.metadata["scene_id"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
+    for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
+        names = [f'{batch.metadata["name"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
         visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False, cfg=cfg)
         breakpoint()

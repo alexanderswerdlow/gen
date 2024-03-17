@@ -11,7 +11,7 @@ from einx import rearrange, mean
 
 from gen.models.cross_attn.base_model import AttentionMetadata
 from gen.models.cross_attn.deprecated_configs import handle_attn_proc_cross_attn_masking
-from gen.models.cross_attn.eschernet import cape_embed
+from gen.models.cross_attn.eschernet import cape_embed_4dof, cape_embed_6dof
 from gen.models.utils import positionalencoding2d
 
 def register_layerwise_attention(unet):
@@ -94,9 +94,13 @@ class XFormersAttnProcessor:
 
         if is_eschernet:
             # turn 2d attention into multiview attention
-            p_out, p_in = attn_meta.posemb # BxTx4, # BxTx4
-            t_out, t_in = p_out.shape[1], p_in.shape[1]  # t size
-            hidden_states = rearrange('(b t_out) l d -> b (t_out l) d', hidden_states, t_out=t_out)
+            is_6dof = len(attn_meta.posemb) == 4
+            if is_6dof:
+                [p_out, p_out_inv, p_in, p_in_inv] = attn_meta.posemb
+                t_out, t_in = 1, 1  # t size
+            else:
+                p_out, p_in = attn_meta.posemb # BxTx4, # BxTx4
+                t_out, t_in = p_out.shape[1], p_in.shape[1]
         
         is_trainable_cross_attn = False
         if encoder_hidden_states is not None and attn_meta is not None:
@@ -151,6 +155,34 @@ class XFormersAttnProcessor:
         key = attn.to_k(encoder_hidden_states, *args)
         value = attn.to_v(encoder_hidden_states, *args)
 
+        # apply 4DoF CaPE
+        if is_eschernet:
+            if is_6dof:
+                import einops
+                p_in = einops.rearrange(p_in, "b f g -> b () f g")
+                p_out = einops.rearrange(p_out, "b f g -> b () f g")
+                p_out_inv = einops.rearrange(p_out_inv, "b f g -> b () f g")
+
+                p_out_inv = einops.repeat(p_out_inv, 'b t_out f g -> b (t_out l) f g', l=query.shape[1] // t_out)  # query shape
+                if is_cross_attn:
+                    p_in = einops.repeat(p_in, 'b t_in f g -> b (t_in l) f g', l=key.shape[1] // t_in)  # key shape
+                else:
+                    p_in = einops.repeat(p_out, 'b t_out f g -> b (t_out l) f g', l=query.shape[1] // t_out)  # query shape
+                
+                # To debug gradients:
+                # p_out_inv = torch.eye(4)[None][None].repeat(p_out_inv.shape[0], p_out_inv.shape[1], 1, 1)
+                # p_in = torch.eye(4)[None][None].repeat(p_in.shape[0], p_in.shape[1], 1, 1)
+
+                query = cape_embed_6dof(query, p_out_inv)  # query f_q @ (p_out)^(-T) .permute(0, 1, 3, 2)
+                key = cape_embed_6dof(key, p_in)  # key f_k @ p_in
+            else:
+                p_out = rearrange('b t_out d -> b (t_out l) d', p_out, l=query.shape[1] // t_out)  # query shape
+                if is_cross_attn:
+                    p_in = rearrange('b t_in d -> b (t_in l) d', p_in, l=key.shape[1] // t_in)  # key shape
+                else:
+                    p_in = p_out
+                query, key = cape_embed_4dof(p_out, p_in, query, key)
+
         query = attn.head_to_batch_dim(query).contiguous()
         key = attn.head_to_batch_dim(key).contiguous()
         value = attn.head_to_batch_dim(value).contiguous()
@@ -161,15 +193,6 @@ class XFormersAttnProcessor:
         elif is_cross_attn is False and attn_meta is not None and attn_meta.self_attention_mask is not None:
             assert attention_mask is None
             attention_mask = handle_attn_proc_self_attn_masking(attn_meta, hidden_states, attn, query, batch_size)
-        
-        # apply 4DoF CaPE
-        if attn_meta.t_out is not None:
-            p_out = rearrange('b t_out d -> b (t_out l) d', p_out, l=query.shape[1] // t_out)  # query shape
-            if is_cross_attn:
-                p_in = rearrange('b t_in d -> b (t_in l) d', p_in, l=key.shape[1] // t_in)  # key shape
-            else:
-                p_in = p_out
-            query, key = cape_embed(p_out, p_in, query, key)
 
         if is_trainable_cross_attn and attn_meta.return_attn_probs is True:
             attention_probs = attn.get_attention_scores(query, key, attention_mask)

@@ -1,8 +1,9 @@
 import dataclasses
-from importlib import metadata
+import gc
 import math
 from dataclasses import dataclass, field, fields
 from functools import cached_property
+from importlib import metadata
 from pathlib import Path
 from typing import Any, Optional, TypedDict, Union
 
@@ -19,6 +20,7 @@ from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
 from peft import LoraConfig
 from scipy.spatial.transform import Rotation as R
+from tensordict import tensorclass
 from torch import Tensor
 from transformers import AutoTokenizer, CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
@@ -37,13 +39,12 @@ from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
-from gen.utils.data_defs import InputData, get_dropout_grid, get_tgt_grid, get_one_hot_channels, integer_to_one_hot
+from gen.utils.data_defs import InputData, get_dropout_grid, get_one_hot_channels, get_tgt_grid, integer_to_one_hot
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
-from gen.utils.logging_utils import log_info, log_warn
+from gen.utils.logging_utils import log_debug, log_info, log_warn
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
-from tensordict import tensorclass
 
 
 @dataclass
@@ -94,7 +95,6 @@ class AttentionMetadata:
     attn_probs: Optional[Float[Tensor, "..."]] = None
     custom_map: Optional[dict] = None
     posemb: Optional[tuple] = None
-    t_out: Optional[Any] = None
 
 class Dummy:
     def __getattr__(self, name):
@@ -270,6 +270,18 @@ class BaseMapper(Trainable):
         _device = device
         other = unwrap(_other)
 
+        if hasattr(other, "controller"):
+            other.controller.reset()
+
+        if hasattr(other, "pipeline"):  # After validation, we need to clear this
+            del other.pipeline
+            torch.cuda.empty_cache()
+            gc.collect()
+            log_debug("Cleared pipeline", main_process_only=False)
+
+        if set_grad is False and cfg.trainer.inference_train_switch is False:
+            return
+
         if set_grad and md.unet:
             other.vae.to(device=_device, dtype=_dtype)
             other.vae.requires_grad_(False)
@@ -303,12 +315,18 @@ class BaseMapper(Trainable):
                 if set_grad:
                     module.requires_grad_(True)
                 module.train()
-
         if md.freeze_unet:
             if set_grad:
                 other.unet.to(device=_device, dtype=_dtype)
                 other.unet.requires_grad_(False)
             other.unet.eval()
+
+            if md.unfreeze_single_unet_layer:
+                for m in get_modules(other.unet, BasicTransformerBlock)[:1]:
+                    if set_grad:
+                        m.requires_grad_(True)
+                        m.to(dtype=torch.float32)
+                    m.train()
         else:
             if set_grad:
                 other.unet.requires_grad_(True)
@@ -368,14 +386,6 @@ class BaseMapper(Trainable):
                 other.token_mapper.requires_grad_(True)
             other.token_mapper.train()
 
-        if hasattr(other, "controller"):
-            other.controller.reset()
-
-        if hasattr(other, "pipeline"):  # After validation, we need to clear this
-            del other.pipeline
-            print("Cleared pipeline")
-            torch.cuda.empty_cache()
-
     def unfreeze_unet(self):
         self.cfg.model.freeze_unet = False
         self.unet.to(device=self.device, dtype=torch.float32)
@@ -385,7 +395,7 @@ class BaseMapper(Trainable):
             self.cfg.model.break_a_scene_masked_loss = True
 
     def set_inference_mode(self, init_pipeline: bool = True):
-        if init_pipeline and self.cfg.model.unet:
+        if init_pipeline and self.cfg.model.unet and getattr(self, "pipeline", None) is None:
             self.pipeline: Union[StableDiffusionControlNetPipeline, StableDiffusionPipeline] = load_stable_diffusion_model(
                 cfg=self.cfg,
                 device=self.device,
@@ -406,8 +416,6 @@ class BaseMapper(Trainable):
                 set_alpha_to_one=False,
             )
 
-        self.eval()
-            
         if self.cfg.model.break_a_scene_cross_attn_loss:
             self.controller.reset()
 
@@ -431,7 +439,7 @@ class BaseMapper(Trainable):
 
     def get_unet_params(self):
         is_unet_trainable = self.cfg.model.unet and (not self.cfg.model.freeze_unet or self.cfg.model.unet_lora)
-        return {k:v for k,v in dict(self.unet.named_parameters()) if p.requires_grad} if is_unet_trainable else dict()
+        return {k:v for k,v in dict(self.unet.named_parameters()) if v.requires_grad} if is_unet_trainable else dict()
     
     def get_param_groups(self):
         if self.cfg.model.finetune_unet_with_different_lrs:
@@ -874,13 +882,13 @@ class BaseMapper(Trainable):
         cond.encoder_hidden_states[cond.learnable_idxs[0], cond.learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
 
         attn_meta: AttentionMetadata = cond.unet_kwargs["cross_attention_kwargs"]['attn_meta']
-        if self.cfg.model.eschernet:
+        if self.cfg.model.eschernet and not self.cfg.model.layer_specialization:
             attn_meta.layer_idx = 0
             attn_meta.num_layers = 1
             attn_meta.num_cond_vectors = self.cfg.model.num_conditioning_pairs
             attn_meta.add_pos_emb = self.cfg.model.add_pos_emb
 
-        elif self.cfg.model.layer_specialization:
+        if self.cfg.model.layer_specialization:
             attn_meta.layer_idx = 0
             attn_meta.num_layers = (8 * 2) if self.cfg.model.custom_conditioning_map else (self.cfg.model.num_conditioning_pairs * 2)
             attn_meta.num_cond_vectors = self.cfg.model.num_conditioning_pairs
@@ -906,7 +914,10 @@ class BaseMapper(Trainable):
             cond.encoder_hidden_states[:] = shift_scale_uncond_hidden_states(self)
 
         if self.cfg.model.eschernet:
-            attn_meta.posemb=[batch.tgt_pose_out, batch.src_pose_in]
+            if self.cfg.model.eschernet_6dof:
+                attn_meta.posemb = [batch.tgt_pose.to(self.dtype).detach(), torch.linalg.inv(batch.tgt_pose).to(self.dtype).detach(), batch.src_pose.to(self.dtype).detach(), torch.linalg.inv(batch.src_pose).to(self.dtype).detach()]
+            else:
+                attn_meta.posemb = [batch.tgt_pose, batch.src_pose]
 
         if self.cfg.model.masked_self_attention:
             attn_meta.self_attention_mask = cond.batch_attn_masks
@@ -1091,5 +1102,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.token_rot_pred_loss:
             losses.update(token_rot_loss(cfg=self.cfg, pred_data=pred_data))
+
+        losses["metric_num_mask_tokens"] = cond.mask_tokens.shape[0]
             
         return losses

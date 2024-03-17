@@ -994,6 +994,9 @@ class StableDiffusionPipeline(
                 guidance_scale_tensor, embedding_dim=self.unet.config.time_cond_proj_dim
             ).to(device=device, dtype=latents.dtype)
 
+        if 'attn_meta' in self.cross_attention_kwargs and self.cross_attention_kwargs['attn_meta'].posemb is not None:
+            self.cross_attention_kwargs['attn_meta'].posemb = [x.repeat(num_images_per_prompt * (2 if self.do_classifier_free_guidance else 1), 1, 1) for x in self.cross_attention_kwargs['attn_meta'].posemb]
+
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)

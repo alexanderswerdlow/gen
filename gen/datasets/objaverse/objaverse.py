@@ -294,8 +294,8 @@ class ObjaverseData(AbstractDataset, Dataset):
         data['tgt_pixel_values'] = tgt_data.image[0]
         data['src_segmentation'] = data['src_pixel_values'].new_zeros((data['src_pixel_values'].shape[1], data['src_pixel_values'].shape[2]), dtype=torch.long)
         data['tgt_segmentation'] = data['tgt_pixel_values'].new_zeros((data['tgt_pixel_values'].shape[1], data['tgt_pixel_values'].shape[2]), dtype=torch.long)
-        data['tgt_pose_out'] = torch.stack(tgt_Ts, dim=0)
-        data['src_pose_in'] = torch.stack(cond_Ts, dim=0)
+        data['tgt_pose'] = torch.stack(tgt_Ts, dim=0)
+        data['src_pose'] = torch.stack(cond_Ts, dim=0)
         data['input_ids'] = get_tokens(self.tokenizer)
         data['valid'] = torch.full((1,), True, dtype=torch.bool)
 

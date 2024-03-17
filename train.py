@@ -30,7 +30,7 @@ from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.models.cross_attn.base_model import BaseMapper
 from gen.models.utils import get_model_from_cfg, set_default_inference_func, set_inference_func
 from gen.utils.decoupled_utils import Profiler, get_num_gpus, get_rank, is_main_process, save_memory_profile, show_memory_usage, write_to_file, print_memory
-from gen.utils.logging_utils import log_error, log_info, log_warn
+from gen.utils.logging_utils import log_debug, log_error, log_info, log_warn
 from gen.utils.trainer_utils import (
     Trainable,
     TrainingState,
@@ -219,31 +219,19 @@ class Trainer:
     @torch.no_grad()
     def validate(self, state: TrainingState):
         # TODO: Cleanup all the validation code once we figure out the possible memory leak.
-        
+        log_debug("Starting Validate", main_process_only=False)
         validation_start_time = time()
 
-        if self.cfg.dataset.reset_val_dataset_every_epoch:
-            g = torch.Generator()
-            g.manual_seed(state.global_step + get_rank())
-            self.val_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.val_dataset_holder.batch_size, self.cfg.dataset.val.batch_size)
-            self.validation_dataloader = self.val_dataset_holder.get_dataloader(generator=g, pin_memory=False)
-            self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
+        self.model.eval()
+        unwrap(self.model).set_inference_mode(init_pipeline=self.cfg.trainer.init_pipeline_inference)
 
-        run_inference_dataloader(
-            accelerator=self.accelerator,
-            dataloader=self.validation_dataloader,
-            model=self.model,
-            state=state,
-            output_path=self.cfg.output_dir / "images",
-            prefix="val/",
-        )
-
-        if self.cfg.dataset.reset_val_dataset_every_epoch:
-            del self.validation_dataloader
+        if self.cfg.trainer.validate_validation_dataset:
+            self.validate_validation_dataloader(state)
 
         if self.cfg.trainer.validate_training_dataset:
             self.validate_train_dataloader(state)
-
+        
+        self.model.train()
         BaseMapper.set_training_mode(cfg=self.cfg, _other=self.model, device=self.accelerator.device, dtype=self.dtype, set_grad=False)
 
         log_info(
@@ -260,29 +248,57 @@ class Trainer:
         self.val_dataset_holder.batch_size = self.cfg.dataset.val.batch_size
         set_default_inference_func(unwrap(self.model), self.cfg)
 
+    def validate_validation_dataloader(self, state: TrainingState):
+        if self.cfg.dataset.reset_val_dataset_every_epoch:
+            g = torch.Generator()
+            g.manual_seed(state.global_step + get_rank())
+            self.val_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.val_dataset_holder.batch_size, self.cfg.dataset.val.batch_size)
+            self.val_dataset_holder.num_workers = self.cfg.dataset.val.num_workers
+            log_debug(f"Resetting Validation Dataloader with {self.val_dataset_holder.num_workers} workers", main_process_only=False)
+            self.validation_dataloader = self.val_dataset_holder.get_dataloader(generator=g, pin_memory=False)
+            self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
+
+        log_debug(f"Running validation on val dataloder", main_process_only=False)
+        run_inference_dataloader(
+            accelerator=self.accelerator,
+            dataloader=self.validation_dataloader,
+            model=self.model,
+            state=state,
+            output_path=self.cfg.output_dir / "images",
+            prefix="val/",
+            init_pipeline=False,
+        )
+
+        if self.cfg.dataset.reset_val_dataset_every_epoch:
+            del self.validation_dataloader
+
     def validate_train_dataloader(self, state: TrainingState):
+        log_debug("Starting Validate Train Dataloader", main_process_only=False)
+        self.train_dataloader_holder.num_workers = self.val_dataset_holder.num_workers
         self.train_dataloader_holder.subset_size = self.val_dataset_holder.subset_size
         self.train_dataloader_holder.random_subset = self.val_dataset_holder.random_subset
         self.train_dataloader_holder.batch_size = self.val_dataset_holder.batch_size
         self.train_dataloader_holder.repeat_dataset_n_times = None
-        self.train_dataloader = self.train_dataloader_holder.get_dataloader(pin_memory=False)
-        self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
+
+        validate_train_dataloader = self.train_dataloader_holder.get_dataloader(pin_memory=False)
+        validate_train_dataloader = self.accelerator.prepare(validate_train_dataloader)
 
         run_inference_dataloader(
             accelerator=self.accelerator,
-            dataloader=self.train_dataloader,
+            dataloader=validate_train_dataloader,
             model=self.model,
             state=state,
             output_path=self.cfg.output_dir / "images",
             prefix="train/",
+            init_pipeline=False,
         )
 
+        self.train_dataloader_holder.num_workers = self.cfg.dataset.train.num_workers
         self.train_dataloader_holder.subset_size = self.cfg.dataset.train.subset_size
         self.train_dataloader_holder.random_subset = self.cfg.dataset.train.random_subset
         self.train_dataloader_holder.batch_size = self.cfg.dataset.train.batch_size
         self.train_dataloader_holder.repeat_dataset_n_times = self.cfg.dataset.train.repeat_dataset_n_times
-        self.train_dataloader = self.train_dataloader_holder.get_dataloader()
-        self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
+        log_debug("Finished Validate Train Dataloader", main_process_only=False)
 
     # TODO: This is model-specific and should be achieved by inheritance or some other mechanism
     def base_model_validate(self, state: TrainingState):
@@ -417,14 +433,17 @@ class Trainer:
         global_extra_wandb_metrics = dict()
         accumulate_steps = 0  # TODO: Figure out what happens if we end the dataloader between gradient update steps
         last_end_step_time = time()
+        start_timing("Dataloading")
         for epoch in range(first_epoch, tr.num_train_epochs):
             for step, batch in enumerate(self.train_dataloader):
+                end_timing()
                 step_start_time = time()
                 global_step_metrics["dataloading_time"] += step_start_time - last_end_step_time
                 if is_main_process() and global_step == 0 and accumulate_steps == 1:
                     log_info(f"time to complete 1st step: {step_start_time - load_time} seconds")
 
                 with self.accelerator.accumulate(*filter(lambda x: isinstance(x, nn.Module), self.models)):
+                    start_timing("Forward Pass")
                     global_step_metrics["examples_seen_per_gpu"] += len(next(iter(batch.values())))
                     state: TrainingState = TrainingState(
                         epoch_step=step, num_epoch_steps=len(self.train_dataloader), global_step=global_step, epoch=epoch, true_step=true_step
@@ -449,6 +468,8 @@ class Trainer:
                     loss = sum(losses.values())
                     global_step_metrics["loss"] += loss.detach().cpu().item()  # Only on the main process to avoid syncing
                     
+                    end_timing()
+                    start_timing("Backward Pass")
                     start_backward_time = time()
                     # The below lines may be silently skipped for gradient accumulation
                     self.accelerator.backward(loss)
@@ -466,12 +487,14 @@ class Trainer:
 
                     self.optimizer.zero_grad(**zero_grad_kwargs)
 
+                    end_timing()
                     global_step_metrics["backward_pass_time"] += time() - start_backward_time
 
                     accumulate_steps += 1
 
                 # Important: A single "global_step" is a single optimizer step. The accumulate decorator silently skips backward + optimizer to allow for gradient accumulation. A "true_step" counts the number of forward passes (on a per-GPU basis). The condition below should only happen immediately after a backward + optimizer step.
                 if self.accelerator.sync_gradients:
+                    start_timing("On Sync Gradients")
                     unwrap(self.model).on_sync_gradients(state)
 
                     if self.cfg.trainer.profile_memory and global_step + 1 >= tr.max_train_steps:
@@ -508,7 +531,8 @@ class Trainer:
                     progress_bar.update(1)
                     global_step += 1
                     logs = {
-                        "gpu_memory_usage_gb": max(torch.cuda.max_memory_allocated(), torch.cuda.memory_reserved()) / (1024**3),
+                        "max_gpu_memory_reserved_gb": torch.cuda.max_memory_reserved() / (1024**3),
+                        "gpu_memory_reserved_gb": torch.cuda.memory_reserved() / (1024**3),
                         "examples_seen": global_step * total_batch_size,
                         **{k: (v / accumulate_steps if ('backward' not in k) else v) for k, v in global_step_metrics.items()},
                         **{f"lr_{i}": lr for i, lr in enumerate(self.lr_scheduler.get_last_lr())},
@@ -518,11 +542,13 @@ class Trainer:
                     self.accelerator.log(logs, step=global_step)
                     global_step_metrics = defaultdict(float)
                     accumulate_steps = 0
+                    end_timing()
 
                 if global_step >= tr.max_train_steps:
                     break
 
                 last_end_step_time = time()
+                start_timing("Dataloading")
 
         # Create the pipeline using using the trained modules and save it.
         self.accelerator.wait_for_everyone()

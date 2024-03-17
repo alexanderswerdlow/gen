@@ -1,4 +1,8 @@
-exit()
+"""
+This file contains code that is no longer needed but for which there is a non-zero chance we might need to refer to it again.
+To spare us the sight of this dead code but also the pain of having to dig through git history, we keep it here.
+"""
+import antigravity
 # if cfg.model.tmp_revert_to_neti_logic:
 #     avg_loss_eval = diffusers_eval(
 #         cfg=cfg,
@@ -13,81 +17,81 @@ exit()
 #     )
 #     log_info(f"Eval loss: {avg_loss_eval} at step {global_step}")
 #     wandb.log({"avg_eval_loss": avg_loss_eval}, step=global_step)
-@torch.no_grad()
-def diffusers_eval(
-    cfg: BaseConfig,
-    accelerator: Accelerator,
-    batch: Dict[str, Any],
-    weight_dtype: torch.dtype,
-    model: BaseMapper,
-    noise_scheduler: nn.Module,
-    vae: nn.Module,
-    n: int,
-    max_batch_size: int,
-):
+# @torch.no_grad()
+# def diffusers_eval(
+#     cfg: BaseConfig,
+#     accelerator: Accelerator,
+#     batch: Dict[str, Any],
+#     weight_dtype: torch.dtype,
+#     model: BaseMapper,
+#     noise_scheduler: nn.Module,
+#     vae: nn.Module,
+#     n: int,
+#     max_batch_size: int,
+# ):
     
-    unwrap(model.text_encoder).text_model.embeddings.mapper.eval()
-    batch["tgt_pixel_values"] = torch.clamp(batch["tgt_pixel_values"], -1, 1)
-    latents = vae.encode(batch["tgt_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
-    latents = latents * vae.config.scaling_factor
+#     unwrap(model.text_encoder).text_model.embeddings.mapper.eval()
+#     batch["tgt_pixel_values"] = torch.clamp(batch["tgt_pixel_values"], -1, 1)
+#     latents = vae.encode(batch["tgt_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+#     latents = latents * vae.config.scaling_factor
 
-    # Split timesteps into smaller batches if n is larger than max_batch_size
-    total_timesteps = torch.linspace(0, noise_scheduler.config.num_train_timesteps - 1, steps=n).long()
-    batched_timesteps = total_timesteps.split(max_batch_size)
+#     # Split timesteps into smaller batches if n is larger than max_batch_size
+#     total_timesteps = torch.linspace(0, noise_scheduler.config.num_train_timesteps - 1, steps=n).long()
+#     batched_timesteps = total_timesteps.split(max_batch_size)
         
-    total_loss = 0.0
-    from einops import repeat
+#     total_loss = 0.0
+#     from einops import repeat
 
-    for timesteps in batched_timesteps:
-        bsz = timesteps.shape[0]
-        repeated_latents = latents.repeat(bsz, 1, 1, 1)[:bsz]
-        batch_ = {}
-        for k in batch.keys():
-            batch_[k] = repeat(batch[k][0], '... -> h ...', h=bsz)
+#     for timesteps in batched_timesteps:
+#         bsz = timesteps.shape[0]
+#         repeated_latents = latents.repeat(bsz, 1, 1, 1)[:bsz]
+#         batch_ = {}
+#         for k in batch.keys():
+#             batch_[k] = repeat(batch[k][0], '... -> h ...', h=bsz)
 
-        noise = torch.randn_like(repeated_latents)
-        noisy_latents = noise_scheduler.add_noise(repeated_latents, noise, timesteps.to(latents.device))
+#         noise = torch.randn_like(repeated_latents)
+#         noisy_latents = noise_scheduler.add_noise(repeated_latents, noise, timesteps.to(latents.device))
 
-        match cfg.model.model_type:
-            case ModelType.BASE_MAPPER:
-                model_pred = model(batch_, noisy_latents, timesteps.to(latents.device), weight_dtype)
+#         match cfg.model.model_type:
+#             case ModelType.BASE_MAPPER:
+#                 model_pred = model(batch_, noisy_latents, timesteps.to(latents.device), weight_dtype)
 
-        if noise_scheduler.config.prediction_type == "epsilon":
-            target = noise
-        elif noise_scheduler.config.prediction_type == "v_prediction":
-            target = noise_scheduler.get_velocity(repeated_latents, noise, timesteps.to(latents.device))
-        else:
-            raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
+#         if noise_scheduler.config.prediction_type == "epsilon":
+#             target = noise
+#         elif noise_scheduler.config.prediction_type == "v_prediction":
+#             target = noise_scheduler.get_velocity(repeated_latents, noise, timesteps.to(latents.device))
+#         else:
+#             raise ValueError(f"Unknown prediction type {noise_scheduler.config.prediction_type}")
 
-        loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
-        total_loss += loss.item()
+#         loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+#         total_loss += loss.item()
 
-    avg_loss = total_loss / len(batched_timesteps)
-    unwrap(model.text_encoder).text_model.embeddings.mapper.train()
-    unwrap(model.text_encoder).train()
-    return avg_loss
+#     avg_loss = total_loss / len(batched_timesteps)
+#     unwrap(model.text_encoder).text_model.embeddings.mapper.train()
+#     unwrap(model.text_encoder).train()
+#     return avg_loss
 
-def viz():
-    from image_utils import Im, calculate_principal_components, onehot_to_color, pca
+# def viz():
+#     from image_utils import Im, calculate_principal_components, onehot_to_color, pca
 
-    principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]).float())
-    bs_ = clip_feature_map.shape[1]
-    dim_ = clip_feature_map.shape[2]
-    outmap = (
-        pca(
-            clip_feature_map[1:, ...].float().permute(1, 2, 0).reshape(bs_, dim_, 16, 16).permute(0, 2, 3, 1).reshape(-1, dim_).float(),
-            principal_components=principal_components,
-        )
-        .reshape(bs_, 16, 16, 3)
-        .permute(0, 3, 1, 2)
-    )
-    outmap_min, _ = torch.min(outmap, dim=1, keepdim=True)
-    outmap_max, _ = torch.max(outmap, dim=1, keepdim=True)
-    outmap = (outmap - outmap_min) / (outmap_max - outmap_min)
-    Im(outmap).save("pca")
-    sam_input = rearrange((((batch["tgt_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c")
-    Im(sam_input).save("rgb")
-    Im(onehot_to_color(original.permute(1, 2, 0))).save("masks")
+#     principal_components = calculate_principal_components(clip_feature_map.reshape(-1, clip_feature_map.shape[-1]).float())
+#     bs_ = clip_feature_map.shape[1]
+#     dim_ = clip_feature_map.shape[2]
+#     outmap = (
+#         pca(
+#             clip_feature_map[1:, ...].float().permute(1, 2, 0).reshape(bs_, dim_, 16, 16).permute(0, 2, 3, 1).reshape(-1, dim_).float(),
+#             principal_components=principal_components,
+#         )
+#         .reshape(bs_, 16, 16, 3)
+#         .permute(0, 3, 1, 2)
+#     )
+#     outmap_min, _ = torch.min(outmap, dim=1, keepdim=True)
+#     outmap_max, _ = torch.max(outmap, dim=1, keepdim=True)
+#     outmap = (outmap - outmap_min) / (outmap_max - outmap_min)
+#     Im(outmap).save("pca")
+#     sam_input = rearrange((((batch["tgt_pixel_values"] + 1) / 2) * 255).to(torch.uint8).cpu().detach().numpy(), "b c h w -> b h w c")
+#     Im(sam_input).save("rgb")
+#     Im(onehot_to_color(original.permute(1, 2, 0))).save("masks")
 
 # viz()
 
@@ -625,3 +629,83 @@ def viz():
 #     sys.breakpointhook = IPython.embed
 # except ImportError as e:
 #     pass
+
+
+# def get_distance_matrix(self, poses: np.ndarray) -> torch.Tensor:
+#         n = len(poses)
+#         distance_matrix = np.zeros((n, n, 2))
+#         for i in tqdm(range(n)):
+#             for j in range(n):
+#                 rotational_distance = self.get_rotational_distance(poses[i], poses[j])
+#                 translational_distance = self.get_translational_distance(
+#                     poses[i], poses[j]
+#                 )
+#                 distance_matrix[i, j] = np.array(
+#                     [rotational_distance, translational_distance]
+#                 )
+
+#         distance_matrix = np.sqrt(np.sum(distance_matrix**2, axis=2))
+#         return torch.from_numpy(distance_matrix)
+
+#     def get_rotational_distance(self, pose_1: np.ndarray, pose_2: np.ndarray) -> float:
+#         # http://www.boris-belousov.net/2016/12/01/quat-dist/#:~:text=Using%20quaternions%C2%B6&text=The%20difference%20rotation%20quaternion%20that,quaternion%20r%20%3D%20p%20q%20%E2%88%97%20.
+#         # https://math.stackexchange.com/questions/90081/quaternion-distance
+
+#         rotation_1 = Rotation.from_matrix(pose_1[:3, :3]).as_quat()
+#         rotation_2 = Rotation.from_matrix(pose_2[:3, :3]).as_quat()
+#         return 2 * np.arccos(np.dot(rotation_1, rotation_2))
+
+#     def get_translational_distance(
+#         self, pose_1: np.ndarray, pose_2: np.ndarray
+#     ) -> float:
+#         return np.linalg.norm(pose_1[:3, 3] - pose_2[:3, 3])
+
+    # mode_store(
+    #     name="soda_coco",
+    #     model=dict(
+    #         add_pos_emb=False,
+    #         add_grid_to_input_channels=True,
+    #         encoder=dict(
+    #             img_size=224,
+    #             num_total_input_channels=5,
+    #         ),
+    #         feature_map_keys=(
+    #             "norm",
+    #         ),
+    #         decoder_resolution=256,
+    #         encoder_resolution=224,
+    #         encoder_latent_dim=14,
+    #         decoder_latent_dim=32,
+    #         unfreeze_last_n_clip_layers=None,
+    #         freeze_clip=False,
+    #     ),
+    #     dataset=dict(
+    #         train=dict(
+    #             batch_size=36,
+    #             augmentation=dict(
+    #                 different_src_tgt_augmentation=True,
+    #                 enable_random_resize_crop=True, 
+    #                 enable_horizontal_flip=True,
+    #                 src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+    #                 tgt_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
+    #                 enable_rand_augment=False,
+    #                 enable_rotate=True,
+    #             )
+    #         ),
+    #         val=dict(
+    #             augmentation=dict(
+    #                 different_src_tgt_augmentation=True,
+    #                 enable_random_resize_crop=True, 
+    #                 enable_horizontal_flip=True,
+    #                 src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+    #                 tgt_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
+    #                 enable_rand_augment=False,
+    #                 enable_rotate=True,
+    #             )
+    #         ),
+    #     ),
+    #     trainer=dict(
+    #         eval_every_n_steps=500,
+    #     ),
+    #     hydra_defaults=["coco_recon_only", "sam_coco_masks", {"override /model": "basemapper_vit_extra_channels"}],
+    # )

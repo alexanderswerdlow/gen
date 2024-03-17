@@ -121,10 +121,11 @@ exp_store(
         gradient_checkpointing=True,
         compile=False,
         validate_training_dataset=True,
+        inference_train_switch=False,
     ),
     dataset=dict(
         num_validation_images=1,
-        train=dict(batch_size=8),
+        train=dict(num_workers=4, batch_size=8),
         val=dict(batch_size=1, subset_size=4),
         reset_val_dataset_every_epoch=True,
     ),
@@ -162,15 +163,6 @@ exp_store(
         {"override /dataset": "movi_e"},
         {"override /model": "basemapper"},
     ],
-)
-
-mode_store(
-    name="fast",
-    debug=True,
-    trainer=dict(num_train_epochs=1, eval_every_n_epochs=1, eval_every_n_steps=None),
-    dataset=dict(
-        train=dict(batch_size=8, subset_size=16, num_workers=0), val=dict(batch_size=1, subset_size=2, num_workers=0)
-    ),
 )
 
 mode_store(

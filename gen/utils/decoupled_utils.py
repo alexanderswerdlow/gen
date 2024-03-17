@@ -357,6 +357,8 @@ class Profiler:
 def use_dist():
     return dist.is_available() and dist.is_initialized()
 
+def get_device():
+    return torch.device(f"cuda:{get_rank()}")
 
 def get_rank() -> int:
     if use_dist():
@@ -426,8 +428,8 @@ def start_timing(message: str, enable: bool = False, sync: bool = False, builtin
         torch.cuda.nvtx.range_push(message)
 
 def end_timing(enable: bool = False, sync: bool = False, builtin: bool = False):
-    if enable:
-        if sync:
+    if (builtin and ENABLE_TIMING) or enable:
+        if (builtin and ENABLE_TIMING_SYNC) or sync:
             torch.cuda.synchronize()
         torch.cuda.nvtx.range_pop()
 
@@ -466,14 +468,16 @@ def print_memory(verbose: bool = False):
 @contextlib.contextmanager
 def show_memory_usage(empty_cache: bool = True, verbose: bool = False):
     if empty_cache: torch.cuda.empty_cache()
-    print("Before context", end="")
-    print_memory(verbose)
+    if is_main_process():
+        print("Before context", end="")
+        print_memory(verbose)
     
     yield
 
     if empty_cache: torch.cuda.empty_cache()
-    print("After context", end="")
-    print_memory(verbose)
+    if is_main_process():
+        print("After context", end="")
+        print_memory(verbose)
 
     
 def write_to_file(path: Path, text: str):
@@ -546,3 +550,5 @@ def sanitize_filename(filename: str) -> str:
     return "".join(map_chars.get(c, c) for c in filename if c.isalnum() or map_chars.get(c, c) in (" ", ".", "_", "-", "__"))
 
 
+def hash_str_as_int(s: str):
+    return int(hashlib.sha256(s.encode('utf-8')).hexdigest(), 16) % 10**8

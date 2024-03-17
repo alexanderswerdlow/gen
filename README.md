@@ -74,10 +74,18 @@ Segmentation maps when cropping sometime have false where it should be true
 
 To update submodules, run `git pull --recurse-submodules`
 
-# Profiling 
+## Profiling 
 
 ```
-nsys profile -w true -t cuda,nvtx,osrt,cudnn,cublas -s cpu -o $timestamp --force-overwrite=true --cudabacktrace=true --osrt-threshold=10000 -x true --capture-range=cudaProfilerApi
+nsys profile -w true -t cuda,nvtx,osrt,cudnn,cublas -s cpu -o $timestamp --force-overwrite=true --cudabacktrace=true --osrt-threshold=10000 -x true --capture-range=cudaProfilerApi --stop-on-range-end=true
 
 # To Profile everything, just remove: --capture-range=cudaProfilerApi --stop-on-range-end=true
 ```
+
+## Configs
+
+We use [hydra-zen](https://mit-ll-responsible-ai.github.io/hydra-zen/) which builds on top of [Hydra](https://hydra.cc/docs/intro/) and [OmegaConf](https://omegaconf.readthedocs.io/en/2.3_branch/).
+
+To modify the config from the command line, refer to this [Hydra guide](https://hydra.cc/docs/advanced/override_grammar/basic/).
+
+Many of the experiments make use of merging global configs to produce a final output. If you want to override the parent config for some module (i.e., set the config to the class defaults and ignore the parents), replace `dict(**kwargs)` with `builds(cls, populate_full_signature=True, zen_partial=True, **kwargs)`.

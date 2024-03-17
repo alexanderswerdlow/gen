@@ -14,7 +14,7 @@ def cape(x, p):
     m = einops.repeat(p, 'b l n -> b l (n k)', k=d // n)
     return m
 
-def cape_embed(p1, p2, qq, kk):
+def cape_embed_4dof(p1, p2, qq, kk):
     """
     Embed camera position encoding into attention map
     Args:
@@ -39,3 +39,10 @@ def cape_embed(p1, p2, qq, kk):
     k = (kk * m2.cos()) + (rotate_every_two(kk) * m2.sin())
 
     return q, k
+
+import einops
+def cape_embed_6dof(f, P):
+    # f is feature vector of shape [..., d]
+    # P is 4x4 transformation matrix
+    f = einops.rearrange(f, '... (d k) -> ... d k', k=4)
+    return einops.rearrange(f @ P.to(f), '... d k -> ... (d k)', k=4)

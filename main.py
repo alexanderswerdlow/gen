@@ -25,7 +25,7 @@ from image_utils import library_ops  # This overrides repr() for tensors
 from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig
-from gen.datasets.test_dataloader import iterate_dataloader
+from gen.datasets.run_dataloader import iterate_dataloader
 from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint, set_timing_builtins
 from gen.utils.logging_utils import log_error, log_info, log_warn, set_log_file, set_logger
 from inference import inference
@@ -118,7 +118,7 @@ def main(cfg: BaseConfig):
         log_warn("We are seeding training but disabling the CUDNN deterministic setting for performance reasons.")
 
     cudnn.enabled = True
-    cudnn.benchmark = True
+    cudnn.benchmark = cfg.trainer.cudnn_benchmark
     cudnn.allow_tf32 = True  # https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     cuda.matmul.allow_tf32 = True
     torch.set_float32_matmul_precision("high")
@@ -235,6 +235,10 @@ def main(cfg: BaseConfig):
         diffusers.utils.logging.set_verbosity_error()
 
     set_timing_builtins(cfg.trainer.enable_timing, cfg.trainer.enable_timing_sync)
+
+    if get_num_gpus() >= 4:
+        import cv2
+        cv2.setNumThreads(0) # Fixes parallel_impl.cpp:244 WorkerThread 8: Can't spawn new thread
 
     if cfg.trainer.profile_memory:
         torch.cuda.memory._record_memory_history()

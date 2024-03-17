@@ -14,6 +14,7 @@ from transformers import CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
 
 from gen.configs.base import BaseConfig
+from gen.utils.logging_utils import log_debug, log_info
 from gen.utils.trainer_utils import Trainable, unwrap
 
 
@@ -27,6 +28,8 @@ def load_stable_diffusion_model(
     unet: Optional[UNet2DConditionModel] = None,
     vae: Optional[AutoencoderKL] = None,
 ) -> Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline]:
+    
+    log_debug("Loading Diffusion Pipeline...", main_process_only=False)
     """Loads SD model given the current text encoder and our mapper."""
     assert not cfg.model.controlnet or hasattr(model, "controlnet"), "You must pass a controlnet model to use controlnet."
 

@@ -65,6 +65,7 @@ class TrainerConfig:
     detect_anomaly: bool = False
     find_unused_parameters: bool = False
     validate_training_dataset: bool = False # Whether to also run inference on the training dataset after the validation dataset
+    validate_validation_dataset: bool = True
     strict_load: bool = True
     wandb_log_code: bool = True
 
@@ -79,6 +80,9 @@ class TrainerConfig:
     enable_timing_sync: bool = True
     fast_eval: bool = False
     eval_decay_steps: bool = True
+    cudnn_benchmark: bool = True
+    inference_train_switch: bool = True
+    init_pipeline_inference: bool = True
 
     # Set in code
     num_gpus: Optional[int] = None

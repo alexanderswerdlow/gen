@@ -17,11 +17,14 @@ import wandb
 from gen.configs.base import BaseConfig
 from gen.datasets.abstract_dataset import Split
 from gen.models.utils import get_model_from_cfg
-from gen.utils.decoupled_utils import all_gather, get_rank, is_main_process, sanitize_filename, save_tensor_dict
-from gen.utils.logging_utils import log_info
+from gen.utils.decoupled_utils import all_gather, get_num_gpus, get_rank, is_main_process, sanitize_filename, save_tensor_dict
+from gen.utils.logging_utils import log_debug, log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, unwrap
 import itertools
 import time
+import cv2
+
+tqdm.monitor_interval = 0 # May not be necessary
 
 def inference(cfg: BaseConfig, accelerator: Accelerator):
     model = get_model_from_cfg(cfg)
@@ -58,9 +61,11 @@ def run_inference_dataloader(
     **kwargs,
 ):
     output_path.mkdir(exist_ok=True, parents=True)
+    log_debug(f"Setting inference mode.", main_process_only=False)
     unwrap(model).set_inference_mode(**kwargs)
+
     model.eval()
-    log_info(f"Running inference w/prefix: {prefix}, Dataloder size: {len(dataloader)}")
+    log_info(f"Running inference w/prefix: {prefix}, Dataloder size: {len(dataloader)}", main_process_only=True)
     
     outputs = []
     for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
@@ -76,6 +81,7 @@ def run_inference_dataloader(
         output = unwrap(model).run_inference(batch=batch, state=inference_state)
         outputs.append(output)
 
+    log_info(f"Before all_gather.", main_process_only=False)
     outputs = all_gather(outputs)  # Combine over GPUs.
     outputs = flatten(outputs)  # Concat outputs from each GPU
 

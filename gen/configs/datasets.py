@@ -3,24 +3,17 @@ from typing import ClassVar, Optional
 
 from hydra_zen import builds
 
-from gen.configs.utils import auto_store, store_child_config
-from gen.datasets.augmentation.kornia_augmentation import Augmentation
+from gen import (IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH,
+                 MOVI_OVERFIT_DATASET_PATH)
+from gen.configs.utils import auto_store, mode_store, store_child_config
 from gen.datasets.abstract_dataset import AbstractDataset
+from gen.datasets.augmentation.kornia_augmentation import Augmentation
+from gen.datasets.coco.coco_panoptic import CocoPanoptic
 from gen.datasets.controlnet_dataset import ControlnetDataset
 from gen.datasets.hypersim.hypersim import Hypersim
 from gen.datasets.imagenet_dataset import ImageNetCustomDataset
 from gen.datasets.kubrics.movi_dataset import MoviDataset
-from gen.datasets.coco.coco_panoptic import CocoPanoptic
 from gen.datasets.objaverse.objaverse import ObjaverseData
-from functools import partial
-
-from hydra_zen import builds
-
-from gen import (IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH,
-                 MOVI_OVERFIT_DATASET_PATH)
-from gen.configs.utils import mode_store
-from gen.models.cross_attn.base_inference import compose_two_images, interpolate_latents
-from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
 
 
 @dataclass
@@ -407,7 +400,7 @@ def get_datasets():  # TODO: These do not need to be global configs
             ),
         ),
         model=dict(
-            segmentation_map_size=35,
+            segmentation_map_size=28,
         ),
         hydra_defaults=[
             "_self_",
@@ -444,29 +437,21 @@ def get_datasets():  # TODO: These do not need to be global configs
         name="gt_coco_masks",
         dataset=dict(
             train=dict(
+                preprocessed_mask_type=None,
                 use_preprocessed_masks=False,
-                object_ignore_threshold=0.2,
-                top_n_masks_only=8,
+                object_ignore_threshold=0.1,
+                num_overlapping_masks=1,
                 augmentation=dict(
-                    different_src_tgt_augmentation=False,
-                    enable_random_resize_crop=True, 
-                    enable_horizontal_flip=True,
-                    tgt_random_scale_ratio=((0.5, 0.9), (0.9, 1.1)),
-                    enable_rand_augment=False,
-                    enable_rotate=False,
+                    reorder_segmentation=False,
                 )
             ),
             val=dict(
+                preprocessed_mask_type=None,
                 use_preprocessed_masks=False,
-                object_ignore_threshold=0.2,
-                top_n_masks_only=8,
+                object_ignore_threshold=0.1,
+                num_overlapping_masks=1,
                 augmentation=dict(
-                    different_src_tgt_augmentation=False,
-                    enable_random_resize_crop=True, 
-                    enable_horizontal_flip=True,
-                    tgt_random_scale_ratio=((0.5, 0.9), (1.0, 1.0)),
-                    enable_rand_augment=False,
-                    enable_rotate=False,
+                    reorder_segmentation=False,
                 )
             ),
         ),
@@ -509,3 +494,79 @@ def get_datasets():  # TODO: These do not need to be global configs
             ),
         ),
     )
+
+    mode_store(
+        name="hypersim_multiview",
+        dataset=dict(
+            train=dict(
+                camera_trajectory_window=32,
+                return_different_views=True,
+                bbox_overlap_threshold=0.65,
+                bbox_area_threshold=0.75,
+                augmentation=dict(
+                    different_src_tgt_augmentation=False,
+                    enable_square_crop=True,
+                    center_crop=True,
+                    enable_random_resize_crop=False, 
+                    enable_horizontal_flip=False,
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                )
+            ),
+            val=dict(
+                camera_trajectory_window=32,
+                return_different_views=True,
+                bbox_overlap_threshold=0.65,
+                bbox_area_threshold=0.75,
+                augmentation=dict(
+                    different_src_tgt_augmentation=False,
+                    enable_square_crop=True,
+                    center_crop=True,
+                    enable_random_resize_crop=False, 
+                    enable_horizontal_flip=False,
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                )
+            ),
+        ),
+        hydra_defaults=[
+            "hypersim",
+        ],
+    )
+
+    mode_store(
+        name="scannetpp_multiview",
+        dataset=dict(
+            train=dict(
+                augmentation=dict(
+                    different_src_tgt_augmentation=False,
+                    enable_square_crop=True,
+                    center_crop=True,
+                    enable_random_resize_crop=False, 
+                    enable_horizontal_flip=False,
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                )
+            ),
+            val=dict(
+                augmentation=dict(
+                    different_src_tgt_augmentation=False,
+                    enable_square_crop=True,
+                    center_crop=True,
+                    enable_random_resize_crop=False, 
+                    enable_horizontal_flip=False,
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                )
+            ),
+        ),
+    )
+

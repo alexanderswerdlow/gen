@@ -250,3 +250,4 @@ wandb/
 data/
 .python-version
 result.json
+*.nsys-rep

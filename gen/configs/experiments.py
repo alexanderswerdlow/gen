@@ -36,8 +36,12 @@ def get_experiments():
 
     mode_store(
         name="sm",
+        debug=True,
         model=dict(
-            decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False),
+            decoder_transformer=dict(
+                fused_mlp=False,
+                fused_bias_fc=False
+            ),
             fused_mlp=False,
             fused_bias_fc=False,
         ),
@@ -46,25 +50,28 @@ def get_experiments():
     )
 
     mode_store(
-        name="small_gpu",
-        dataset=dict(train=dict(batch_size=1, num_workers=0), val=dict(batch_size=1, num_workers=0)),
+        name="fast",
         model=dict(
-            decoder_transformer=dict(fused_mlp=False, fused_bias_fc=False),
             pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5",
             token_embedding_dim=768,
-            fused_mlp=False,
-            fused_bias_fc=False,
+            freeze_unet=True,
+            unfreeze_single_unet_layer=True,
         ),
-        trainer=dict(enable_xformers_memory_efficient_attention=True, compile=False, eval_on_start=False, gradient_accumulation_steps=1),
+        trainer=dict(
+            compile=False,
+            fast_eval=True,
+            enable_dynamic_grad_accum=False,
+            gradient_accumulation_steps=1
+        ),
         inference=dict(
             visualize_attention_map=False,
             infer_new_prompts=False,
+            vary_cfg_plot=False,
             max_batch_size=1,
             num_masks_to_remove=2,
             num_images_per_prompt=1,
-            vary_cfg_plot=False,
         ),
-        debug=True,
+        hydra_defaults=["sm"],
     )
 
     mode_store(
@@ -369,56 +376,6 @@ def get_experiments():
     )
 
     mode_store(
-        name="soda_coco",
-        model=dict(
-            add_pos_emb=False,
-            add_grid_to_input_channels=True,
-            encoder=dict(
-                img_size=224,
-                num_total_input_channels=5,
-            ),
-            feature_map_keys=(
-                "norm",
-            ),
-            decoder_resolution=256,
-            encoder_resolution=224,
-            encoder_latent_dim=14,
-            decoder_latent_dim=32,
-            unfreeze_last_n_clip_layers=None,
-            freeze_clip=False,
-        ),
-        dataset=dict(
-            train=dict(
-                batch_size=36,
-                augmentation=dict(
-                    different_src_tgt_augmentation=True,
-                    enable_random_resize_crop=True, 
-                    enable_horizontal_flip=True,
-                    src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
-                    tgt_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
-                    enable_rand_augment=False,
-                    enable_rotate=True,
-                )
-            ),
-            val=dict(
-                augmentation=dict(
-                    different_src_tgt_augmentation=True,
-                    enable_random_resize_crop=True, 
-                    enable_horizontal_flip=True,
-                    src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
-                    tgt_random_scale_ratio=((0.5, 0.9), (0.8, 1.2)),
-                    enable_rand_augment=False,
-                    enable_rotate=True,
-                )
-            ),
-        ),
-        trainer=dict(
-            eval_every_n_steps=500,
-        ),
-        hydra_defaults=["coco_recon_only", "sam_coco_masks", {"override /model": "basemapper_vit_extra_channels"}],
-    )
-
-    mode_store(
         name="high_res_coco",
         model=dict(
             encoder=dict(
@@ -490,4 +447,141 @@ def get_experiments():
             validate_training_dataset=False,
             gradient_accumulation_steps=1,
         ),
+    )
+
+    mode_store(
+        name="eschernet_hypersim",
+        model=dict(
+            eschernet=True,
+            eschernet_6dof=True,
+        ),
+        inference=dict(
+            visualize_attention_map=False,
+            num_masks_to_remove=None,
+        ),
+        trainer=dict(
+            eval_every_n_steps=500,
+            enable_dynamic_grad_accum=False,
+            gradient_accumulation_steps=1,
+            cudnn_benchmark=True,
+        ),
+        dataset=dict(train=dict(batch_size=20), val=dict(num_workers=0)),
+        hydra_defaults=["high_res_hypersim", "hypersim_multiview"],
+    )
+
+    mode_store(
+        name="eschernet_hypersim_low_res",
+        model=dict(
+            layer_specialization=False,
+            num_conditioning_pairs=1,
+            custom_conditioning_map=False,
+            per_layer_queries=False,
+            freeze_clip=False,
+            unfreeze_last_n_clip_layers=None,
+            encoder=dict(
+                model_name='vit_small_patch16_224.augreg_in21k_ft_in1k',
+                pretrained=True,
+                return_only=None,
+                img_size=256,
+                return_nodes={
+                    "blocks.5": "blocks.5",
+                    "norm": "norm",
+                },
+            ),
+            feature_map_keys=(
+                "blocks.5",
+                "norm",
+            ),
+            encoder_dim=384,
+            encoder_resolution=256,
+            encoder_latent_dim=16,
+            decoder_resolution=256,
+            decoder_latent_dim=32,
+            decoder_transformer=dict(
+                embed_dim=512,
+                depth=2,
+            ),
+        ),
+        trainer=dict(
+            gradient_accumulation_steps=2,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=96,
+                camera_trajectory_window=32,
+                bbox_overlap_threshold=0.85,
+                bbox_area_threshold=1.5,
+            ),
+            val=dict(
+                camera_trajectory_window=32,
+                bbox_overlap_threshold=0.85,
+                bbox_area_threshold=1.5,
+            ),
+        ),
+        hydra_defaults=["eschernet_hypersim"],
+    )
+
+    mode_store(
+        name="soda_coco",
+        model=dict(
+            add_pos_emb=False,
+            add_grid_to_input_channels=True,
+            encoder=dict(
+                img_size=224,
+                num_total_input_channels=5,
+            ),
+            feature_map_keys=(
+                "norm",
+            ),
+            decoder_resolution=256,
+            encoder_resolution=224,
+            encoder_latent_dim=14,
+            decoder_latent_dim=32,
+            unfreeze_last_n_clip_layers=None,
+            freeze_clip=False,
+        ),
+        dataset=dict(
+            train=dict(
+                augmentation=dict(
+                    different_src_tgt_augmentation=True,
+                    enable_random_resize_crop=True, 
+                    enable_horizontal_flip=True,
+                    enable_rotate=True,
+                    enable_rand_augment=False,
+                    src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                    tgt_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                )
+            ),
+            val=dict(
+                augmentation=dict(
+                    different_src_tgt_augmentation=True,
+                    enable_random_resize_crop=True, 
+                    enable_horizontal_flip=True,
+                    enable_rotate=True,
+                    enable_rand_augment=False,
+                    src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                    tgt_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                )
+            ),
+        ),
+        trainer=dict(
+            eval_every_n_steps=500,
+        ),
+        hydra_defaults=["coco_recon_only", "sam_coco_masks",  "gt_coco_masks", {"override /model": "basemapper_vit_extra_channels"},],
+    )
+
+    mode_store(
+        name="soda_coco_same_src_tgt",
+        dataset=dict(
+            train=dict(
+                augmentation=dict(
+                    different_src_tgt_augmentation=False,
+                    tgt_random_scale_ratio=None,
+                )
+            ),
+            val=dict(
+                augmentation="${dataset.train.augmentation}",
+            ),
+        ),
+        hydra_defaults=["soda_coco"],
     )

@@ -46,9 +46,10 @@ class InputData:
     tgt_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
     src_pad_mask: Optional[Bool[Tensor, "b h w"]] = None
     one_hot_tgt_segmentation: Optional[Integer[Tensor, "b h w c"]] = None
-    tgt_pose_out: Optional[Float[Tensor, "b t 4"]] = None
-    src_pose_in: Optional[Float[Tensor, "b t 4"]] = None
+    tgt_pose: Optional[Float[Tensor, "b t 4 ..."]] = None
+    src_pose: Optional[Float[Tensor, "b t 4 ..."]] = None
     raw_dataset_image: Optional[Integer[Tensor, "b h w c"]] = None
+    id: Optional[Integer[Tensor, "b"]] = None
 
     @staticmethod
     def from_dict(batch: dict):
@@ -136,7 +137,7 @@ def replace_invalid(arr, mask):
     indices = torch.arange(mask.size(1), device=arr.device).unsqueeze(0).unsqueeze(0).unsqueeze(0)
     inv_mask = ~rearrange(mask, "b c -> b () () c")
     new_arr = torch.where(inv_mask & (arr == indices), torch.tensor(255, device=arr.device, dtype=arr.dtype), arr)
-    return arr
+    return new_arr
 
 def visualize_input_data(
         batch: InputData, 
@@ -146,7 +147,10 @@ def visualize_input_data(
         show_overlapping_masks: bool = False,
         remove_invalid: bool = True,
         cfg: Optional[BaseConfig] = None,
+        image_only: bool = False,
     ):
+
+    from image_utils import Im, onehot_to_color
 
     if show_background_foreground_only:
         batch.tgt_segmentation[batch.tgt_segmentation > 0] = 1
@@ -163,7 +167,7 @@ def visualize_input_data(
         src_rgb = undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, batch.src_pixel_values)
     else:
         tgt_rgb = (batch.tgt_pixel_values + 1) / 2
-        src_rgb = Im(batch.tgt_pixel_values).denormalize().torch
+        src_rgb = Im(batch.src_pixel_values).denormalize().torch
     
     if batch.tgt_grid is not None:
         batch.tgt_grid = (batch.tgt_grid + 1) / 2
@@ -173,13 +177,19 @@ def visualize_input_data(
 
     override_colors = {0: (128, 128, 128), 255: (0, 0, 0)}
 
-    from image_utils import Im, onehot_to_color
     for b in range(batch.bs):
-        tgt_one_hot = integer_to_one_hot(batch.tgt_segmentation[b], add_background_channel=False)
-        src_one_hot = integer_to_one_hot(batch.src_segmentation[b], add_background_channel=False)
-
         if names is not None:
             name = names[b]
+        else:
+            name = batch.metadata['name'][b]
+        save_name = f'input_data_{name}_{b}.png'
+
+        if image_only:
+            Im(batch.raw_dataset_image[b]).save(save_name)
+            continue
+
+        tgt_one_hot = integer_to_one_hot(batch.tgt_segmentation[b], add_background_channel=False)
+        src_one_hot = integer_to_one_hot(batch.src_segmentation[b], add_background_channel=False)
             
         tgt_ = Im.concat_vertical(
             Im(tgt_rgb[b]), 
@@ -207,16 +217,18 @@ def visualize_input_data(
             initial_image = integer_to_color(masks.sum(axis=0), colormap='hot', num_classes=initial_num_classes, ignore_empty=False)
             first_hist = hist(np.sum(masks.cpu().numpy(), axis=0).reshape(-1), save=False)
             first_masks = Im(masks.unsqueeze(-1)).scale(0.5).grid(pad_value=0.5)
-            output_img = Im.concat_horizontal(output_img, first_masks, spacing=50, fill=(128, 128, 128))
+            output_img = Im.concat_horizontal(output_img, Im.concat_vertical(first_masks, initial_image, fill=(128, 128, 128)), spacing=40, fill=(128, 128, 128))
             output_img = Im.concat_vertical(
                 output_img,
-                initial_image,
                 first_hist.scale(1),
-                spacing=120,
+                spacing=40,
                 fill=(128, 128, 128)
             )
 
-        output_img.save(f'input_data_{name}_{b}.png')
+        if batch.raw_dataset_image is not None:
+            output_img = Im.concat_horizontal(batch.raw_dataset_image[b], output_img, spacing=50, fill=(128, 128, 128))
+
+        output_img.save(save_name)
 
 
 
