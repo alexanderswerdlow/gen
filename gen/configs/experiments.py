@@ -8,9 +8,12 @@ from gen import (IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM
 from gen.configs.datasets import get_datasets
 from gen.configs.old_configs import get_deprecated_experiments
 from gen.configs.utils import mode_store
+from gen.datasets.augmentation.kornia_augmentation import Augmentation
+from gen.datasets.hypersim.hypersim import Hypersim
 from gen.models.cross_attn.base_inference import compose_two_images, interpolate_latents
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
-
+from functools import partial
+from gen.datasets.scannetpp.run_sam import scannet_run_sam
 
 def get_override_dict(**kwargs):
     return dict(
@@ -44,6 +47,10 @@ def get_experiments():
             ),
             fused_mlp=False,
             fused_bias_fc=False,
+            token_modulator=dict(
+                fused_mlp=False,
+                fused_bias_fc=False
+            ),
         ),
         trainer=dict(use_fused_adam=False),
         dataset=dict(train=dict(batch_size=2, num_workers=0), val=dict(batch_size=1, num_workers=0)),
@@ -61,7 +68,8 @@ def get_experiments():
             compile=False,
             fast_eval=True,
             enable_dynamic_grad_accum=False,
-            gradient_accumulation_steps=1
+            gradient_accumulation_steps=1,
+            backward_pass=False,
         ),
         inference=dict(
             visualize_attention_map=False,
@@ -584,4 +592,150 @@ def get_experiments():
             ),
         ),
         hydra_defaults=["soda_coco"],
+    )
+
+    mode_store(
+        name="multiview_scannet",
+        hydra_defaults=["eschernet_hypersim", "scannetpp_multiview_dataset"],
+        dataset=dict(
+            train=dict(
+                scenes_slice=(0, None, 4),
+                frames_slice=(0, None, 5),
+                augmentation=dict(
+                    reorder_segmentation=False,
+                )
+            ),
+            val=dict(
+                scenes_slice=(0, None, 4),
+                frames_slice=(0, None, 5),
+                augmentation=dict(
+                    reorder_segmentation=False,
+                )
+            ),
+        ),
+        model=dict(
+            add_text_tokens=True,
+        )
+    )
+
+    mode_store(
+        name="concat_hypersim_scannet",
+        model=dict(
+            modulate_src_tokens_with_tgt_pose=True,
+            return_encoder_normalized_tgt=True,
+        ),
+        dataset=dict(
+            train=dict(
+                return_encoder_normalized_tgt=True,
+            ),
+            val=dict(
+                return_encoder_normalized_tgt=True,
+            ),
+            additional_train=(
+                builds(
+                    Hypersim, 
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    return_encoder_normalized_tgt="${model.return_encoder_normalized_tgt}",
+                    camera_trajectory_window=32,
+                    return_different_views=True,
+                    bbox_overlap_threshold=0.65,
+                    bbox_area_threshold=0.75,
+                    object_ignore_threshold=0.0,
+                    top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
+                    num_overlapping_masks=3,
+                    augmentation=builds(
+                        Augmentation,
+                        different_src_tgt_augmentation=False,
+                        enable_square_crop=True,
+                        center_crop=True,
+                        enable_random_resize_crop=False, 
+                        enable_horizontal_flip=False,
+                        enable_rand_augment=False,
+                        enable_rotate=False,
+                        src_random_scale_ratio=None,
+                        tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                        initial_resolution=512,
+                        src_resolution=None,
+                        tgt_resolution=None,
+                        src_transforms="${get_src_transform:model}",
+                        tgt_transforms="${get_tgt_transform:model}",
+                        populate_full_signature=True,
+                    )
+                ),
+            ),
+            additional_val=(
+                builds(
+                    Hypersim, 
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    return_encoder_normalized_tgt="${model.return_encoder_normalized_tgt}",
+                    camera_trajectory_window=32,
+                    return_different_views=True,
+                    bbox_overlap_threshold=0.65,
+                    bbox_area_threshold=0.75,
+                    object_ignore_threshold=0.0,
+                    top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
+                    num_overlapping_masks=3,
+                    augmentation=builds(
+                        Augmentation,
+                        different_src_tgt_augmentation=False,
+                        enable_square_crop=True,
+                        center_crop=True,
+                        enable_random_resize_crop=False, 
+                        enable_horizontal_flip=False,
+                        enable_rand_augment=False,
+                        enable_rotate=False,
+                        src_random_scale_ratio=None,
+                        tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                        initial_resolution=512,
+                        src_resolution=None,
+                        tgt_resolution=None,
+                        src_transforms="${get_src_transform:model}",
+                        tgt_transforms="${get_tgt_transform:model}",
+                        populate_full_signature=True,
+                    )
+                ),
+            )
+        ),
+    )
+
+    mode_store(
+        name="run_sam_scannetpp", # To generate SAM masks
+        dataset=dict(
+            train=dict(
+                return_raw_dataset_image=True,
+                scenes_slice=(0, None, 4),
+                frames_slice=(0, None, 5),
+            ),
+            val=dict(
+                return_raw_dataset_image=True,
+                scenes_slice=(0, None, 4),
+                frames_slice=(0, None, 5),
+            )
+        ),
+    )
+
+    mode_store(
+        name="scannetpp_local_debug", # For local debugging
+        dataset=dict(
+            train=dict(
+                scenes_slice=(0, None, 4),
+                frames_slice=(0, None, 5),
+                use_segmentation=True,
+                return_encoder_normalized_tgt="${model.return_encoder_normalized_tgt}",
+                single_scene_debug=True,
+            ),
+            val=dict(
+                scenes_slice=(0, None, 4),
+                frames_slice=(0, None, 5),
+                use_segmentation=True,
+                return_encoder_normalized_tgt="${model.return_encoder_normalized_tgt}",
+                single_scene_debug=True,
+            )
+        ),
+        model=dict(
+            return_encoder_normalized_tgt=False,
+            modulate_src_tokens_with_tgt_pose=True,
+        ),
     )

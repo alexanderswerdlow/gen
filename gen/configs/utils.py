@@ -1,7 +1,6 @@
 from functools import partial
 from typing import Any, Optional
-from hydra_zen import builds, store
-from hydra_zen import make_config, store
+from hydra_zen import builds, store, make_config
 from hydra_zen.wrapper import default_to_config
 from dataclasses import is_dataclass
 from omegaconf import OmegaConf
@@ -47,7 +46,6 @@ def store_child_config(cls: Any, group: str, parent: str, child: str, **kwargs):
 auto_store = store(group=lambda cfg: cfg.name)
 exp_store = partial(global_store, group="experiment")
 mode_store = partial(global_store, group="modes")
-
 
 def inherit_parent_args(cls):
     parent = cls.__bases__[0]  # Assuming first parent is the one we want to inherit args from

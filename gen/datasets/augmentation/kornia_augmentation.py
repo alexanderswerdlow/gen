@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, List
 
 import kornia.augmentation as K
+from tensordict import tensorclass
 import torch
 import torchvision.transforms.v2 as transforms
 from einops import rearrange
@@ -41,6 +42,16 @@ class Data:
     segmentation: Optional[torch.Tensor] = None
     grid: Optional[torch.Tensor] = None
     mask: Optional[torch.Tensor] = None
+    pad_mask: Optional[torch.Tensor] = None
+
+    def clone(self):
+        return Data(
+            image=self.image.clone() if self.image is not None else None,
+            segmentation=self.segmentation.clone() if self.segmentation is not None else None,
+            grid=self.grid.clone() if self.grid is not None else None,
+            mask=self.mask.clone() if self.mask is not None else None,
+            pad_mask=self.pad_mask.clone() if self.pad_mask is not None else None,
+        )
 
 class Augmentation:
     """
@@ -127,7 +138,7 @@ class Augmentation:
             log_warn(f"Target image is being resized to {self.tgt_transforms.transforms[0].size}")
         return self.src_transform is not None or self.tgt_transform is not None
 
-    def __call__(self, src_data, tgt_data):
+    def __call__(self, src_data, tgt_data, use_keypoints: bool = True, return_encoder_normalized_tgt: bool = False):
         assert src_data.image.shape == tgt_data.image.shape, f"Source and target image shapes do not match: {src_data.image.shape} != {tgt_data.image.shape}"
         initial_h, initial_w = src_data.image.shape[-2], src_data.image.shape[-1]
 
@@ -144,16 +155,19 @@ class Augmentation:
         if self.src_transform is not None:
             # When we augment the source we need to also augment the target
             src_params = self.src_transform.forward_parameters(batch_shape=src_data.image.shape)
-            src_data = process(aug=self.src_transform, params=src_params, input_data=src_data)
+            src_data = process(aug=self.src_transform, params=src_params, input_data=src_data, use_keypoints=use_keypoints)
             if self.different_src_tgt_augmentation is False:
-                tgt_data = process(aug=self.src_transform, params=src_params, input_data=tgt_data, return_grid=self.return_grid)
+                tgt_data = process(aug=self.src_transform, params=src_params, input_data=tgt_data, return_grid=self.return_grid, use_keypoints=use_keypoints)
 
         if self.different_src_tgt_augmentation and self.tgt_transform is not None:
             tgt_params = self.tgt_transform.forward_parameters(batch_shape=tgt_data.image.shape)
-            tgt_data = process(aug=self.tgt_transform, params=tgt_params, input_data=tgt_data, return_grid=self.return_grid)
-        
+            tgt_data = process(aug=self.tgt_transform, params=tgt_params, input_data=tgt_data, return_grid=self.return_grid, use_keypoints=use_keypoints)
 
         src_data = apply_normalization_transforms(src_data, self.src_transforms, initial_h, initial_w)
+
+        if return_encoder_normalized_tgt:
+            tgt_data_src_transform = apply_normalization_transforms(tgt_data.clone(), self.src_transforms, initial_h, initial_w)
+
         tgt_data = apply_normalization_transforms(tgt_data, self.tgt_transforms, initial_h, initial_w)
         
         try:
@@ -165,6 +179,9 @@ class Augmentation:
         if not self.return_grid:
             src_data.grid = None
             tgt_data.grid = None
+
+        if return_encoder_normalized_tgt:
+            tgt_data = (tgt_data, tgt_data_src_transform)
 
         return src_data, tgt_data
     
@@ -195,7 +212,6 @@ def reorder_segmentation(tensor):
     # Re-order segmentation channels (except background). This is because during cropping, large segmentation masks may no longer be in view.
     if tensor.is_floating_point():
         tensor = tensor.long()
-    
     try:
         unique, _, counts = tensor.unique(return_inverse=True, return_counts=True)
         _, indices_sorted = counts.sort(descending=True)
@@ -246,9 +262,7 @@ def apply_normalization_transforms(data: Data, normalization_transform, initial_
 
         data.image = normalization_transform(data.image)
 
-        # TODO: Ideally we should apply all transforms through Kornia.
-        # However, torchvision transforms are the defacto standard and this allows us to directly take the normalization from e.g., timm
-        # The below code applies the same transform to the segmentation mask (generally a resize and crop) and skips the normalization but is not ideal
+        # TODO: Ideally we should apply all transforms through Kornia. However, torchvision transforms are the defacto standard and this allows us to directly take the normalization from e.g., timm. The below code applies the same transform to the segmentation mask (generally a resize and crop) and skips the normalization but is not ideal
         if data.segmentation is not None:
             data.segmentation = apply_non_image_normalization_transforms(data.segmentation, normalization_transform).long()
         
@@ -300,14 +314,14 @@ def apply_non_image_normalization_transforms(tensor_, normalization_transform):
     tensor_ = tensor_ - 1
     return tensor_
 
-def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = False, params: Optional[List[Any]] = None, return_grid: bool = False, **kwargs):
+def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = False, params: Optional[List[Any]] = None, return_grid: bool = False, use_keypoints: bool = True, **kwargs):
     """
     Args:
         input_image: (B, C, H, W)
         input_segmentation_mask: (B, H, W)
     """
 
-    if return_grid: 
+    if return_grid or use_keypoints: 
         B, _, H, W = input_data.image.shape
         keypoints = get_keypoints(B, H, W)
         keypoints._data = keypoints._data.to(input_data.image.device)
@@ -320,9 +334,9 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
     output_data = Data()
     if input_data.segmentation is None and return_grid is False:
         output_data.image = aug(input_data.image, data_keys=["image"], params=params)
-    elif return_grid is False:
+    elif return_grid is False and use_keypoints is False:
         output_data.image, output_data.segmentation = aug(
-            input_data.image, input_data.segmentation, data_keys=["image", "image"], params=params
+            input_data.image, input_data.segmentation, data_keys=["image", "mask"], params=params
         )
     else:
         output_data.image, output_data.segmentation, output_keypoints = aug(
@@ -331,6 +345,8 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
 
     if return_grid:
         output_data.grid, output_data.mask = process_output_keypoints(output_keypoints, B, H, W, output_data.image.shape[-2], output_data.image.shape[-1])
+        
+    if use_keypoints:
         output_data.segmentation = process_output_segmentation(output_keypoints, output_data.segmentation, output_data.image.shape[-2], output_data.image.shape[-1], -1)
 
     if should_viz:

@@ -358,3 +358,28 @@ def token_rot_loss(cfg: BaseConfig, pred_data: TokenPredData, is_training: bool 
         ret["metric_rot_pred_quat_acc<0.05"] = (pred_loss < 0.05).float().cpu().sum() / pred_loss.shape[0]
 
     return ret
+
+
+def src_tgt_token_consistency_loss(
+    cfg: BaseConfig,
+    batch: InputData,
+    cond: ConditioningData,
+):
+    losses = []
+    for b in range(batch.bs):
+        if batch.has_global_instance_ids[b].item() is False: continue
+        src_valid = cond.mask_batch_idx == b
+        tgt_valid = cond.tgt_mask_batch_idx == b
+
+        src_loss_instance_idx = cond.mask_instance_idx[src_valid]
+        tgt_loss_instance_idx = cond.tgt_mask_instance_idx[tgt_valid]
+        shared_instance_ids, src_idx, tgt_idx = np.intersect1d(src_loss_instance_idx.cpu().numpy(), tgt_loss_instance_idx.cpu().numpy(), return_indices=True)
+        src_mask_tokens = cond.src_mask_tokens[src_valid][src_idx]
+        tgt_mask_tokens = cond.tgt_mask_tokens[tgt_valid][tgt_idx]
+        loss = F.mse_loss(src_mask_tokens, tgt_mask_tokens, reduction="mean")
+        losses.append(loss)
+        
+    avg_loss = torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=batch.device, requires_grad=True)
+    return {
+        "src_tgt_consistency_loss": avg_loss * cfg.model.src_tgt_consistency_loss_weight,
+    }

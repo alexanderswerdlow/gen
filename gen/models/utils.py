@@ -134,6 +134,38 @@ class FourierPositionalEncodingNDims(nn.Module):
         v = v.T  # (bs,dim)
         return v
 
+class FourierEmbedding(nn.Module):
+    def __init__(self, in_channels, N_freqs, logscale=True):
+        """
+        Defines a function that embeds x to (x, sin(2^k x), cos(2^k x), ...)
+        in_channels: number of input channels
+        """
+        super(FourierEmbedding, self).__init__()
+        self.N_freqs = N_freqs
+        self.in_channels = in_channels
+        self.funcs = [torch.sin, torch.cos]
+        self.out_channels = in_channels*(len(self.funcs)*N_freqs+1)
+
+        if logscale:
+            self.freq_bands = 2**torch.linspace(0, N_freqs-1, N_freqs)
+        else:
+            self.freq_bands = torch.linspace(1, 2**(N_freqs-1), N_freqs)
+
+    def forward(self, x):
+        """
+        Embeds x to (x, sin(2^k x), cos(2^k x), ...) 
+        Inputs:
+            x: (B, self.in_channels)
+
+        Outputs:
+            out: (B, self.out_channels)
+        """
+        out = [x]
+        for freq in self.freq_bands:
+            for func in self.funcs:
+                out += [func(freq*x)]
+
+        return torch.cat(out, -1)
 
 def find_true_indices_batched(original, dh, dw):
     # Get dimensions

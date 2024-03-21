@@ -26,7 +26,7 @@ from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.run_dataloader import MockTokenizer
 from gen.utils.data_defs import visualize_input_data
 from gen.utils.decoupled_utils import breakpoint_on_error, hash_str_as_int, set_global_breakpoint
-from gen.utils.logging_utils import log_error, log_warn
+from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.tokenization_utils import get_tokens
 
 torchvision.disable_beta_transforms_warning()
@@ -49,6 +49,8 @@ class Hypersim(AbstractDataset, Dataset):
             camera_trajectory_window: int = 24,
             bbox_overlap_threshold: float = 0.65,
             bbox_area_threshold: float = 0.75,
+            num_overlapping_masks: int = 1,
+            return_encoder_normalized_tgt: bool = False,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
             num_objects=None,
             resolution=None,
@@ -67,7 +69,6 @@ class Hypersim(AbstractDataset, Dataset):
             use_preprocessed_masks=None, # TODO: Needed for hydra
             preprocessed_mask_type=None, # TODO: Needed for hydra
             erode_dialate_preprocessed_masks=None, # TODO: Needed for hydra
-            num_overlapping_masks=None, # TODO: Needed for hydra
             **kwargs
         ):
 
@@ -80,6 +81,9 @@ class Hypersim(AbstractDataset, Dataset):
         self.camera_trajectory_window = camera_trajectory_window
         self.bbox_overlap_threshold = bbox_overlap_threshold
         self.bbox_area_threshold = bbox_area_threshold
+        self.num_overlapping_masks = num_overlapping_masks
+        self.return_encoder_normalized_tgt = return_encoder_normalized_tgt
+        self.root = root
 
         self.hypersim = ModifiedHypersim(
             dataset_path=root,
@@ -95,6 +99,7 @@ class Hypersim(AbstractDataset, Dataset):
             self.scene_cam_map[key].append((idx, camera_frame))
 
         self.camera_trajectory_extents = pickle.load(open(root / 'extents.pkl', "rb"))
+        log_info(f"Loaded {len(self.hypersim)} frames from hypersim dataset with root: {self.root}", main_process_only=False)
     
     def __len__(self):
         return len(self.hypersim)
@@ -104,6 +109,8 @@ class Hypersim(AbstractDataset, Dataset):
     
     def __getitem__(self, index):
         if self.return_different_views:
+            assert self.augmentation.reorder_segmentation is False
+            assert self.augmentation.return_grid is False
             camera_trajectory_frames = self.scene_cam_map[self.hypersim._load_identifier(index)[:2]]
             window_size = min(max(1, self.camera_trajectory_window), len(camera_trajectory_frames))
 
@@ -148,30 +155,37 @@ class Hypersim(AbstractDataset, Dataset):
         src_data, tgt_data = self.augmentation(
             src_data=Data(image=rgb, segmentation=seg),
             tgt_data=Data(image=rgb, segmentation=seg),
+            use_keypoints=False, 
+            return_encoder_normalized_tgt=self.return_encoder_normalized_tgt
         )
 
-        src_data.image = src_data.image.squeeze(0)
-        src_data.segmentation = rearrange(src_data.segmentation, "() c h w -> h w c")
-        tgt_data.image = tgt_data.image.squeeze(0)
-        tgt_data.segmentation = rearrange(tgt_data.segmentation, "() c h w -> h w c")
+        if self.return_encoder_normalized_tgt:
+            tgt_data, tgt_data_src_transform = tgt_data
 
-        src_data.segmentation[src_data.segmentation >= self.top_n_masks_only] = 0
-        tgt_data.segmentation[tgt_data.segmentation >= self.top_n_masks_only] = 0
+        def process_data(data_: Data):
+            data_.image = data_.image.squeeze(0)
+            data_.segmentation = rearrange(data_.segmentation, "() c h w -> h w c")
+            data_.segmentation[data_.segmentation >= self.top_n_masks_only] = 0
+            assert data_.segmentation.max() < 255
+            data_.segmentation[data_.segmentation == -1] = 255
+            data_.segmentation = torch.cat([data_.segmentation, data_.segmentation.new_full((*data_.segmentation.shape[:-1], self.num_overlapping_masks - 1), 255)], dim=-1)
+            data_.pad_mask = ~(data_.segmentation < 255).any(dim=-1)
+            return data_
+        
+        src_data = process_data(src_data)
+        tgt_data = process_data(tgt_data)
 
-        assert tgt_data.segmentation.max() < 255 and src_data.segmentation.max() < 255
-        src_data.segmentation[src_data.segmentation == -1] = 255
-        tgt_data.segmentation[tgt_data.segmentation == -1] = 255
-        src_pad_mask = ~(src_data.segmentation < 255).any(dim=-1)
-        tgt_pad_mask = ~(tgt_data.segmentation < 255).any(dim=-1)
+        if self.return_encoder_normalized_tgt:
+            tgt_data_src_transform = process_data(tgt_data_src_transform)
+            ret.update({
+                "tgt_enc_norm_pixel_values": tgt_data_src_transform.image,
+                "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8),
+            })
 
         pixels = src_data.segmentation.long().contiguous().view(-1)
         pixels = pixels[(pixels < 255) & (pixels >= 0)]
         src_bincount = torch.bincount(pixels, minlength=self.top_n_masks_only + 1)
         valid = src_bincount > 0
-
-        # We convert to uint8 to save memory.
-        src_data.segmentation = src_data.segmentation.to(torch.uint8)
-        tgt_data.segmentation = tgt_data.segmentation.to(torch.uint8)
 
         name = "_".join(metadata)
 
@@ -179,30 +193,33 @@ class Hypersim(AbstractDataset, Dataset):
         rot = R.from_quat((extrinsics['quat_x'], extrinsics['quat_y'], extrinsics['quat_z'], extrinsics['quat_w']))
 
         # Normalize translation
-        camera_trajectory_extent = self.camera_trajectory_extents[(metadata[0], metadata[1])]
-        T = torch.tensor([extrinsics['x'], extrinsics['y'], extrinsics['z']]).view(3, 1) / (camera_trajectory_extent * 50)
+        # camera_trajectory_extent = self.camera_trajectory_extents[(metadata[0], metadata[1])]
+        T = torch.tensor([extrinsics['x'], extrinsics['y'], extrinsics['z']]).view(3, 1) / 50
         
         RT = torch.cat((torch.from_numpy(rot.as_matrix()), T), dim=1)
         RT = torch.cat((RT, torch.tensor([[0, 0, 0, 1]])), dim=0)
-        
+
         ret.update({
-            "tgt_pad_mask": tgt_pad_mask,
+            "tgt_pad_mask": tgt_data.pad_mask,
             "tgt_pixel_values": tgt_data.image,
-            "tgt_segmentation": tgt_data.segmentation,
-            "src_pad_mask": src_pad_mask,
+            "tgt_segmentation": tgt_data.segmentation.to(torch.uint8),
+            "src_pad_mask": src_data.pad_mask,
             "src_pixel_values": src_data.image,
-            "src_segmentation": src_data.segmentation,
+            "src_segmentation": src_data.segmentation.to(torch.uint8),
             "src_pose": RT,
             "tgt_pose": RT,
             "input_ids": get_tokens(self.tokenizer),
             "valid": valid[..., 1:],
             "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
+            "has_global_instance_ids": torch.tensor(True),
             "metadata": {
+                "dataset": "hypersim",
                 "name": name,
                 "scene_id": metadata[0],
-                "camera_trajectory": metadata[1],
                 "camera_frame": metadata[2],
                 "index": index,
+                "camera_trajectory": metadata[1],
+                "frame_idxs": (0, 0) # Dummy value
             },
         })
 
@@ -283,6 +300,7 @@ def main():
     from image_utils import library_ops
     from gen.datasets.utils import get_stable_diffusion_transforms
     soda_augmentation=Augmentation(
+        return_grid=False,
         enable_square_crop=True,
         center_crop=False,
         different_src_tgt_augmentation=True,
@@ -294,13 +312,13 @@ def main():
         enable_rotate=True,
         src_transforms=get_stable_diffusion_transforms(resolution=512),
         tgt_transforms=get_stable_diffusion_transforms(resolution=512),
-        reorder_segmentation=True
+        reorder_segmentation=False
     )
     dataset = Hypersim(
         shuffle=True,
         cfg=None,
         split=Split.TRAIN,
-        num_workers=0,
+        num_workers=2,
         batch_size=32,
         tokenizer=MockTokenizer(),
         augmentation=soda_augmentation,
@@ -316,9 +334,10 @@ def main():
     for step, batch in enumerate(dataloader):
         print(f'Time taken: {time.time() - start_time}')
         names = [f'{batch.metadata["scene_id"][i]}_{batch.metadata["camera_trajectory"][i]}_{batch.metadata["camera_frame"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
-        visualize_input_data(batch, names=names, show_overlapping_masks=True)
+        # visualize_input_data(batch, names=names, show_overlapping_masks=True)
         start_time = time.time()
-        if step > 100:
+        print(batch.src_pose[:, :3, 3].min(), batch.src_pose[:, :3, 3].max())
+        if step > 20:
             break
       
 if __name__ == "__main__":

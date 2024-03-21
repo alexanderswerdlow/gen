@@ -26,17 +26,22 @@ model_urls = {
     "vit_h": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
 }
 
+def get_sam_model(model_type):
+    return sam_model_registry[model_type](checkpoint=load_checkpoint_from_url(model_urls[model_type]))
+
 class HQSam(nn.Module):
     def __init__(
             self,
             model_type = "vit_b",
+            points_per_side: int = 24,
             **kwargs
         ):
         super().__init__()
-        self.sam = sam_model_registry[model_type](checkpoint=load_checkpoint_from_url(model_urls[model_type]))
+        self.sam = get_sam_model(model_type)
         self.mask_generator = SamAutomaticMaskGenerator(
             model=self.sam,
-            points_per_side=24
+            points_per_side=points_per_side,
+            **kwargs
         )
 
     def forward(self, image):

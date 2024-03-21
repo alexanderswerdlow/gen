@@ -14,6 +14,7 @@ from gen.datasets.hypersim.hypersim import Hypersim
 from gen.datasets.imagenet_dataset import ImageNetCustomDataset
 from gen.datasets.kubrics.movi_dataset import MoviDataset
 from gen.datasets.objaverse.objaverse import ObjaverseData
+from gen.datasets.scannetpp.scannetpp import ScannetppIphoneDataset
 
 
 @dataclass
@@ -24,7 +25,8 @@ class DatasetConfig:
     num_validation_images: int = 2
     overfit: bool = False
     reset_val_dataset_every_epoch: bool = False
-
+    additional_train: Optional[list[AbstractDataset]] = None
+    additional_val: Optional[list[AbstractDataset]] = None
 
 @dataclass
 class HuggingFaceControlNetConfig(DatasetConfig):
@@ -137,6 +139,18 @@ auto_store(DatasetConfig,
         augmentation=augmentation,
     ), 
     name="hypersim"
+)
+
+auto_store(DatasetConfig, 
+    train=get_dataset(
+        ScannetppIphoneDataset,
+        augmentation=augmentation,
+    ), 
+    val=get_dataset(
+        ScannetppIphoneDataset,
+        augmentation=augmentation,
+    ), 
+    name="scannetpp"
 )
 
 store_child_config(DatasetConfig, "dataset", "coco_panoptic", "coco_panoptic_test")
@@ -539,9 +553,14 @@ def get_datasets():  # TODO: These do not need to be global configs
     )
 
     mode_store(
-        name="scannetpp_multiview",
+        name="scannetpp_multiview_dataset",
+        model=dict(
+            segmentation_map_size=36,
+        ),
         dataset=dict(
             train=dict(
+                image_pairs_per_scene=16384,
+                top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
                 augmentation=dict(
                     different_src_tgt_augmentation=False,
                     enable_square_crop=True,
@@ -555,6 +574,8 @@ def get_datasets():  # TODO: These do not need to be global configs
                 )
             ),
             val=dict(
+                image_pairs_per_scene=16384,
+                top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
                 augmentation=dict(
                     different_src_tgt_augmentation=False,
                     enable_square_crop=True,
@@ -568,5 +589,9 @@ def get_datasets():  # TODO: These do not need to be global configs
                 )
             ),
         ),
+        hydra_defaults=[
+            "_self_",
+            {"override /dataset": "scannetpp"},
+        ],
     )
 

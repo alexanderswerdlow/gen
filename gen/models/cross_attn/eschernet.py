@@ -40,7 +40,6 @@ def cape_embed_4dof(p1, p2, qq, kk):
 
     return q, k
 
-import einops
 def cape_embed_6dof(f, P):
     # f is feature vector of shape [..., d]
     # P is 4x4 transformation matrix

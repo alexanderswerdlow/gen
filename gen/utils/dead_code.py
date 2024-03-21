@@ -709,3 +709,24 @@ import antigravity
     #     ),
     #     hydra_defaults=["coco_recon_only", "sam_coco_masks", {"override /model": "basemapper_vit_extra_channels"}],
     # )
+        # if self.depth_map:
+        #     depth_map_path = (data_dict["path_target"].replace("rgb", "depth").replace("jpg", "png"))
+        #     depth_map = Image.open(depth_map_path)
+        #     h, w = depth_map.size
+        #     depth_map = torchvision.transforms.CenterCrop(min(h, w))(depth_map) # ensure that the depth image corresponds to the target image
+        #     depth_map = torchvision.transforms.ToTensor()(depth_map)
+        #     ret["depth_map"] = depth_map.float()
+    # def read_depth_map(self, depth_map_path: str) -> torch.Tensor:
+    #     depth_map = cv2.imread(depth_map_path, cv2.IMREAD_ANYDEPTH) # make sure to read the image as 16 bit
+    #     depth_map = depth_map.astype(np.int16) # convert to int16, hacky, but depth shouldn't exceed 32.767 m
+
+    # #     return torch.from_numpy(depth_map).unsqueeze(0).float()
+    #     if False:
+    #         from image_utils import Im
+    #         src_seg_viz = onehot_to_color(integer_to_one_hot(src_seg.to(torch.uint8).permute(0, 2, 3, 1))[0])
+    #         tgt_seg_viz = onehot_to_color(integer_to_one_hot(tgt_seg.to(torch.uint8).permute(0, 2, 3, 1))[0])
+    #         Im.concat_horizontal(
+    #             Im.concat_vertical(src_img, src_seg_viz),
+    #             Im.concat_vertical(tgt_img, tgt_seg_viz)
+    #         ).save(str(idx))
+                        # seg = seg.to(torch.uint8).argmax(dim=0)[None, None].to(torch.uint8)

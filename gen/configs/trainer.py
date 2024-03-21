@@ -1,3 +1,6 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING, Any, Optional, Type
+
 from dataclasses import dataclass
 from typing import Any, ClassVar, Optional
 
@@ -9,8 +12,13 @@ import torch
 from torch.optim import Optimizer
 from importlib.util import find_spec
 
+if TYPE_CHECKING:
+    from train import Trainer
+    from gen.models.cross_attn.base_trainer import BaseTrainer
+
 @dataclass
 class TrainerConfig:
+    trainer_cls: str = "gen.models.cross_attn.base_trainer.BaseTrainer"
     name: ClassVar[str] = "trainer"
     log_with: Optional[LoggerType] = LoggerType.WANDB
     tracker_project_name: str = "controlnet"  # wandb project name
@@ -83,6 +91,7 @@ class TrainerConfig:
     cudnn_benchmark: bool = True
     inference_train_switch: bool = True
     init_pipeline_inference: bool = True
+    backward_pass: bool = True
 
     # Set in code
     num_gpus: Optional[int] = None

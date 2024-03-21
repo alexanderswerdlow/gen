@@ -1,3 +1,4 @@
+import importlib
 import autoroot
 import os
 import pickle
@@ -25,8 +26,7 @@ from image_utils import library_ops  # This overrides repr() for tensors
 from omegaconf import OmegaConf, open_dict
 
 from gen.configs.base import BaseConfig
-from gen.datasets.run_dataloader import iterate_dataloader
-from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint, set_timing_builtins
+from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint, set_global_exists, set_timing_builtins
 from gen.utils.logging_utils import log_error, log_info, log_warn, set_log_file, set_logger
 from inference import inference
 from train import Trainer
@@ -36,6 +36,7 @@ check_min_version("0.25.0")
 os.environ["HYDRA_FULL_ERROR"] = "1"
 
 set_global_breakpoint()  # Overrides breakpoint() to use ipdb.set_trace() instead and handle distributed training
+set_global_exists()
 set_logger(__name__)
 
 
@@ -249,7 +250,9 @@ def main(cfg: BaseConfig):
         elif cfg.run_dataloader_only:
             hydra.utils.instantiate(cfg.inference.dataloader_only_func)(cfg, accelerator)
         else:
-            train = Trainer(cfg=cfg, accelerator=accelerator)
+            module_name, class_name = cfg.trainer.trainer_cls.rsplit(".", 1)
+            trainer_cls = getattr(importlib.import_module(module_name), class_name)
+            train = trainer_cls(cfg=cfg, accelerator=accelerator)
             train.train()
 
     except Exception as e:

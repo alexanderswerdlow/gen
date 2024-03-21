@@ -13,7 +13,7 @@ from gen.models.act3d.position_encodings import RotaryPositionEncoding3D
 from gen.models.cross_attn.losses import get_relative_rot_data
 from gen.models.cross_attn.rotation_decoder import SelfAttentionTransformer
 
-from gen.models.utils import _init_weights
+from gen.models.utils import FourierEmbedding, _init_weights
 from gen.utils.logging_utils import log_info
 from gen.models.cross_attn.decoder import create_mlp_cls
 from jaxtyping import Bool, Float, Integer
@@ -318,6 +318,19 @@ class FeatureMapper(nn.Module):
                 nn.Linear(self.cfg.model.token_embedding_dim // (self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries), self.cfg.model.token_embedding_dim),
                 nn.LayerNorm(self.cfg.model.token_embedding_dim),
             )
+
+        if self.cfg.model.modulate_src_tokens_with_tgt_pose:
+            self.token_modulator_input_dim = self.cfg.model.token_embedding_dim * self.cfg.model.num_layer_queries
+            self.token_modulator = hydra.utils.instantiate(
+                self.cfg.model.token_modulator,
+                _recursive_=False,
+                embed_dim=self.token_modulator_input_dim,
+                use_flash_attn=self.cfg.trainer.mixed_precision != "no",
+            )
+
+            in_channels = 16
+            n_freqs = ((self.token_modulator_input_dim - in_channels) // 4) // in_channels
+            self.camera_embed = FourierEmbedding(in_channels=in_channels, N_freqs=n_freqs)
 
         if self.cfg.model.feature_map_keys is not None:
             self.position_embedding = nn.Parameter(torch.randn(len(self.cfg.model.feature_map_keys), self.cfg.model.encoder_dim) * 0.02)  #

@@ -47,4 +47,4 @@ if SCRATCH_HYPERSIM_PATH.exists():
     log_info(f"Using scratch hypersim path: {HYPERSIM_DATASET_PATH}")
 
 SCANNETPP_DATASET_PATH =  Path(os.getenv("SCANNETPP_DATASET_PATH", "/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data"))
-SCANNETPP_CUSTOM_DATA_PATH =  Path(os.getenv("SCANNETPP_DATASET_PATH", "/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom"))
+SCANNETPP_CUSTOM_DATA_PATH =  Path(os.getenv("SCANNETPP_CUSTOM_DATA_PATH", "/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom"))

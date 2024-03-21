@@ -3,3 +3,5 @@ from gen.utils.decoupled_utils import start_timing as start_timing
 from gen.utils.decoupled_utils import end_timing as end_timing
 ENABLE_TIMING: bool
 ENABLE_TIMING_SYNC: bool
+
+exists = lambda v: v is not None

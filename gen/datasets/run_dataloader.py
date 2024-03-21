@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import hydra
 import torch
 from accelerate import Accelerator
+from hydra.utils import instantiate
 from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -33,8 +34,10 @@ def coco_colormap_viz(batch: InputData):
     pass
 
 def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
-    cfg.dataset.train.num_workers = 0
-    cfg.dataset.val.num_workers = 0
+    exit: Optional[int] = 100
+
+    cfg.dataset.train.num_workers = 4
+    cfg.dataset.val.num_workers = 4
 
     cfg.dataset.train.return_tensorclass = True
     cfg.dataset.val.return_tensorclass = True
@@ -54,14 +57,21 @@ def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
     train: AbstractDataset = hydra.utils.instantiate(cfg.dataset.train, _recursive_=True)(
         cfg=cfg, split=Split.TRAIN, tokenizer=MockTokenizer()
     )
-    val: AbstractDataset = hydra.utils.instantiate(cfg.dataset.train, _recursive_=True)(
-        cfg=cfg, split=Split.VALIDATION, tokenizer=MockTokenizer()
-    )
+
+    additional_train_datasets = None
+    if exists(cfg.dataset.additional_train):
+        additional_train_datasets = [instantiate(dataset_cfg)(cfg=cfg, split=Split.TRAIN, tokenizer=MockTokenizer()) for dataset_cfg in cfg.dataset.additional_train]
+
     dataset = train
-    dataloader = dataset.get_dataloader(generator=g)
+    dataloader = dataset.get_dataloader(generator=g, additional_datasets=additional_train_datasets)
 
     batch: InputData
     for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
-        names = [f'{batch.metadata["name"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
-        visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False, cfg=cfg)
-        breakpoint()
+        pass
+        # names = [f'{batch.metadata["dataset"][i]}_{batch.metadata["name"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
+        # visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False, cfg=cfg)
+        # print(batch.metadata['dataset'])
+        # print(batch.src_pose[:, :3, 3].min(), batch.src_pose[:, :3, 3].max())
+        # print('')
+
+        # if exit is not None and i >= exit: break

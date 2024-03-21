@@ -1,11 +1,10 @@
 import dataclasses
 import gc
 import math
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from functools import cached_property
-from importlib import metadata
 from pathlib import Path
-from typing import Any, Optional, TypedDict, Union
+from typing import Any, Optional, Union
 
 import einops
 import hydra
@@ -14,13 +13,11 @@ import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
 from accelerate import Accelerator
-from beartype import beartype
 from einx import add, rearrange, where
 from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
 from peft import LoraConfig
 from scipy.spatial.transform import Rotation as R
-from tensordict import tensorclass
 from torch import Tensor
 from transformers import AutoTokenizer, CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
@@ -34,12 +31,12 @@ from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
 from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale,
                                                       shift_scale_uncond_hidden_states)
-from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, get_gt_rot,
+from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, get_gt_rot, src_tgt_token_consistency_loss,
                                           token_cls_loss, token_rot_loss)
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
-from gen.utils.data_defs import InputData, get_dropout_grid, get_one_hot_channels, get_tgt_grid, integer_to_one_hot
+from gen.utils.data_defs import InputData, get_dropout_grid, get_one_hot_channels, get_tgt_grid
 from gen.utils.decoupled_utils import get_modules
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_debug, log_info, log_warn
@@ -61,6 +58,12 @@ class ConditioningData:
     input_prompt: Optional[list[str]] = None
     learnable_idxs: Optional[Any] = None
     batch_attn_masks: Optional[Float[Tensor, "b hw hw"]] = None
+    
+    src_mask_tokens: Optional[Float[Tensor, "n d"]] = None # We duplicate for loss calculation
+    tgt_mask_tokens: Optional[Float[Tensor, "n d"]] = None
+    tgt_mask_batch_idx: Optional[Integer[Tensor, "n"]] = None
+    tgt_mask_instance_idx: Optional[Integer[Tensor, "n"]] = None
+    tgt_mask_dropout: Optional[Bool[Tensor, "n"]] = None
 
     # These are passed to the U-Net or pipeline
     encoder_hidden_states: Optional[Float[Tensor, "b d"]] = None
@@ -171,9 +174,11 @@ class BaseMapper(Trainable):
             beta_schedule="squaredcos_cap_v2",
             prediction_type=self.cfg.model.rotation_diffusion_parameterization,
         )
-        self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
-            tokenizer_encoder_name, subfolder="text_encoder", revision=self.cfg.model.revision
-        )
+
+        if self.cfg.model.add_text_tokens:
+            self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
+                tokenizer_encoder_name, subfolder="text_encoder", revision=self.cfg.model.revision
+            )
         
 
         unet_kwargs = dict()
@@ -234,7 +239,7 @@ class BaseMapper(Trainable):
             self.unet.enable_gradient_checkpointing()
             if self.cfg.model.controlnet:
                 self.controlnet.enable_gradient_checkpointing()
-            if self.cfg.model.freeze_text_encoder is False:
+            if self.cfg.model.freeze_text_encoder is False and self.cfg.model.add_text_tokens:
                 self.text_encoder.gradient_checkpointing_enable()
             
         if self.cfg.model.break_a_scene_cross_attn_loss:
@@ -347,19 +352,20 @@ class BaseMapper(Trainable):
                     m.fuser.to(dtype=torch.float32)
                 m.fuser.train()
 
-        if md.freeze_text_encoder:
-            if set_grad:
-                other.text_encoder.to(device=_device, dtype=_dtype)
-                other.text_encoder.requires_grad_(False)
-            other.text_encoder.eval()
-        else:
-            if set_grad:
-                other.text_encoder.requires_grad_(True)
-            if set_grad and md.freeze_text_encoder_except_token_embeddings:
-                other.text_encoder.text_model.encoder.requires_grad_(False)
-                other.text_encoder.text_model.final_layer_norm.requires_grad_(False)
-                other.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
-            other.text_encoder.train()
+        if md.add_text_tokens:
+            if md.freeze_text_encoder:
+                if set_grad:
+                    other.text_encoder.to(device=_device, dtype=_dtype)
+                    other.text_encoder.requires_grad_(False)
+                other.text_encoder.eval()
+            else:
+                if set_grad:
+                    other.text_encoder.requires_grad_(True)
+                if set_grad and md.freeze_text_encoder_except_token_embeddings:
+                    other.text_encoder.text_model.encoder.requires_grad_(False)
+                    other.text_encoder.text_model.final_layer_norm.requires_grad_(False)
+                    other.text_encoder.text_model.embeddings.position_embedding.requires_grad_(False)
+                other.text_encoder.train()
 
         if md.mask_token_conditioning:
             if md.freeze_mapper:
@@ -774,7 +780,7 @@ class BaseMapper(Trainable):
         num_queries_per_mask = self.cfg.model.num_layer_queries if self.cfg.model.per_layer_queries else 1
         num_feature_maps = clip_feature_map.shape[1]
         seqlens_k = feature_map_masks.sum(dim=-1) * num_feature_maps  # We sum the number of valid "pixels" in each mask
-        seqlens_k = einops.repeat(seqlens_k, 'b -> (b layers)', layers=num_queries_per_mask)
+        seqlens_k = einops.repeat(seqlens_k, 'masks -> (masks layers)', layers=num_queries_per_mask)
 
         assert round(math.sqrt(clip_feature_map.shape[-2])) == latent_dim
 
@@ -801,23 +807,42 @@ class BaseMapper(Trainable):
             forward_shift_scale(self, cond, clip_feature_map, latent_dim)
 
         return cond
+    
+    def get_input_for_batched_src_tgt(self, batch: InputData):
+        src_batch = batch.clone()
+        tgt_batch = batch.clone()
+
+        tgt_batch.src_pixel_values = tgt_batch.tgt_enc_norm_pixel_values
+        tgt_batch.src_segmentation = tgt_batch.tgt_enc_norm_segmentation
+
+        src_batch.tgt_enc_norm_pixel_values = None
+        src_batch.tgt_enc_norm_segmentation = None
+        tgt_batch.tgt_enc_norm_pixel_values = None
+        tgt_batch.tgt_enc_norm_segmentation = None
+
+        input_batch = torch.cat((src_batch, tgt_batch), dim=0)
+        input_batch.bs = batch.bs * 2
+        return input_batch
 
     def compute_mask_tokens(self, batch: InputData, cond: ConditioningData):
         """
         Generates mask tokens by adding segmentation if necessary, then setting up and calling the cross attention module
         """
         batch = self.check_add_segmentation(batch)
-        cond = self.add_cross_attn_params(batch, cond)
+        if self.cfg.model.return_encoder_normalized_tgt:
+            input_batch = self.get_input_for_batched_src_tgt(batch)
+        else:
+            input_batch = batch
+        
+        cond = self.add_cross_attn_params(input_batch, cond)
 
         orig_queries = einops.repeat(self.mapper.learnable_token, "layers d -> (masks layers) d", masks=cond.mask_batch_idx.shape[0])
         x_kv_orig = cond.attn_dict["x_kv"].clone()
 
-        # if self.cfg.model.unet:
         queries = orig_queries.clone()
         cond.attn_dict["x"] = queries.to(self.dtype)
         cond.attn_dict["x_kv"] = x_kv_orig
         cond.mask_tokens = self.mapper.cross_attn(cond).to(self.dtype)
-
         
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             if self.cfg.model.detach_features_before_cross_attn:
@@ -828,11 +853,53 @@ class BaseMapper(Trainable):
                 cond.mask_head_tokens = cond.mask_tokens
 
         if self.cfg.model.per_layer_queries: # Break e.g., 1024 -> 16 x 64
-            if cond.mask_tokens is not None: 
+            if cond.mask_tokens is not None:
                 cond.mask_tokens = einops.rearrange(cond.mask_tokens, "(masks layers) d -> masks (layers d)", masks=cond.mask_batch_idx.shape[0])
 
             if cond.mask_head_tokens is not None:
                 cond.mask_head_tokens = einops.rearrange(cond.mask_head_tokens, "(masks layers) d -> masks (layers d)", masks=cond.mask_batch_idx.shape[0])
+
+        if self.cfg.model.return_encoder_normalized_tgt:
+           cond.attn_dict = None
+           token_mask = cond.mask_batch_idx < batch.bs
+           tgt_token_mask = cond.mask_batch_idx >= batch.bs
+
+           cond.tgt_mask_tokens = cond.mask_tokens[tgt_token_mask]
+           cond.tgt_mask_batch_idx = cond.mask_batch_idx[tgt_token_mask] - batch.bs
+           cond.tgt_mask_instance_idx = cond.mask_instance_idx[tgt_token_mask]
+           cond.tgt_mask_dropout = cond.mask_dropout[torch.arange(cond.mask_dropout.shape[0], device=self.device) >= batch.bs]
+
+           cond.mask_tokens = cond.mask_tokens[token_mask]
+           cond.mask_batch_idx = cond.mask_batch_idx[token_mask]
+           cond.mask_instance_idx = cond.mask_instance_idx[token_mask]
+           cond.mask_dropout = cond.mask_dropout[torch.arange(cond.mask_dropout.shape[0], device=self.device) < batch.bs]
+
+           cond.src_mask_tokens = cond.mask_tokens.clone()
+               
+        if self.cfg.model.modulate_src_tokens_with_tgt_pose:
+            batch_size = cond.mask_batch_idx.max().item() + 1  
+            hidden_dim = cond.mask_tokens.shape[1]
+
+            register_tokens = self.mapper.camera_embed(batch.tgt_pose.view(batch.bs, -1).to(self.dtype)).unsqueeze(1)
+            register_tokens = torch.cat((register_tokens, register_tokens.new_zeros((*register_tokens.shape[:-1], hidden_dim - register_tokens.shape[-1]))), dim=-1)
+
+            seq_lengths = torch.bincount(cond.mask_batch_idx)
+            cu_seqlens = torch.cumsum(seq_lengths, dim=0)  
+            cu_seqlens = torch.cat([torch.zeros(1, dtype=cu_seqlens.dtype, device=cu_seqlens.device), cu_seqlens])
+
+            max_seqlen = seq_lengths.max().item()  
+            split_tokens = torch.split(cond.mask_tokens, seq_lengths.tolist())  
+            new_tokens = [torch.cat([tokens, register_tokens[i]], dim=0) for i, tokens in enumerate(split_tokens)]
+
+            new_cond_mask_tokens = torch.cat(new_tokens, dim=0)  
+            new_cu_seqlens = cu_seqlens + torch.arange(batch_size + 1, device=cu_seqlens.device)  
+            new_max_seqlen = max_seqlen + 1
+
+            output = self.mapper.token_modulator(x=new_cond_mask_tokens, mixer_kwargs={'cu_seqlens': new_cu_seqlens.to(torch.int32), 'max_seqlen': new_max_seqlen})
+
+            split_tokens = torch.split(output, (seq_lengths + 1).tolist(), dim=0)
+            new_tokens = [tokens[:-1] for i, tokens in enumerate(split_tokens)]
+            cond.mask_tokens = torch.cat(new_tokens, dim=0)
         
         if self.cfg.model.layer_specialization and self.cfg.model.num_conditioning_pairs != self.cfg.model.num_layer_queries: # Break e.g., 1024 -> 16 x 64
             if cond.mask_tokens is not None:
@@ -855,39 +922,36 @@ class BaseMapper(Trainable):
         bs = batch.input_ids.shape[0]
 
         if self.cfg.model.layer_specialization:
-            cond.encoder_hidden_states = rearrange("b t d -> b t (n d)", cond.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
+            cond.encoder_hidden_states = rearrange("b tokens d -> b tokens (n d)", cond.encoder_hidden_states, n=self.cfg.model.num_conditioning_pairs)
 
-        batch.formatted_input_ids = batch.input_ids.clone()
-        for b in range(bs):
-            cur_ids = batch.input_ids[b]
-            token_is_padding = (cur_ids == self.pad_token_id).nonzero()  # Everything after EOS token should also be a pad token
-            assert (token_is_padding.shape[0] == (batch.input_ids.shape[1] - token_is_padding[0])).item()
+        if self.cfg.model.add_text_tokens:
+            batch.formatted_input_ids = batch.input_ids.clone()
+            for b in range(bs):
+                cur_ids = batch.input_ids[b]
+                token_is_padding = (cur_ids == self.pad_token_id).nonzero()  # Everything after EOS token should also be a pad token
+                assert (token_is_padding.shape[0] == (batch.input_ids.shape[1] - token_is_padding[0])).item()
 
-            mask_part_of_batch = (cond.mask_batch_idx == b).nonzero().squeeze(1)  # Figure out which masks we need to add
-            masks_prompt = torch.tensor(self.mask_tokens_ids * mask_part_of_batch.shape[0])[:-1].to(self.device)
-            assert token_is_padding.shape[0] >= masks_prompt.shape[0]  # We need at least as many pad tokens as we have masks
+                mask_part_of_batch = (cond.mask_batch_idx == b).nonzero().squeeze(1)  # Figure out which masks we need to add
+                masks_prompt = torch.tensor(self.mask_tokens_ids * mask_part_of_batch.shape[0])[:-1].to(self.device)
+                assert token_is_padding.shape[0] >= masks_prompt.shape[0]  # We need at least as many pad tokens as we have masks
 
-            # We take everything before the placeholder token and combine it with "placeholder_token and placeholder_token and ..."
-            # We then add the rest of the sentence on (including the EOS token and padding tokens)
-            placeholder_locs = (cur_ids == self.placeholder_token_id).nonzero()
-            assert placeholder_locs.shape[0] == 1  # We should only have one placeholder token
-            start_of_prompt = cur_ids[: placeholder_locs[0]]
-            end_of_prompt = cur_ids[placeholder_locs[0] + 1 :]
-            eos_token = torch.tensor([self.eos_token_id]).to(self.device)
+                # We take everything before the placeholder token and combine it with "placeholder_token and placeholder_token and ..."
+                # We then add the rest of the sentence on (including the EOS token and padding tokens)
+                placeholder_locs = (cur_ids == self.placeholder_token_id).nonzero()
+                assert placeholder_locs.shape[0] == 1  # We should only have one placeholder token
+                start_of_prompt = cur_ids[: placeholder_locs[0]]
+                end_of_prompt = cur_ids[placeholder_locs[0] + 1 :]
+                eos_token = torch.tensor([self.eos_token_id]).to(self.device)
 
-            batch.formatted_input_ids[b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, eos_token), dim=0)[:cur_ids.shape[0]]
+                batch.formatted_input_ids[b] = torch.cat((start_of_prompt, masks_prompt, end_of_prompt, eos_token), dim=0)[:cur_ids.shape[0]]
 
-        # Overwrite mask locations
-        cond.learnable_idxs = (batch.formatted_input_ids == self.placeholder_token_id).nonzero(as_tuple=True)
-        cond.encoder_hidden_states[cond.learnable_idxs[0], cond.learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
-
+            # Overwrite mask locations
+            cond.learnable_idxs = (batch.formatted_input_ids == self.placeholder_token_id).nonzero(as_tuple=True)
+            cond.encoder_hidden_states[cond.learnable_idxs[0], cond.learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
+        else:
+            raise NotImplementedError()
+        
         attn_meta: AttentionMetadata = cond.unet_kwargs["cross_attention_kwargs"]['attn_meta']
-        if self.cfg.model.eschernet and not self.cfg.model.layer_specialization:
-            attn_meta.layer_idx = 0
-            attn_meta.num_layers = 1
-            attn_meta.num_cond_vectors = self.cfg.model.num_conditioning_pairs
-            attn_meta.add_pos_emb = self.cfg.model.add_pos_emb
-
         if self.cfg.model.layer_specialization:
             attn_meta.layer_idx = 0
             attn_meta.num_layers = (8 * 2) if self.cfg.model.custom_conditioning_map else (self.cfg.model.num_conditioning_pairs * 2)
@@ -909,13 +973,24 @@ class BaseMapper(Trainable):
                 cond.encoder_hidden_states = rearrange("b t (layers d), () t d -> b t ((layers + 1) d)", cond.encoder_hidden_states, frozen_enc)
                 attn_meta.frozen_dim = frozen_enc.shape[-1]
 
+        if self.cfg.model.layer_specialization is False and self.cfg.model.eschernet:
+            attn_meta.layer_idx = 0
+            attn_meta.num_layers = 1
+            attn_meta.num_cond_vectors = self.cfg.model.num_conditioning_pairs
+            attn_meta.add_pos_emb = self.cfg.model.add_pos_emb
+
         if self.cfg.model.clip_shift_scale_conditioning:
             assert not self.cfg.model.layer_specialization
             cond.encoder_hidden_states[:] = shift_scale_uncond_hidden_states(self)
 
         if self.cfg.model.eschernet:
             if self.cfg.model.eschernet_6dof:
-                attn_meta.posemb = [batch.tgt_pose.to(self.dtype).detach(), torch.linalg.inv(batch.tgt_pose).to(self.dtype).detach(), batch.src_pose.to(self.dtype).detach(), torch.linalg.inv(batch.src_pose).to(self.dtype).detach()]
+                attn_meta.posemb = [
+                    batch.tgt_pose.to(self.dtype).detach(),
+                    torch.linalg.inv(batch.tgt_pose).to(self.dtype).detach(),
+                    batch.src_pose.to(self.dtype).detach(), 
+                    torch.linalg.inv(batch.src_pose).to(self.dtype).detach()
+                ]
             else:
                 attn_meta.posemb = [batch.tgt_pose, batch.src_pose]
 
@@ -937,8 +1012,11 @@ class BaseMapper(Trainable):
             cond.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=AttentionMetadata())
 
         cond.placeholder_token = self.placeholder_token_id
-        with torch.no_grad():
-            cond.encoder_hidden_states = self.text_encoder(input_ids=batch.input_ids)[0].to(dtype=self.dtype)
+        
+        if self.cfg.model.add_text_tokens:
+            with torch.no_grad(): cond.encoder_hidden_states = self.text_encoder(input_ids=batch.input_ids)[0].to(dtype=self.dtype)
+        else:
+            cond.encoder_hidden_states = torch.zeros((batch.bs, 77, self.cfg.model.token_embedding_dim), dtype=self.dtype, device=self.device)
 
         if add_conditioning and self.cfg.model.mask_token_conditioning:
             if cond.mask_tokens is None or cond.mask_batch_idx is None:
@@ -1102,6 +1180,9 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.token_rot_pred_loss:
             losses.update(token_rot_loss(cfg=self.cfg, pred_data=pred_data))
+
+        if self.cfg.model.return_encoder_normalized_tgt:
+            losses.update(src_tgt_token_consistency_loss(cfg=self.cfg, batch=batch, cond=cond))
 
         losses["metric_num_mask_tokens"] = cond.mask_tokens.shape[0]
             

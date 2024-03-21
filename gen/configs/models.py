@@ -70,12 +70,27 @@ class ModelConfig:
     add_pos_emb: bool = False  # Adds positional embeddings to encoder feature maps and U-Net queries
     feature_map_keys: Optional[tuple[str]] = None  # Use multiple feature maps for attention pooling
 
+    # The dataset returns [H, W] int64 segmentation maps from -1 to N-1. -1 is ignored and 0 is the background.
+    # This value should equal N. In datasets with a maximum number of instances, this is then num_instances + 1
+    segmentation_map_size: int = -1
+
     # Quick experiment configs
     break_a_scene_cross_attn_loss: bool = False
     break_a_scene_cross_attn_loss_weight: float = 1e-2
     break_a_scene_cross_attn_loss_second_stage: bool = False
     dropout_foreground_only: bool = False
     dropout_background_only: bool = False
+
+    ema: bool = False
+    autoencoder_slicing: bool = True
+    encoder_latent_dim: int = 16 # resolution // patch_size
+
+    fused_mlp: bool = True
+    fused_bias_fc: bool = True
+
+    token_head_dim: int = "${model.encoder_dim}"
+    lr_finetune_version: int = 0
+    num_layer_queries: int = 1
 
     weighted_object_loss: bool = False
     clip_shift_scale_conditioning: bool = False  # Whether to use the CLIP shift and scale embeddings as conditioning
@@ -85,44 +100,42 @@ class ModelConfig:
     gated_cross_attn: bool = False
     viz: bool = False
     use_inverted_noise_schedule: bool = False  # TODO: Implement properly
+
+    # Rotation/Cls Prediction
     token_cls_pred_loss: bool = False
     token_rot_pred_loss: bool = False
     num_token_cls: int = 17
     detach_features_before_cross_attn: bool = False
-
-    # rotation denoising parameters
     rotation_diffusion_timestep: int = 100
     rotation_diffusion_parameterization: str = "epsilon"
     rotation_diffusion_start_timestep: Optional[int] = None
-
-    # tmp params
     use_timestep_mask_film: bool = False
     discretize_rot_bins_per_axis: int = 8
     discretize_rot_pred: bool = False
     token_rot_transformer_head: bool = False  # WIP
     predict_rotation_from_n_frames: Optional[int] = None
-    fused_mlp: bool = True
-    fused_bias_fc: bool = True
-    token_head_dim: int = "${model.encoder_dim}"
-    lr_finetune_version: int = 0
+    diffusion_timestep_range: Optional[tuple[int, int]] = None
     diffusion_loss_weight: float = 1.0
     token_cls_loss_weight: float = 0.1
-    diffusion_timestep_range: Optional[tuple[int, int]] = None
-    ema: bool = False
-    autoencoder_slicing: bool = True
-    # The dataset returns [H, W] int64 segmentation maps from -1 to N-1. -1 is ignored and 0 is the background.
-    # This value should equal N. In datasets with a maximum number of instances, this is then num_instances + 1
-    segmentation_map_size: int = -1
+    
+    # SODA
+    add_grid_to_input_channels: bool = False
+    dropout_grid_conditioning: Optional[float] = 0.15
+
+    # Misc
+    masked_self_attention: bool = False
+    use_pad_mask_loss: bool = True
+
+    # Eschernet
     custom_conditioning_map: bool = False
-    encoder_latent_dim: int = 16 # resolution // patch_size
     eschernet: bool = False
     eschernet_6dof: bool = False
     use_sd_15_tokenizer_encoder: bool = False
-    add_grid_to_input_channels: bool = False
-    num_layer_queries: int = 1
-    dropout_grid_conditioning: Optional[float] = 0.15
-    masked_self_attention: bool = False
-    use_pad_mask_loss: bool = True
+    return_encoder_normalized_tgt: bool = False
+    modulate_src_tokens_with_tgt_pose: bool = False
+    src_tgt_consistency_loss_weight: float = 1.0
+    token_modulator: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
+    add_text_tokens: bool = True
 
 @dataclass
 class ControlNetConfig(ModelConfig):

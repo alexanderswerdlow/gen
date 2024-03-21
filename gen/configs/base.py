@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -16,6 +17,7 @@ from gen.configs.trainer import TrainerConfig
 from gen.configs.utils import destructure_store, exp_store, mode_store
 import hydra
 
+from gen.datasets.run_dataloader import iterate_dataloader
 from gen.models.encoders.encoder import TimmModel
 
 defaults = [
@@ -100,7 +102,6 @@ OmegaConf.register_new_resolver("get_tgt_transform", get_tgt_transform)
 OmegaConf.register_new_resolver("eval", eval)
 
 store(get_hydra_config())
-
 exp_store(
     name="gen",
     trainer=dict(
@@ -157,6 +158,7 @@ exp_store(
         training_layer_dropout=0.15,
         unfreeze_last_n_clip_layers=None,
         layer_specialization=True,
+        token_modulator=dict(add_self_attn=True, add_cross_attn=False, depth=4),
     ),
     hydra_defaults=[
         "_self_",

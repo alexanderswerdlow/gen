@@ -8,7 +8,6 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from einops import rearrange, repeat
 from jaxtyping import Bool, Float, Integer
-from omegaconf import OmegaConf
 from tensordict import tensorclass
 from torch import Tensor
 
@@ -50,6 +49,9 @@ class InputData:
     src_pose: Optional[Float[Tensor, "b t 4 ..."]] = None
     raw_dataset_image: Optional[Integer[Tensor, "b h w c"]] = None
     id: Optional[Integer[Tensor, "b"]] = None
+    tgt_enc_norm_pixel_values: Optional[Float[Tensor, "b c h w"]] = None
+    tgt_enc_norm_segmentation: Optional[Integer[Tensor, "b h w"]] = None
+    has_global_instance_ids: Optional[Bool[Tensor, "b"]] = None
 
     @staticmethod
     def from_dict(batch: dict):
@@ -81,7 +83,6 @@ def one_hot_to_integer(mask, num_overlapping_channels: int = 1, assert_safe: boo
     if assert_safe:
         assert (torch.sum(mask, dim=[-1]) <= num_overlapping_channels).all()
 
-    
     channels = torch.arange(C, device=mask.device)[None, None, None, :]
     masked_indices = torch.where(mask, channels, 255)
     sorted_indices, _ = masked_indices.sort(dim=-1)
@@ -158,7 +159,7 @@ def visualize_input_data(
         batch.tgt_segmentation[batch.tgt_segmentation < 0] = 1
         batch.src_segmentation[batch.src_segmentation < 0] = 1
     
-    if remove_invalid:
+    if remove_invalid and batch.tgt_segmentation.shape[-1] == 1:
         batch.tgt_segmentation = replace_invalid(batch.tgt_segmentation, batch.valid)
         batch.src_segmentation = replace_invalid(batch.src_segmentation, batch.valid)
 
@@ -190,15 +191,6 @@ def visualize_input_data(
 
         tgt_one_hot = integer_to_one_hot(batch.tgt_segmentation[b], add_background_channel=False)
         src_one_hot = integer_to_one_hot(batch.src_segmentation[b], add_background_channel=False)
-            
-        tgt_ = Im.concat_vertical(
-            Im(tgt_rgb[b]), 
-            Im(onehot_to_color(tgt_one_hot.squeeze(0), override_colors=override_colors)),
-        )
-        if batch.tgt_grid is not None:
-            tgt_ = Im.concat_vertical(
-                tgt_, Im(torch.cat((batch.tgt_grid[b], batch.tgt_grid.new_zeros((1, *batch.tgt_grid.shape[2:]))), dim=0))
-            )
 
         src_ = Im.concat_vertical(
             Im(src_rgb[b]), 
@@ -208,6 +200,15 @@ def visualize_input_data(
         if batch.src_grid is not None:
             src_ = Im.concat_vertical(
                 src_, Im(torch.cat((batch.src_grid[b], batch.src_grid.new_zeros((1, *batch.src_grid.shape[2:]))), dim=0))
+            )
+            
+        tgt_ = Im.concat_vertical(
+            Im(tgt_rgb[b]), 
+            Im(onehot_to_color(tgt_one_hot.squeeze(0), override_colors=override_colors)),
+        )
+        if batch.tgt_grid is not None:
+            tgt_ = Im.concat_vertical(
+                tgt_, Im(torch.cat((batch.tgt_grid[b], batch.tgt_grid.new_zeros((1, *batch.tgt_grid.shape[2:]))), dim=0))
             )
         
         output_img = Im.concat_horizontal(src_, tgt_)
@@ -227,6 +228,12 @@ def visualize_input_data(
 
         if batch.raw_dataset_image is not None:
             output_img = Im.concat_horizontal(batch.raw_dataset_image[b], output_img, spacing=50, fill=(128, 128, 128))
+
+        if batch.src_pose is not None and batch.src_pose.shape[1] == 4 and batch.src_pose.ndim == 3:
+            from gen.datasets.scannetpp.scannetpp import get_distance_matrix_vectorized
+            distance_matrix = get_distance_matrix_vectorized(torch.cat((batch.src_pose, batch.tgt_pose), dim=0))
+            rot, dist = distance_matrix[0, 1]
+            output_img = output_img.write_text(f"Relative Pose Rot: {rot:.2f}, Relative Pose Dist: {dist:.2f}", (10, 10), size=0.25)
 
         output_img.save(save_name)
 

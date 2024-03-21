@@ -2,6 +2,7 @@
 A collection of assorted utilities for deep learning with no required dependencies aside from PyTorch, NumPy and the Python stdlib.
 """
 import contextlib
+from datetime import datetime
 import glob
 import hashlib
 import importlib
@@ -11,11 +12,12 @@ import pickle
 import subprocess
 import sys
 from collections import defaultdict
-from functools import partial
+from functools import partial, wraps
 from importlib import import_module
 from importlib.util import find_spec
 from io import BytesIO
 from pathlib import Path
+import time
 import traceback
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -314,8 +316,9 @@ def save_memory_profile(profile_dir):
         log_func(f"Saved memory snapshot at: {profile_dir}/memory_snapshot.pickle")
         log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {profile_dir.resolve()} 6008")
 
-        wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_snapshot.html")})
-        wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_timeline.html")})
+        if wandb.run is not None:
+            wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_snapshot.html")})
+            wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_timeline.html")})
 
 class Profiler:
     def __init__(self, output_dir, warmup_steps: int = 5, active_steps: int = 3, record_memory: bool = False):
@@ -406,6 +409,10 @@ def _breakpoint(rank: Optional[int] = None, traceback: Optional[Any] = None):
             log_func("Breakpoint triggered. You may need to type \"up\" to get to the correct frame")
             get_pdb().set_trace(sys._getframe(1))
 
+def set_global_exists():
+    import builtins
+    builtins.exists = lambda v: v is not None
+
 def set_global_breakpoint():
     import builtins
     import ipdb
@@ -479,7 +486,34 @@ def show_memory_usage(empty_cache: bool = True, verbose: bool = False):
         print("After context", end="")
         print_memory(verbose)
 
+
+def get_date_time_str():
+    return datetime.now().strftime("%Y_%m_%d-%H_%M")
+
+@contextlib.contextmanager
+def profile_memory(enable: bool = True):
+    if enable and is_main_process(): torch.cuda.memory._record_memory_history()
+    yield
+    if enable: save_memory_profile(Path(f"output/profile/{get_date_time_str()}"))
     
+def profile_memory_decorator(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with profile_memory():
+            return func(*args, **kwargs)
+    return wrapper
+
+@contextlib.contextmanager
+def get_time_sync(enable: bool = True):
+    if enable and is_main_process():
+        torch.cuda.synchronize()
+        start_time = time.time()
+    yield
+    if enable and is_main_process():
+        torch.cuda.synchronize()
+        end_time = time.time()
+        print(f"Time taken: {end_time - start_time:.2f}s")
+
 def write_to_file(path: Path, text: str):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
