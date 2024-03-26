@@ -453,7 +453,8 @@ def get_datasets():  # TODO: These do not need to be global configs
             train=dict(
                 preprocessed_mask_type=None,
                 use_preprocessed_masks=False,
-                object_ignore_threshold=0.1,
+                object_ignore_threshold=0.0,
+                top_n_masks_only=76,
                 num_overlapping_masks=1,
                 augmentation=dict(
                     reorder_segmentation=False,
@@ -462,10 +463,36 @@ def get_datasets():  # TODO: These do not need to be global configs
             val=dict(
                 preprocessed_mask_type=None,
                 use_preprocessed_masks=False,
-                object_ignore_threshold=0.1,
-                num_overlapping_masks=1,
+                object_ignore_threshold=0.0,
+                top_n_masks_only=76,
                 augmentation=dict(
                     reorder_segmentation=False,
+                )
+            ),
+        ),
+    )
+
+    mode_store(
+        name="zoomed_coco_masks",
+        dataset=dict(
+            train=dict(
+                augmentation=dict(
+                    different_src_tgt_augmentation=False,
+                    enable_random_resize_crop=True, 
+                    enable_horizontal_flip=True,
+                    tgt_random_scale_ratio=((0.3, 0.8), (0.9, 1.1)),
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                )
+            ),
+            val=dict(
+                augmentation=dict(
+                    different_src_tgt_augmentation=False,
+                    enable_random_resize_crop=True, 
+                    enable_horizontal_flip=True,
+                    tgt_random_scale_ratio=((0.3, 0.8), (0.9, 1.1)),
+                    enable_rand_augment=False,
+                    enable_rotate=False,
                 )
             ),
         ),

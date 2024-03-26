@@ -20,6 +20,8 @@ import transformers
 import wandb
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.utils import GradientAccumulationPlugin, ProjectConfiguration
+from accelerate import FullyShardedDataParallelPlugin
+from torch.distributed.fsdp.fully_sharded_data_parallel import FullOptimStateDictConfig, FullStateDictConfig
 from diffusers.utils import check_min_version
 from hydra.utils import get_original_cwd
 from image_utils import library_ops  # This overrides repr() for tensors
@@ -167,14 +169,28 @@ def main(cfg: BaseConfig):
 
     accelerator_project_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=cfg.logging_dir)
     gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=cfg.trainer.gradient_accumulation_steps, adjust_scheduler=False)
-
-    kwargs = DistributedDataParallelKwargs(find_unused_parameters=cfg.trainer.find_unused_parameters)
+    
+    accelerate_kwargs = dict()
+    if cfg.trainer.fsdp:
+        fsdp_plugin = FullyShardedDataParallelPlugin(
+            state_dict_config=FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
+            optim_state_dict_config=FullOptimStateDictConfig(offload_to_cpu=False, rank0_only=False),
+            sharding_strategy="FULL_SHARD",
+            auto_wrap_policy="SIZE_BASED_WRAP",
+            use_orig_params=True,
+            activation_checkpointing=True,
+        )
+        accelerate_kwargs['fsdp_plugin'] = fsdp_plugin
+    else:
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=cfg.trainer.find_unused_parameters)
+        accelerate_kwargs['kwargs_handlers'] = [ddp_kwargs]
+    
     accelerator = Accelerator(
         mixed_precision=cfg.trainer.mixed_precision,
         log_with=cfg.trainer.log_with,
         project_config=accelerator_project_config,
         gradient_accumulation_plugin=gradient_accumulation_plugin,
-        kwargs_handlers=[kwargs]
+        
     )
     assert accelerator.num_processes == num_gpus, f"Expected {num_gpus} GPUs but got {accelerator.num_processes} processes."
     cfg.trainer.num_gpus = accelerator.num_processes

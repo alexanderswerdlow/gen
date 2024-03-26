@@ -10,6 +10,8 @@ from typing import Optional, Tuple
 
 import cv2
 from einops import rearrange
+from image_utils.im import Im
+from image_utils.standalone_image_utils import integer_to_color
 import numpy as np
 import torch
 import torchvision
@@ -148,6 +150,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
             preprocessed_mask_type: Optional[str] = None,
             erode_dialate_preprocessed_masks: bool = False,
             num_overlapping_masks: int = 1,
+            merge_with_background: bool = False,
+            scratch_only: bool = True,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
             num_objects=None,
             resolution=None,
@@ -171,6 +175,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         
         self.root = root
         self.single_return = single_return
+        self.scratch_only = scratch_only
         if self.single_return:
             augmentation.src_transform = None
             augmentation.tgt_transform = None
@@ -226,6 +231,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         self.preprocessed_mask_type = preprocessed_mask_type
         self.erode_dialate_preprocessed_masks = erode_dialate_preprocessed_masks
         self.num_overlapping_masks = num_overlapping_masks
+        self.merge_with_background = merge_with_background
 
         # Get image and annotation list.
         if 'test' in self.coco_split:
@@ -405,12 +411,18 @@ class CocoPanoptic(AbstractDataset, Dataset):
         instance = dataset_dict.get('instance', dataset_dict['semantic'])
         semantic = dataset_dict['semantic']
 
+        # Im(integer_to_color((instance == 0).long())).save(f'instance_{index}')
+        # Im(integer_to_color((semantic == 0).long())).save(f'semantic_{index}')
+        # breakpoint()
+
         # Aside from using rgb, we can represent panoptic labels in terms of
         # semantic_label * label_divisor + instance_label
         lab_divisor = instance.max() + 1
         unique_panoptic = torch.unique(semantic * lab_divisor + instance)
         unique_instance = unique_panoptic % lab_divisor
         unique_semantic = unique_panoptic // lab_divisor
+
+        instance[instance == 0] = -1
 
         # Very inefficient but works.
         instance_with_pad_mask = torch.where(
@@ -446,18 +458,19 @@ class CocoPanoptic(AbstractDataset, Dataset):
         src_data, tgt_data = self.augmentation(
             src_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
             tgt_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
+            use_keypoints=False
         )
 
-        src_data.image = src_data.image.squeeze(0)
-        src_data.segmentation = rearrange(src_data.segmentation.long(), "() c h w -> h w c")
-        tgt_data.image = tgt_data.image.squeeze(0)
-        tgt_data.segmentation = rearrange(tgt_data.segmentation.long(), "() c h w -> h w c")
+        def process_data(data_: Data):
+            data_.image = data_.image.squeeze(0)
+            data_.segmentation = rearrange(data_.segmentation, "() c h w -> h w c")
+            data_.segmentation[data_.segmentation >= self.top_n_masks_only] = 0 if self.merge_with_background else 255
+            assert data_.segmentation.max() <= 255
+            data_.segmentation[data_.segmentation == -1] = 255
+            return data_
 
-        src_data.segmentation[src_data.segmentation >= num_masks] = 0
-        tgt_data.segmentation[tgt_data.segmentation >= num_masks] = 0
-
-        src_data.segmentation[src_data.segmentation == -1] = 255
-        tgt_data.segmentation[tgt_data.segmentation == -1] = 255
+        src_data = process_data(src_data)
+        tgt_data = process_data(tgt_data)
 
         pixels = src_data.segmentation.squeeze(0).long().contiguous().view(-1)
         src_bincount = torch.bincount(pixels[(pixels < 255) & (pixels >= 0)], minlength=num_masks + 1)
@@ -470,12 +483,13 @@ class CocoPanoptic(AbstractDataset, Dataset):
                 remove_smaller_masks = torch.argsort(src_bincount)[:-self.top_n_masks_only]
                 valid[remove_smaller_masks] = False
 
-            # For all pixels that belong to a instance that is too small, we set the pixel to 0 (background)
-            too_small_instance_pixels = get_one_hot_channels(src_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
-            src_data.segmentation[too_small_instance_pixels] = 0
+            if self.merge_with_background:
+                # For all pixels that belong to a instance that is too small, we set the pixel to 0 (background)
+                too_small_instance_pixels = get_one_hot_channels(src_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
+                src_data.segmentation[too_small_instance_pixels] = 0
 
-            too_small_instance_pixels_ = get_one_hot_channels(tgt_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
-            tgt_data.segmentation[too_small_instance_pixels_] = 0
+                too_small_instance_pixels_ = get_one_hot_channels(tgt_data.segmentation, indices=(~valid).nonzero()[:, 0]).any(dim=-1)
+                tgt_data.segmentation[too_small_instance_pixels_] = 0
 
 
         src_pad_mask = (src_data.segmentation < 255).any(dim=-1)
@@ -558,10 +572,8 @@ def run_sam(dataloader):
 
 if __name__ == "__main__":
     from transformers import AutoTokenizer
-
     from image_utils import library_ops
     tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
-    breakpoint()
     from gen.datasets.utils import get_stable_diffusion_transforms
     default_augmentation=Augmentation(
         initial_resolution=512,
@@ -587,21 +599,20 @@ if __name__ == "__main__":
     dataset = CocoPanoptic(
         shuffle=False,
         cfg=None,
-        split=Split.VALIDATION,
+        split=Split.TRAIN,
         num_workers=0,
         batch_size=4,
         tokenizer=tokenizer,
         augmentation=default_augmentation,
         single_return=False,
-        enable_orig_coco_processing=False,
         return_tensorclass=True,
-        object_ignore_threshold=0.1,
-        top_n_masks_only=96,
-        use_preprocessed_masks=True,
-        postprocess=True,
-        preprocessed_mask_type="custom_postprocessed",
-        erode_dialate_preprocessed_masks=False,
-        num_overlapping_masks=2,
+        object_ignore_threshold=0.0,
+        top_n_masks_only=77,
+        # use_preprocessed_masks=True,
+        # postprocess=True,
+        # preprocessed_mask_type="custom_postprocessed",
+        # erode_dialate_preprocessed_masks=False,
+        # num_overlapping_masks=2,
     )
 
     import time
@@ -612,7 +623,7 @@ if __name__ == "__main__":
     for step, batch in enumerate(dataloader):
         print(f'Time taken: {time.time() - start_time}')
         names = [f'{batch.metadata["scene_id"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
-        # visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False)
+        visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False)
         start_time = time.time()
         if step > 1:
             break

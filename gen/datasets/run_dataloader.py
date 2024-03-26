@@ -36,14 +36,8 @@ def coco_colormap_viz(batch: InputData):
 def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
     exit: Optional[int] = 100
 
-    cfg.dataset.train.num_workers = 4
-    cfg.dataset.val.num_workers = 4
-
     cfg.dataset.train.return_tensorclass = True
     cfg.dataset.val.return_tensorclass = True
-
-    cfg.dataset.train.batch_size = 4
-    cfg.dataset.val.batch_size = 4
 
     cfg.dataset.train.subset_size = None
     cfg.dataset.val.subset_size = None
@@ -66,12 +60,13 @@ def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
     dataloader = dataset.get_dataloader(generator=g, additional_datasets=additional_train_datasets)
 
     batch: InputData
-    for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
-        pass
-        # names = [f'{batch.metadata["dataset"][i]}_{batch.metadata["name"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
-        # visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False, cfg=cfg)
-        # print(batch.metadata['dataset'])
-        # print(batch.src_pose[:, :3, 3].min(), batch.src_pose[:, :3, 3].max())
-        # print('')
+    for j in range(100000):
+        for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
+            pass
+            # names = [f'{batch.metadata["dataset"][i]}_{batch.metadata["name"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
+            # visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False, cfg=cfg)
+            # print(batch.metadata['dataset'])
+            # print(batch.src_pose[:, :3, 3].min(), batch.src_pose[:, :3, 3].max())
+            # print('')
 
-        # if exit is not None and i >= exit: break
+            # if exit is not None and i >= exit: break

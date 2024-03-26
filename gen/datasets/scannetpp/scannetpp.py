@@ -37,16 +37,6 @@ from gen.utils.logging_utils import log_error, log_info, log_warn
 from gen.utils.tokenization_utils import get_tokens
 from image_utils.standalone_image_utils import integer_to_color, onehot_to_color
 
-
-memory = Memory(SCRATCH_CACHE_PATH, verbose=0)
-@memory.cache(ignore=["txn"])
-def get_seg(txn, key, num_overlapping_masks):
-    masks_msgpack = txn.get(key.encode('ascii'))
-    _, masks = msgpack.unpackb(masks_msgpack, raw=False)
-    seg = torch.from_numpy(np.stack([coco_decode_rle(mask['segmentation']) for mask in masks]))
-    seg = one_hot_to_integer(seg.permute(1, 2, 0), num_overlapping_masks, assert_safe=False).permute(2, 0, 1)[None]
-    return seg
-
 def coco_decode_rle(compressed_rle) -> np.ndarray:
     if isinstance(compressed_rle['counts'], str):
         compressed_rle['counts'] = compressed_rle['counts'].encode()
@@ -92,7 +82,7 @@ def get_split_data(split, directory, distance_threshold, frames_slice, cache: bo
 
     distance_matrix = get_distance_matrix_vectorized(poses_c2w)
     assert torch.isnan(distance_matrix).sum() == 0
-    mask = torch.logical_or(torch.logical_and(distance_matrix[..., 0] < 0.45, distance_matrix[..., 1] < 0.5), torch.logical_and(distance_matrix[..., 0] < 0.3, distance_matrix[..., 1] < 1.2))
+    mask = torch.logical_or(torch.logical_and(distance_matrix[..., 0] < 0.3, distance_matrix[..., 1] < 0.3), torch.logical_and(distance_matrix[..., 0] < 0.3, distance_matrix[..., 1] < 1.0))
 
     candidate_indicies = torch.argwhere(mask)
     pose_data = np.concatenate((poses_c2w.reshape(poses_c2w.shape[0], -1), K.reshape(K.shape[0], -1)), axis=1)
@@ -137,10 +127,12 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         top_n_masks_only: int = 34,
         sync_dataset_to_scratch: bool = False,
         return_raw_dataset_image: bool = False,
-        num_overlapping_masks: int = 3,
+        num_overlapping_masks: int = 6,
         single_scene_debug: bool = False,
         use_segmentation: bool = True,
         return_encoder_normalized_tgt: bool = False,
+        only_preprocess_seg: bool = False,
+        scratch_only: bool = True,
         # TODO: All these params are not actually used but needed because of a quick with hydra_zen
         num_objects=None,
         resolution=None,
@@ -180,6 +172,8 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         self.num_overlapping_masks = num_overlapping_masks
         self.use_segmentation = use_segmentation and not self.return_raw_dataset_image
         self.return_encoder_normalized_tgt = return_encoder_normalized_tgt
+        self.only_preprocess_seg = only_preprocess_seg
+        self.scratch_only = scratch_only
 
         default_split_scenes: List[str] = train_scenes if self.split == Split.TRAIN else (val_scenes if self.split == Split.VALIDATION else test_scenes)
         self.scenes = default_split_scenes if (self.scenes is None or len(self.scenes) == 0) else self.scenes
@@ -198,7 +192,8 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
             )
 
         seg_data_path = SCANNETPP_CUSTOM_DATA_PATH / "all_pose_data"
-        sync_data(nfs_path=seg_data_path, sync=self.num_workers == 0)
+        if self.scratch_only:
+            sync_data(nfs_path=seg_data_path, sync=self.num_workers == 0)
 
         scenes_hash = hashlib.md5(("_".join(self.scenes)).encode()).hexdigest()
         cache_key = f"{scenes_hash}_{str(self.root).replace('/', '_')}_{distance_threshold}"
@@ -232,40 +227,52 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
             log_info(f"Saving all scene data to {cache_path}")
             torch.save((self.dataset_idx_to_frame_pair, self.image_files, self.frame_poses, self.intrinsics, self.frame_scene_indices), cache_path)
 
-        if self.use_segmentation:
-            seg_data_path = SCANNETPP_CUSTOM_DATA_PATH / "segmentation" / 'v2'
-            sync_data(nfs_path=seg_data_path, sync=self.num_workers == 0)
-            cache_path = get_available_path(seg_data_path, return_scratch_only=True)
-            self.seg_env = lmdb.open(str(cache_path), readonly=True, map_size=1099511627776)
-
         log_info(f"Scannet++ has {len(self)} samples")
         # image_paths = [path.split('data/')[-1] for path in self.image_files]
         # with open('files.txt', "w") as file: file.write("\n".join(image_paths))
         # rsync -a --files-from=files.txt /projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data /scratch/aswerdlo/cache/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data
+
+    def open_lmdb(self):
+        if self.use_segmentation:
+            seg_data_path = SCANNETPP_CUSTOM_DATA_PATH / "segmentation" / 'v2'
+            sync_data(nfs_path=seg_data_path, sync=self.num_workers == 0)
+            cache_path = get_available_path(seg_data_path, return_scratch_only=self.scratch_only)
+            self.seg_env = lmdb.open(str(cache_path), readonly=True, map_size=1099511627776)
     
     def __len__(self) -> int:
-        return len(self.image_files) if self.return_raw_dataset_image else len(self.dataset_idx_to_frame_pair)
+        return len(self.image_files) if self.return_raw_dataset_image or self.only_preprocess_seg else len(self.dataset_idx_to_frame_pair)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        if not hasattr(self, 'seg_env'):
+            self.open_lmdb()
         if self.return_raw_dataset_image:
             return self.get_raw_data(idx)
+        elif self.only_preprocess_seg:
+            metadata = self.get_metadata(idx)
+            src_path = self.image_files[idx]
+            scene_id = metadata['metadata']['scene_id']
+            src_key = f"{scene_id}_{Path(src_path).stem}"
+            src_masks_msgpack = self.get_seg(src_key)
+            return torch.zeros((1,))
         else:
             try:
                 return self.get_paired_data(idx)
             except Exception as e:
-                raise e
                 log_warn(f"Failed to load image {idx}: {e}")
                 return self.__getitem__((idx + 1) % len(self))
             
     def get_image(self, image_path: Path):
         image_path = get_available_path(image_path, resolve=False, return_scratch_only=False)
-        
-        # with open(image_path, 'rb', buffering=100*1024) as fp: data = fp.read()
-        # image = simplejpeg.decode_jpeg(data)
-        # image = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
 
-        target_file = torchvision.io.read_file(str(image_path))
-        image = torchvision.io.decode_jpeg(target_file, device=self.device)[None] / 255
+        if not str(image_path).startswith("/scratch") and self.scratch_only:
+            log_warn(f"Image path {image_path} is not in scratch.")
+        
+        with open(image_path, 'rb', buffering=100*1024) as fp: data = fp.read()
+        image = simplejpeg.decode_jpeg(data)
+        image = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
+
+        # target_file = torchvision.io.read_file(str(image_path))
+        # image = torchvision.io.decode_jpeg(target_file, device=self.device)[None] / 255
 
         return image
 
@@ -279,10 +286,31 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
             **self.get_metadata(idx)
         }
 
+    def get_seg(self, key):
+        seg_data_path = SCANNETPP_CUSTOM_DATA_PATH / "segmentation" / 'npz_v0' / f"{key}.npz"
+        cache_path = get_available_path(seg_data_path, return_scratch_only=self.scratch_only)
+        try:
+            if not cache_path.exists(): raise FileNotFoundError()
+            seg = torch.from_numpy(np.load(cache_path)['arr_0'])
+        except Exception as e:
+            if not isinstance(e, FileNotFoundError):
+                log_warn(f"Failed to load seg data from {cache_path}: {e}")
+            with self.seg_env.begin() as txn:
+                masks_msgpack = txn.get(key.encode('ascii'))
+                if masks_msgpack is None:
+                    return None
+            _, masks = msgpack.unpackb(masks_msgpack, raw=False)
+            seg = torch.from_numpy(np.stack([coco_decode_rle(mask['segmentation']) for mask in masks])).to(self.device)
+            seg = one_hot_to_integer(seg.permute(1, 2, 0), self.num_overlapping_masks, assert_safe=False).permute(2, 0, 1)[None]
+            np.savez_compressed(cache_path, seg.cpu().numpy())
+            log_info(f"Saved seg data to {cache_path}")
+        return seg
+    
     def get_paired_data(self, idx: int):
         metadata = self.get_metadata(idx)
 
         src_img_idx, tgt_img_idx = metadata['metadata']['frame_idxs']
+        
         src_path = self.image_files[src_img_idx]
         tgt_path = self.image_files[tgt_img_idx]
 
@@ -294,32 +322,32 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
 
         src_img = self.get_image(src_path)
         tgt_img = self.get_image(tgt_path)
-        
+            
         if self.use_segmentation:
             throw_error = False
-            with self.seg_env.begin() as txn:
-                scene_id = metadata['metadata']['scene_id']
+            scene_id = metadata['metadata']['scene_id']
 
-                src_key = f"{scene_id}_{Path(src_path).stem}"
-                src_masks_msgpack = get_seg(txn, src_key, self.num_overlapping_masks)
+            src_key = f"{scene_id}_{Path(src_path).stem}"
+            src_masks_msgpack = self.get_seg(src_key)
 
-                tgt_key = f"{scene_id}_{Path(tgt_path).stem}"
-                tgt_masks_msgpack = get_seg(txn, tgt_key, self.num_overlapping_masks)
+            tgt_key = f"{scene_id}_{Path(tgt_path).stem}"
+            tgt_masks_msgpack = self.get_seg(tgt_key)
 
-                if src_masks_msgpack is not None and tgt_masks_msgpack is not None:
-                    def process_seg(seg):
-                        seg = F.interpolate(seg, size=(seg.shape[-2] * 2, seg.shape[-1] * 2), mode="nearest-exact")
-                        seg = seg.long()
-                        seg[seg == 255] = -1
-                        seg = seg.float()
-                        return seg
+            if src_masks_msgpack is not None and tgt_masks_msgpack is not None:
+                def process_seg(seg):
+                    seg = F.interpolate(seg, size=(seg.shape[-2] * 2, seg.shape[-1] * 2), mode="nearest-exact")
+                    seg = seg.long()
+                    seg[seg == 255] = -1
+                    seg = seg.float()
+                    return seg
 
-                    src_seg = process_seg(src_masks_msgpack)
-                    tgt_seg = process_seg(tgt_masks_msgpack)
-                else:
-                    throw_error = True
+                src_seg = process_seg(src_masks_msgpack)
+                tgt_seg = process_seg(tgt_masks_msgpack)
+            else:
+                throw_error = True
 
             if throw_error: raise KeyError(f"Key not found in LMDB: {src_key}")
+            
         else:
             src_seg = src_img.new_zeros((1, 1, *src_img.shape[-2:]))
             tgt_seg = tgt_img.new_zeros((1, 1, *tgt_img.shape[-2:]))
@@ -384,7 +412,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         return ret
     
     def get_metadata(self, idx):
-        if self.return_raw_dataset_image:
+        if self.return_raw_dataset_image or self.only_preprocess_seg:
             frame_path = Path(self.image_files[idx])
             frame_name = frame_path.stem
             scene_name = frame_path.parent.parent.parent.stem
@@ -529,7 +557,7 @@ def main(
             batch_size=batch_size,
             tokenizer=MockTokenizer(),
             augmentation=augmentation,
-            return_tensorclass=True,
+            return_tensorclass=False,
             scenes=scenes,
             sync_dataset_to_scratch=sync_dataset_to_scratch,
             return_raw_dataset_image=return_raw_dataset_image,
@@ -539,10 +567,11 @@ def main(
             num_overlapping_masks=6,
             use_segmentation=use_segmentation,
             single_scene_debug=single_scene_debug,
-            use_cuda=True,
+            use_cuda=False,
+            only_preprocess_seg=False,
         )
         dataloader = dataset.get_dataloader(pin_memory=False)
-        for i, batch in tqdm(enumerate(dataloader)):
+        for i, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
             if breakpoint_on_start: breakpoint()
             if viz: visualize_input_data(batch, show_overlapping_masks=True)
             if i >= steps - 1: break

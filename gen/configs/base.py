@@ -158,7 +158,7 @@ exp_store(
         training_layer_dropout=0.15,
         unfreeze_last_n_clip_layers=None,
         layer_specialization=True,
-        token_modulator=dict(add_self_attn=True, add_cross_attn=False, depth=4),
+        token_modulator=dict(add_self_attn=True, add_cross_attn=False, depth=2),
     ),
     hydra_defaults=[
         "_self_",

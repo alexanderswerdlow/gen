@@ -94,6 +94,7 @@ class DecoderTransformer(nn.Module):
                     use_flash_attn=use_flash_attn,
                     fused_bias_fc=fused_bias_fc,
                     fused_mlp=fused_mlp,
+                    add_cross_attn=add_cross_attn,
                     add_self_attn=add_self_attn,
                 )
                 for _ in range(depth)
@@ -123,9 +124,9 @@ class DecoderTransformer(nn.Module):
         return hidden_states
 
 
-def create_decoder_block(embed_dim, num_heads, mlp_ratio, qkv_bias, attn_drop_rate, norm_layer, act_layer, use_flash_attn, fused_bias_fc, fused_mlp, add_self_attn, **kwargs):
+def create_decoder_block(embed_dim, num_heads, mlp_ratio, qkv_bias, attn_drop_rate, norm_layer, act_layer, use_flash_attn, fused_bias_fc, fused_mlp, add_cross_attn, add_self_attn, **kwargs):
     return nn.ModuleList(
-        [
+        ([
             create_block(
                 embed_dim,
                 num_heads,
@@ -140,7 +141,8 @@ def create_decoder_block(embed_dim, num_heads, mlp_ratio, qkv_bias, attn_drop_ra
                 cross_attn=True,
                 **kwargs,
             )
-        ]
+        ] if add_cross_attn else []
+        )
         + (
             [
                 create_block(

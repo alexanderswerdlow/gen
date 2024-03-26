@@ -376,6 +376,8 @@ def src_tgt_token_consistency_loss(
         shared_instance_ids, src_idx, tgt_idx = np.intersect1d(src_loss_instance_idx.cpu().numpy(), tgt_loss_instance_idx.cpu().numpy(), return_indices=True)
         src_mask_tokens = cond.src_mask_tokens[src_valid][src_idx]
         tgt_mask_tokens = cond.tgt_mask_tokens[tgt_valid][tgt_idx]
+        if len(shared_instance_ids) == 0:
+            continue
         loss = F.mse_loss(src_mask_tokens, tgt_mask_tokens, reduction="mean")
         losses.append(loss)
         

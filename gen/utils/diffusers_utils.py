@@ -47,8 +47,9 @@ def load_stable_diffusion_model(
 
     if text_encoder is None:
         text_cls = CLIPTextModel
+        encoder_name = "runwayml/stable-diffusion-v1-5" if pretrained_model_name_or_path == "lambdalabs/sd-image-variations-diffusers" else pretrained_model_name_or_path
         kwargs["text_encoder"] = text_cls.from_pretrained(
-            pretrained_model_name_or_path,
+            encoder_name,
             subfolder="text_encoder",
             torch_dtype=torch_dtype,
         )

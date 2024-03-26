@@ -14,6 +14,8 @@ from gen.models.cross_attn.base_inference import compose_two_images, interpolate
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
 from functools import partial
 from gen.datasets.scannetpp.run_sam import scannet_run_sam
+from accelerate.utils import PrecisionType
+
 
 def get_override_dict(**kwargs):
     return dict(
@@ -52,7 +54,7 @@ def get_experiments():
                 fused_bias_fc=False
             ),
         ),
-        trainer=dict(use_fused_adam=False),
+        trainer=dict(use_fused_adam=False, fast_eval=True),
         dataset=dict(train=dict(batch_size=2, num_workers=0), val=dict(batch_size=1, num_workers=0)),
     )
 
@@ -63,6 +65,7 @@ def get_experiments():
             token_embedding_dim=768,
             freeze_unet=True,
             unfreeze_single_unet_layer=True,
+            unfreeze_last_n_clip_layers=1,
         ),
         trainer=dict(
             compile=False,
@@ -416,7 +419,7 @@ def get_experiments():
             ),
         ),
         inference=dict(
-            guidance_scale=5.0
+            guidance_scale=6.5
         )
     )
 
@@ -601,6 +604,8 @@ def get_experiments():
             train=dict(
                 scenes_slice=(0, None, 4),
                 frames_slice=(0, None, 5),
+                top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
+                num_overlapping_masks=6,
                 augmentation=dict(
                     reorder_segmentation=False,
                 )
@@ -608,13 +613,33 @@ def get_experiments():
             val=dict(
                 scenes_slice=(0, None, 4),
                 frames_slice=(0, None, 5),
+                top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
+                num_overlapping_masks=6,
                 augmentation=dict(
                     reorder_segmentation=False,
                 )
             ),
         ),
         model=dict(
-            add_text_tokens=True,
+            add_text_tokens=False,
+            segmentation_map_size=77,
+        )
+    )
+
+    mode_store(
+        name="noconcat_hypersim_scannet",
+        model=dict(
+            modulate_src_tokens_with_tgt_pose=True,
+            return_encoder_normalized_tgt=False,
+            src_tgt_consistency_loss_weight=0.1,
+        ),
+        dataset=dict(
+            train=dict(
+                return_encoder_normalized_tgt=False,
+            ),
+            val=dict(
+                return_encoder_normalized_tgt=False,
+            ),
         )
     )
 
@@ -623,6 +648,7 @@ def get_experiments():
         model=dict(
             modulate_src_tokens_with_tgt_pose=True,
             return_encoder_normalized_tgt=True,
+            src_tgt_consistency_loss_weight=0.1,
         ),
         dataset=dict(
             train=dict(
@@ -636,14 +662,15 @@ def get_experiments():
                     Hypersim, 
                     populate_full_signature=True,
                     zen_partial=True,
+                    repeat_n=10,
                     return_encoder_normalized_tgt="${model.return_encoder_normalized_tgt}",
                     camera_trajectory_window=32,
                     return_different_views=True,
-                    bbox_overlap_threshold=0.65,
+                    bbox_overlap_threshold=0.75,
                     bbox_area_threshold=0.75,
                     object_ignore_threshold=0.0,
                     top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
-                    num_overlapping_masks=3,
+                    num_overlapping_masks=6,
                     augmentation=builds(
                         Augmentation,
                         different_src_tgt_augmentation=False,
@@ -669,14 +696,15 @@ def get_experiments():
                     Hypersim, 
                     populate_full_signature=True,
                     zen_partial=True,
+                    repeat_n=10,
                     return_encoder_normalized_tgt="${model.return_encoder_normalized_tgt}",
                     camera_trajectory_window=32,
                     return_different_views=True,
-                    bbox_overlap_threshold=0.65,
+                    bbox_overlap_threshold=0.75,
                     bbox_area_threshold=0.75,
                     object_ignore_threshold=0.0,
                     top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
-                    num_overlapping_masks=3,
+                    num_overlapping_masks=6,
                     augmentation=builds(
                         Augmentation,
                         different_src_tgt_augmentation=False,
@@ -738,4 +766,20 @@ def get_experiments():
             return_encoder_normalized_tgt=False,
             modulate_src_tokens_with_tgt_pose=True,
         ),
+    )
+
+    mode_store(
+        name="nfs",
+        run_dataloader_only=True,
+        debug=True,
+        dataset=dict(
+            train=dict(
+                scratch_only=False,
+                batch_size=32,
+                num_workers=4,
+            ),
+        ),
+        trainer=dict(
+            mixed_precision=PrecisionType.NO,
+        )
     )

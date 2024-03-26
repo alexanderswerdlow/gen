@@ -23,6 +23,7 @@ class ModelConfig:
 
     pretrained_model_name_or_path: Optional[str] = "runwayml/stable-diffusion-v1-5"
     token_embedding_dim: int = 768
+    num_decoder_cross_attn_tokens: int = 77
     decoder_latent_dim: int = 64  # Resolution after VAE [input to U-Net]. For SD at 512x512, this is 64 x 64
     encoder_resolution: int = 224
     decoder_resolution: int = 512

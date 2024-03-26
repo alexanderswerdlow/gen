@@ -111,6 +111,11 @@ def infer_batch(
     if self.cfg.model.add_grid_to_input_channels:
         kwargs["concat_latent_along_channel_dim"] = get_tgt_grid(self.cfg, batch)
 
+    if self.cfg.model.add_text_tokens is False:
+        negative_prompt_embeds = self.uncond_hidden_states
+        prompt_embeds = cond.unet_kwargs['prompt_embeds']
+        kwargs["negative_prompt_embeds"] = negative_prompt_embeds.repeat(prompt_embeds.shape[0], 1, prompt_embeds.shape[-1] // negative_prompt_embeds.shape[-1])
+
     needs_autocast = self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_single_unet_layer or self.cfg.model.unfreeze_gated_cross_attn
     with torch.cuda.amp.autocast(dtype=self.dtype) if needs_autocast else nullcontext():
         images = self.pipeline(**cond.unet_kwargs, **kwargs).images
@@ -395,7 +400,13 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         idxs = torch.unique(batch.tgt_segmentation).long()
         
         assert batch.valid.shape[0] == 1
-        valid_indices = torch.cat([torch.Tensor([0]).to(batch.device).long(), torch.Tensor(batch.valid.all(dim=0).nonzero()[:, 0] + 1)])
+
+        valids_ = torch.Tensor(batch.valid.all(dim=0).nonzero()[:, 0] + 1)
+        if ((batch.tgt_segmentation[0, ..., 0] == 0).sum() > 0):
+            valid_indices = torch.cat([torch.Tensor([0]).to(batch.device).long(), valids_])
+        else:
+            valid_indices = torch.cat([valids_])
+
         idxs_valid_mask = torch.isin(idxs, valid_indices).to(batch.device)
         idxs = idxs[idxs_valid_mask][:self.cfg.inference.num_masks_to_remove]
 
@@ -411,6 +422,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
             modified_batches.append(batch_)
 
         modified_batches = torch.cat(modified_batches, dim=0) if len(modified_batches) > 0 else modified_batches
+        modified_batches.bs = modified_batches.batch_size[0]
 
         if len(modified_batches) != 0:
             prompt_images, _ = self.infer_batch(batch=modified_batches, num_images_per_prompt=1)

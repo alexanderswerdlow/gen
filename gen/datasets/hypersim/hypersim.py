@@ -51,6 +51,8 @@ class Hypersim(AbstractDataset, Dataset):
             bbox_area_threshold: float = 0.75,
             num_overlapping_masks: int = 1,
             return_encoder_normalized_tgt: bool = False,
+            repeat_n: int = 1,
+            scratch_only: bool = True,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
             num_objects=None,
             resolution=None,
@@ -84,6 +86,8 @@ class Hypersim(AbstractDataset, Dataset):
         self.num_overlapping_masks = num_overlapping_masks
         self.return_encoder_normalized_tgt = return_encoder_normalized_tgt
         self.root = root
+        self.repeat_n = repeat_n
+        self.scratch_only = scratch_only
 
         self.hypersim = ModifiedHypersim(
             dataset_path=root,
@@ -102,12 +106,13 @@ class Hypersim(AbstractDataset, Dataset):
         log_info(f"Loaded {len(self.hypersim)} frames from hypersim dataset with root: {self.root}", main_process_only=False)
     
     def __len__(self):
-        return len(self.hypersim)
+        return len(self.hypersim) * self.repeat_n
     
     def collate_fn(self, batch):
         return super().collate_fn(batch)
     
     def __getitem__(self, index):
+        index = index % len(self.hypersim)
         if self.return_different_views:
             assert self.augmentation.reorder_segmentation is False
             assert self.augmentation.return_grid is False

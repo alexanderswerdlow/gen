@@ -156,7 +156,7 @@ class XFormersAttnProcessor:
         value = attn.to_v(encoder_hidden_states, *args)
 
         # apply 4DoF CaPE
-        if is_eschernet:
+        if is_eschernet and is_cross_attn: # We only have single-view prediction for now.
             if is_6dof:
                 import einops
                 p_in = einops.rearrange(p_in, "b f g -> b () f g")

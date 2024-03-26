@@ -92,6 +92,7 @@ class TrainerConfig:
     inference_train_switch: bool = True
     init_pipeline_inference: bool = True
     backward_pass: bool = True
+    fsdp: bool = False
 
     # Set in code
     num_gpus: Optional[int] = None

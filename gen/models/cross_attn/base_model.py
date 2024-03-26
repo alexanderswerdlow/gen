@@ -406,7 +406,7 @@ class BaseMapper(Trainable):
                 cfg=self.cfg,
                 device=self.device,
                 tokenizer=self.tokenizer,
-                text_encoder=self.text_encoder,
+                text_encoder=self.text_encoder if self.cfg.model.add_text_tokens else None,
                 unet=self.unet,
                 vae=self.vae,
                 model=self,
@@ -654,8 +654,11 @@ class BaseMapper(Trainable):
 
     @cached_property
     def uncond_hidden_states(self):
-        uncond_input_ids = get_uncond_tokens(self.tokenizer).to(self.device)
-        uncond_encoder_hidden_states = self.text_encoder(input_ids=uncond_input_ids[None]).last_hidden_state.to(dtype=self.dtype).squeeze(0)
+        if self.cfg.model.add_text_tokens:
+            uncond_input_ids = get_uncond_tokens(self.tokenizer).to(self.device)
+            uncond_encoder_hidden_states = self.text_encoder(input_ids=uncond_input_ids[None]).last_hidden_state.to(dtype=self.dtype).squeeze(0)
+        else:
+            uncond_encoder_hidden_states = torch.zeros((self.cfg.model.num_decoder_cross_attn_tokens, self.cfg.model.token_embedding_dim), device=self.device, dtype=self.dtype)
         return uncond_encoder_hidden_states
 
     def add_cross_attn_params(self, batch, cond: ConditioningData):
@@ -899,7 +902,9 @@ class BaseMapper(Trainable):
 
             split_tokens = torch.split(output, (seq_lengths + 1).tolist(), dim=0)
             new_tokens = [tokens[:-1] for i, tokens in enumerate(split_tokens)]
+
             cond.mask_tokens = torch.cat(new_tokens, dim=0)
+            cond.src_mask_tokens = cond.mask_tokens.clone()
         
         if self.cfg.model.layer_specialization and self.cfg.model.num_conditioning_pairs != self.cfg.model.num_layer_queries: # Break e.g., 1024 -> 16 x 64
             if cond.mask_tokens is not None:
@@ -949,7 +954,12 @@ class BaseMapper(Trainable):
             cond.learnable_idxs = (batch.formatted_input_ids == self.placeholder_token_id).nonzero(as_tuple=True)
             cond.encoder_hidden_states[cond.learnable_idxs[0], cond.learnable_idxs[1]] = cond.mask_tokens.to(cond.encoder_hidden_states)
         else:
-            raise NotImplementedError()
+            batch.formatted_input_ids = torch.zeros_like(batch.input_ids)
+            for batch_idx in range(batch.bs):
+                mask = (cond.mask_batch_idx == batch_idx)
+                selected_tokens = cond.mask_tokens[mask]
+                num_tokens = selected_tokens.size(0)
+                cond.encoder_hidden_states[batch_idx, :num_tokens, :] = selected_tokens
         
         attn_meta: AttentionMetadata = cond.unet_kwargs["cross_attention_kwargs"]['attn_meta']
         if self.cfg.model.layer_specialization:
@@ -1016,7 +1026,7 @@ class BaseMapper(Trainable):
         if self.cfg.model.add_text_tokens:
             with torch.no_grad(): cond.encoder_hidden_states = self.text_encoder(input_ids=batch.input_ids)[0].to(dtype=self.dtype)
         else:
-            cond.encoder_hidden_states = torch.zeros((batch.bs, 77, self.cfg.model.token_embedding_dim), dtype=self.dtype, device=self.device)
+            cond.encoder_hidden_states = torch.zeros((batch.bs, self.cfg.model.num_decoder_cross_attn_tokens, self.cfg.model.token_embedding_dim), dtype=self.dtype, device=self.device)
 
         if add_conditioning and self.cfg.model.mask_token_conditioning:
             if cond.mask_tokens is None or cond.mask_batch_idx is None:
