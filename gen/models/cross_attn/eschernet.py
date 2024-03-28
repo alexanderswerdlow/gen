@@ -45,3 +45,22 @@ def cape_embed_6dof(f, P):
     # P is 4x4 transformation matrix
     f = einops.rearrange(f, '... (d k) -> ... d k', k=4)
     return einops.rearrange(f @ P.to(f), '... d k -> ... (d k)', k=4)
+
+from scipy.spatial.transform import Rotation
+import numpy as np
+def get_relative_pose(pose_1, pose_2):
+    orig_dtype, orig_device = pose_1.dtype, pose_1.device
+    pose_1 = pose_1.cpu().numpy()
+    pose_2 = pose_2.cpu().numpy()
+    rotation_1 = Rotation.from_matrix(pose_1[..., :3, :3])
+    rotation_2 = Rotation.from_matrix(pose_2[..., :3, :3])
+    translation_1 = pose_1[..., :3, 3]
+    translation_2 = pose_2[..., :3, 3]
+
+    final_tensor = np.zeros((pose_1.shape[0], 4, 4))
+
+    final_tensor[:, :3, :3] = Rotation.from_quat(rotation_2.as_quat() * rotation_1.inv().as_quat()).as_matrix()
+    final_tensor[:, :3, 3] = translation_1 - translation_2
+    final_tensor[:, 3, 3] = 1
+
+    return torch.from_numpy(final_tensor)

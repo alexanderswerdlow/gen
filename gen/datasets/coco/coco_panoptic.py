@@ -413,7 +413,6 @@ class CocoPanoptic(AbstractDataset, Dataset):
 
         # Im(integer_to_color((instance == 0).long())).save(f'instance_{index}')
         # Im(integer_to_color((semantic == 0).long())).save(f'semantic_{index}')
-        # breakpoint()
 
         # Aside from using rgb, we can represent panoptic labels in terms of
         # semantic_label * label_divisor + instance_label
@@ -504,7 +503,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         if self.use_preprocessed_masks is False:
             categories = torch.full((valid.shape), fill_value=-1, dtype=torch.long)
             unique_instance, unique_semantic = unique_instance[:num_masks], unique_semantic[:num_masks]
-            categories[unique_instance] = unique_semantic - 1
+            categories[unique_instance] = unique_semantic
             categories[~valid] = -1
             categories = categories[..., 1:]
             ret["categories"] = categories
@@ -522,7 +521,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
             "valid": valid,
             "metadata" : {
                 "name": str(image_id),
-                "scene_id": str(image_id)
+                "scene_id": str(image_id),
+                "split": self.split.name.lower(),
             }
         })
 
@@ -608,6 +608,7 @@ if __name__ == "__main__":
         return_tensorclass=True,
         object_ignore_threshold=0.0,
         top_n_masks_only=77,
+        num_overlapping_masks=3,
         # use_preprocessed_masks=True,
         # postprocess=True,
         # preprocessed_mask_type="custom_postprocessed",
@@ -625,5 +626,5 @@ if __name__ == "__main__":
         names = [f'{batch.metadata["scene_id"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
         visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False)
         start_time = time.time()
-        if step > 1:
+        if step > 10:
             break

@@ -101,7 +101,7 @@ class Trainer:
 
                 # TODO: We also call load_from_ckpt in train() [but load_model is False]. This may be due to an issue calling it at that location.
                 if self.cfg.trainer.ckpt:
-                    _ = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=model, load_model=True)
+                    _ = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=model, load_model=True, load_accelerator_state=self.cfg.trainer.load_accelerator_state)
 
                 self.model = self.accelerator.prepare(model)
                 self.tokenizer = unwrap(model).tokenizer
@@ -285,7 +285,7 @@ class Trainer:
         if self.cfg.profile:
             profiler = Profiler(output_dir=self.cfg.output_dir, warmup_steps=tr.profiler_warmup_steps, active_steps=tr.profiler_active_steps, record_memory=True)
 
-        progress_bar = tqdm(range(0, tr.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False, ncols=500)
+        progress_bar = tqdm(range(0, tr.max_train_steps), initial=initial_global_step, desc="Steps", disable=not is_main_process(), leave=False)
 
         if is_main_process() and tr.log_gradients is not None:
             wandb.watch(self.model, log="all" if tr.log_parameters else "gradients", log_freq=tr.log_gradients)

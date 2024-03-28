@@ -31,6 +31,7 @@ from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
 from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale,
                                                       shift_scale_uncond_hidden_states)
+from gen.models.cross_attn.eschernet import get_relative_pose
 from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, get_gt_rot, src_tgt_token_consistency_loss,
                                           token_cls_loss, token_rot_loss)
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
@@ -148,7 +149,20 @@ class BaseMapper(Trainable):
     def initialize_custom_models(self):
         if self.cfg.model.mask_token_conditioning:
             self.mapper = FeatureMapper(cfg=self.cfg).to(self.cfg.trainer.device)
-            self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder)
+            self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, compile=False) #, compile=not self.cfg.model.clip_lora)
+            if self.cfg.model.clip_lora:
+                from peft import LoraConfig, get_peft_model
+                clip_lora_config = LoraConfig(
+                    r=self.cfg.model.clip_lora_rank,
+                    lora_alpha=self.cfg.model.clip_lora_rank,
+                    init_lora_weights="gaussian",
+                    lora_dropout=0.1,
+                    bias="none",
+                    target_modules=["qkv"],
+                )
+                self.clip.base_model_prefix = 'base_model'
+                self.clip = get_peft_model(self.clip, clip_lora_config)
+                cast_training_params(self.clip, dtype=torch.float32)
 
         if self.cfg.model.use_dataset_segmentation is False:
             from gen.models.encoders.sam import HQSam
@@ -235,7 +249,7 @@ class BaseMapper(Trainable):
                 self.controlnet.enable_xformers_memory_efficient_attention()
 
         if self.cfg.trainer.gradient_checkpointing:
-            self.clip.base_model.set_grad_checkpointing()
+            if self.cfg.model.clip_lora is False: self.clip.base_model.set_grad_checkpointing()
             self.unet.enable_gradient_checkpointing()
             if self.cfg.model.controlnet:
                 self.controlnet.enable_gradient_checkpointing()
@@ -297,7 +311,11 @@ class BaseMapper(Trainable):
                 other.hqsam.requires_grad_(False)
 
         if md.mask_token_conditioning:
-            if md.freeze_clip:
+            if md.clip_lora:
+                for k, p in other.clip.named_parameters():
+                    if "lora_" not in k:
+                        p.requires_grad = False
+            elif md.freeze_clip:
                 if set_grad:
                     other.clip.requires_grad_(False)
                 other.clip.eval()
@@ -308,7 +326,7 @@ class BaseMapper(Trainable):
                 other.clip.train()
                 log_warn("CLIP is unfrozen")
 
-        if md.unfreeze_last_n_clip_layers is not None:
+        if md.unfreeze_last_n_clip_layers is not None and md.clip_lora is False:
             log_warn(f"Unfreezing last {md.unfreeze_last_n_clip_layers} CLIP layers")
             for block in other.clip.base_model.blocks[-md.unfreeze_last_n_clip_layers :]:
                 if set_grad:
@@ -540,7 +558,7 @@ class BaseMapper(Trainable):
 
         cond = self.get_hidden_state(batch, add_conditioning=disable_conditioning is False, cond=cond)
 
-        if self.cfg.model.unet is False: return cond
+        if self.cfg.model.unet is False or self.cfg.model.return_mean_pooled_mask_tokens: return cond
 
         bs = batch.src_pixel_values.shape[0]
         cond.input_prompt = [[x for x in self.tokenizer.convert_ids_to_tokens(batch.formatted_input_ids[y]) if "<|" not in x] for y in range(bs)]
@@ -661,7 +679,7 @@ class BaseMapper(Trainable):
             uncond_encoder_hidden_states = torch.zeros((self.cfg.model.num_decoder_cross_attn_tokens, self.cfg.model.token_embedding_dim), device=self.device, dtype=self.dtype)
         return uncond_encoder_hidden_states
 
-    def add_cross_attn_params(self, batch, cond: ConditioningData):
+    def add_cross_attn_params(self, batch: InputData, cond: ConditioningData):
         """
         This function sets up the attention parameters for the mask conditioning:
             - Gets CLIP features for K/V and flattens them
@@ -688,6 +706,8 @@ class BaseMapper(Trainable):
             clip_feature_map = rearrange("n b (h w) d -> b n (h w) d", clip_feature_map)  # (b, n, (h w), d)
         else:
             clip_feature_map = rearrange("b (h w) d -> b () (h w) d", clip_feature_map)  # (b, 1, (h w), d)
+
+        clip_feature_map = clip_feature_map.to(self.dtype)
 
         if "resnet" not in self.clip.model_name:
             clip_feature_map = clip_feature_map[:, :, 1:, :]
@@ -730,7 +750,7 @@ class BaseMapper(Trainable):
 
                 non_empty_idx = non_empty_mask.nonzero().squeeze(1)
                 if non_empty_idx.shape[0] > 0:
-                    num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take n/2 to n available masks
+                    num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
                     selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
                     dropout_mask[selected_masks] = True
 
@@ -777,6 +797,30 @@ class BaseMapper(Trainable):
         mask_instance_idx = torch.cat(mask_instance_idx, dim=0).to(device)
         mask_dropout = torch.stack(mask_dropout, dim=0).to(device)
 
+        cond.mask_batch_idx = mask_batch_idx
+        cond.mask_instance_idx = mask_instance_idx
+        cond.mask_dropout = mask_dropout
+
+        if self.cfg.model.return_mean_pooled_mask_tokens:
+            if self.cfg.model.mean_pooled_mask_tokens_in_bbox:
+                feature_map_masks = einops.rearrange(feature_map_masks, "total (h w) -> total h w", h=latent_dim, w=latent_dim).to(device)
+                indices = torch.where(feature_map_masks)
+                result = torch.zeros_like(feature_map_masks, dtype=torch.bool, device=device)
+                
+                for i in range(feature_map_masks.size(0)):
+                    min_y, max_y = indices[1][indices[0] == i].min().item(), indices[1][indices[0] == i].max().item()
+                    min_x, max_x = indices[2][indices[0] == i].min().item(), indices[2][indices[0] == i].max().item()
+                    result[i, min_x:max_x+1, min_y:max_y+1] = True
+
+                feature_map_masks = result
+                feature_map_masks = einops.rearrange(feature_map_masks, "total h w -> total (h w)").to(device)
+                
+            clip_feature_map = einops.rearrange(clip_feature_map, "b layers tokens d -> b tokens (layers d)")
+            feature_maps__ = torch.stack([clip_feature_map[batch_idx] for batch_idx, mask in zip(mask_batch_idx, feature_map_masks)])
+            masked_feature_maps = feature_maps__ * feature_map_masks.unsqueeze(-1)
+            cond.mask_tokens = masked_feature_maps.sum(dim=1) / feature_map_masks.sum(dim=1).unsqueeze(-1)
+            return cond
+
         # In the simplest case, we have one query per mask, and a single feature map. However, we support multiple queries per mask 
         # [to generate tokens for different layers] and also support each query to have K/Vs  from different feature maps, as long as all feature maps 
         # have the same dimension allowing us to assume that each mask has the same number of pixels (KVs) for each feature map.
@@ -799,9 +843,6 @@ class BaseMapper(Trainable):
         max_seqlen_q = 1  # We are doing attention pooling so we have one query per mask
 
         cond.attn_dict = dict(x_kv=k_features, cu_seqlens=cu_seqlens_q, max_seqlen=max_seqlen_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k)
-        cond.mask_batch_idx = mask_batch_idx
-        cond.mask_instance_idx = mask_instance_idx
-        cond.mask_dropout = mask_dropout
 
         if len(batch_one_hot_masks) > 0:
             cond.batch_attn_masks = {k: [m[k] for m in batch_one_hot_masks] for k in batch_one_hot_masks[0].keys()}
@@ -838,6 +879,7 @@ class BaseMapper(Trainable):
             input_batch = batch
         
         cond = self.add_cross_attn_params(input_batch, cond)
+        if self.cfg.model.return_mean_pooled_mask_tokens: return cond
 
         orig_queries = einops.repeat(self.mapper.learnable_token, "layers d -> (masks layers) d", masks=cond.mask_batch_idx.shape[0])
         x_kv_orig = cond.attn_dict["x_kv"].clone()
@@ -857,10 +899,10 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.per_layer_queries: # Break e.g., 1024 -> 16 x 64
             if cond.mask_tokens is not None:
-                cond.mask_tokens = einops.rearrange(cond.mask_tokens, "(masks layers) d -> masks (layers d)", masks=cond.mask_batch_idx.shape[0])
+                cond.mask_tokens = einops.rearrange(cond.mask_tokens, "(tokens layers) d -> tokens (layers d)", tokens=cond.mask_batch_idx.shape[0])
 
             if cond.mask_head_tokens is not None:
-                cond.mask_head_tokens = einops.rearrange(cond.mask_head_tokens, "(masks layers) d -> masks (layers d)", masks=cond.mask_batch_idx.shape[0])
+                cond.mask_head_tokens = einops.rearrange(cond.mask_head_tokens, "(tokens layers) d -> tokens (layers d)", tokens=cond.mask_batch_idx.shape[0])
 
         if self.cfg.model.return_encoder_normalized_tgt:
            cond.attn_dict = None
@@ -883,7 +925,8 @@ class BaseMapper(Trainable):
             batch_size = cond.mask_batch_idx.max().item() + 1  
             hidden_dim = cond.mask_tokens.shape[1]
 
-            register_tokens = self.mapper.camera_embed(batch.tgt_pose.view(batch.bs, -1).to(self.dtype)).unsqueeze(1)
+            relative_pose = get_relative_pose(batch.src_pose, batch.tgt_pose).to(batch.src_pose)
+            register_tokens = self.mapper.camera_embed(relative_pose.view(batch.bs, -1).to(self.dtype)).unsqueeze(1)
             register_tokens = torch.cat((register_tokens, register_tokens.new_zeros((*register_tokens.shape[:-1], hidden_dim - register_tokens.shape[-1]))), dim=-1)
 
             seq_lengths = torch.bincount(cond.mask_batch_idx)
@@ -908,14 +951,14 @@ class BaseMapper(Trainable):
         
         if self.cfg.model.layer_specialization and self.cfg.model.num_conditioning_pairs != self.cfg.model.num_layer_queries: # Break e.g., 1024 -> 16 x 64
             if cond.mask_tokens is not None:
-                layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_tokens, layers=self.cfg.model.num_conditioning_pairs)
+                layerwise_mask_tokens = einops.rearrange(cond.mask_tokens, "tokens (layers d) -> tokens layers d", layers=self.cfg.model.num_conditioning_pairs)
                 layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens)  # Batched 64 -> 1024
-                cond.mask_tokens = rearrange("b layers d -> b (layers d)", layerwise_mask_tokens).to(self.dtype)
+                cond.mask_tokens = einops.rearrange(layerwise_mask_tokens, "tokens layers d -> tokens (layers d)").to(self.dtype)
 
             if cond.mask_head_tokens is not None:
-                layerwise_mask_tokens = rearrange("b (layers d) -> b layers d", cond.mask_head_tokens, layers=self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries)
+                layerwise_mask_tokens = einops.rearrange(cond.mask_head_tokens, "tokens (layers d) -> tokens layers d", layers=self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries)
                 layerwise_mask_tokens = self.mapper.layer_specialization(layerwise_mask_tokens)  # Batched 64 -> 1024
-                cond.mask_head_tokens = rearrange("b layers d -> b (layers d)", layerwise_mask_tokens).to(self.dtype)
+                cond.mask_head_tokens = einops.rearrange(layerwise_mask_tokens, "tokens layers d -> tokens (layers d)").to(self.dtype)
 
         return cond
 
@@ -1031,6 +1074,7 @@ class BaseMapper(Trainable):
         if add_conditioning and self.cfg.model.mask_token_conditioning:
             if cond.mask_tokens is None or cond.mask_batch_idx is None:
                 cond = self.compute_mask_tokens(batch, cond)
+                if self.cfg.model.return_mean_pooled_mask_tokens: return cond
             
             if cond.mask_tokens is not None:
                 cond = self.update_hidden_state_with_mask_tokens(batch, cond)

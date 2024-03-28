@@ -231,9 +231,8 @@ def visualize_input_data(
 
         if batch.src_pose is not None and batch.src_pose.shape[1] == 4 and batch.src_pose.ndim == 3:
             from gen.datasets.scannetpp.scannetpp import get_distance_matrix_vectorized
-            distance_matrix = get_distance_matrix_vectorized(torch.cat((batch.src_pose, batch.tgt_pose), dim=0))
-            rot, dist = distance_matrix[0, 1]
-            output_img = output_img.write_text(f"Relative Pose Rot: {rot:.2f}, Relative Pose Dist: {dist:.2f}", (10, 10), size=0.25)
+            rot, dist = get_distance_matrix_vectorized(torch.stack((batch.src_pose[b], batch.tgt_pose[b]), dim=0))
+            output_img = output_img.write_text(f"Relative Pose Rot: {rot[0, 1]:.2f}, Relative Pose Dist: {dist[0, 1]:.2f}", (10, 10), size=0.25)
 
         output_img.save(save_name)
 

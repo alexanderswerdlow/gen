@@ -730,3 +730,32 @@ import antigravity
     #             Im.concat_vertical(tgt_img, tgt_seg_viz)
     #         ).save(str(idx))
                         # seg = seg.to(torch.uint8).argmax(dim=0)[None, None].to(torch.uint8)
+
+        # image_paths = [path.split('data/')[-1] for path in self.image_files]
+        # with open('files.txt', "w") as file: file.write("\n".join(image_paths))
+        # rsync -a --files-from=files.txt /projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data /scratch/aswerdlo/cache/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data
+
+        # target_file = torchvision.io.read_file(str(image_path))
+        # image = torchvision.io.decode_jpeg(target_file, device=self.device)[None] / 255
+        # T = self.get_relative_pose(tgt_pose, src_pose)  # shape [7]
+        # scene_extent = self.frame_poses[self.dataset_idx_to_frame_pair[idx], :3, 3].max()
+# dists = compute_dist(query_data["mask_tokens"], value_data['mask_tokens'])
+        # idx = torch.argmin(dists, dim=1)
+
+    # tree = KDTree(train_tokens)
+    # dists, idx = tree.query(val_tokens, workers=-1, k=5)
+    
+    # faiss_index = faiss.index_factory(train_tokens.shape[1], "IVF16384,Flat")
+    # faiss_index.verbose = True
+
+    # index = faiss.extract_index_ivf(faiss_index)
+    # clustering_index = faiss.index_cpu_to_all_gpus(faiss.IndexFlatL2(index.d))
+    # index.clustering_index = index
+    
+    # clustering_index.train(train_tokens)
+    # # faiss.write_index(faiss_index, load_trained_faiss_index)
+    # dists, idx = faiss.search_with_parameters(index, val_tokens, 5)
+    # co.shard_type = 1
+ # index = faiss.IndexIVFPQ(cpu_index, train_token_dim, nlist, 8, 8)
+# index.add(train_tokens)
+# index.train(train_tokens)

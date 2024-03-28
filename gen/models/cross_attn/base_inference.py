@@ -286,7 +286,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     bs_ = batch.input_ids.shape[0]
     b_ = 0
     gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_image.torch[b_], onehot_to_color(batch.one_hot_tgt_segmentation[b_])).write_text(text="Target") for b_ in range(bs_)])
-    if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels:
+    if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels or self.cfg.model.modulate_src_tokens_with_tgt_pose:
         src_one_hot = integer_to_one_hot(batch.src_segmentation + 1, batch.src_segmentation.max() + 1)
         src_seg = Im(onehot_to_color(src_one_hot[b_].squeeze(0)))
         src_info = Im.concat_vertical(orig_src_image, src_seg).write_text("Source")

@@ -29,20 +29,29 @@ tqdm.monitor_interval = 0 # May not be necessary
 def inference(cfg: BaseConfig, accelerator: Accelerator):
     model = get_model_from_cfg(cfg)
 
-    if cfg.inference.set_seed is False:
-        g = torch.Generator()
-        g.manual_seed(int(time.time()))
+    if not (cfg.debug and cfg.trainer.ckpt is None): load_from_ckpt(cfg=cfg, accelerator=accelerator, model=model, load_model=True)
+    model = accelerator.prepare(model)
 
-    validation_dataloader = hydra.utils.instantiate(cfg.dataset.val_dataset, _recursive_=True)(
-        cfg=cfg, split=Split.VALIDATION, tokenizer=model.tokenizer
+    if cfg.inference.infer_val_dataset: run_inference_split(cfg, accelerator, model, Split.VALIDATION)
+
+    if cfg.inference.infer_train_dataset: run_inference_split(cfg, accelerator, model, Split.TRAIN)
+
+
+def run_inference_split(cfg: BaseConfig, accelerator: Accelerator, model: Trainable, split: Split):
+    g = torch.Generator()
+    if cfg.inference.set_seed:
+        g.manual_seed(42 + get_rank())
+    else:
+        g.manual_seed(int(time.time()) + get_rank())
+
+    dataloader = hydra.utils.instantiate(cfg.dataset.train, _recursive_=True)(
+        cfg=cfg, split=split, tokenizer=unwrap(model).tokenizer
     ).get_dataloader(generator=g)
 
-    load_from_ckpt(cfg=cfg, accelerator=accelerator, model=model, load_model=True)
-
-    validation_dataloader, model = accelerator.prepare(validation_dataloader, model)
+    dataloader = accelerator.prepare(dataloader)
 
     run_inference_dataloader(
-        accelerator=accelerator, state=TrainingState(0, 0, 0, 0, 0), dataloader=validation_dataloader, model=model, output_path=cfg.output_dir, prefix='inference/'
+        cfg=cfg, accelerator=accelerator, state=TrainingState(0, 0, 0, 0, 0), dataloader=dataloader, model=model, output_path=cfg.output_dir, prefix='inference/'
     )
 
 
@@ -58,8 +67,11 @@ def run_inference_dataloader(
     output_path: Path,
     state: TrainingState,
     prefix: Optional[str] = None,
+    cfg: Optional[BaseConfig] = None,
     **kwargs,
 ):
+    assert len(dataloader) > 0, "Dataloader is empty."
+    
     output_path.mkdir(exist_ok=True, parents=True)
     log_debug(f"Setting inference mode.", main_process_only=False)
     unwrap(model).set_inference_mode(**kwargs)
@@ -68,7 +80,7 @@ def run_inference_dataloader(
     log_info(f"Running inference w/prefix: {prefix}, Dataloder size: {len(dataloader)}", main_process_only=True)
     
     outputs = []
-    for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
+    for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process(), total=len(dataloader)):
         inference_state = TrainingState(
             epoch_step=i,
             num_epoch_steps=len(dataloader),
@@ -82,10 +94,12 @@ def run_inference_dataloader(
         outputs.append(output)
 
     log_info(f"Before all_gather.", main_process_only=False)
-    outputs = all_gather(outputs)  # Combine over GPUs.
-    outputs = flatten(outputs)  # Concat outputs from each GPU
+    if cfg is None or cfg.inference.gather_results:
+        del model; torch.cuda.empty_cache()
+        outputs = all_gather(outputs)  # Combine over GPUs.
+        outputs = flatten(outputs)  # Concat outputs from each GPU
 
-    if is_main_process():
+    if is_main_process() or (cfg is not None and cfg.inference.gather_results is False):
         new_dict = defaultdict(list)
         for d in outputs:
             for k, v in d.items():
@@ -99,6 +113,15 @@ def run_inference_dataloader(
                 else:
                     v_ = torch.cat(v, dim=0).mean()
                 accelerator.log({k: v_}, step=state.global_step)
+            elif 'knn' in k:
+                v_ = {}
+                for k_ in v[0].keys(): 
+                    v_[k_] = torch.cat([x[k_] for x in v], dim=0)
+
+                from tensordict import TensorDict
+                tensordict = TensorDict(v_, [v_[k_].shape[0]])
+                tensordict.memmap(output_path / k / str(get_rank()), num_threads=16)
+                log_info(f"Saved mmap tensordict to {output_path / k}")
             elif isinstance(v[0], dict):
                 v_ = {}
                 for i in range(len(v)):

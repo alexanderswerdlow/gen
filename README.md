@@ -80,6 +80,9 @@ To update submodules, run `git pull --recurse-submodules`
 nsys profile -w true -t cuda,nvtx,osrt,cudnn,cublas -s cpu -o $timestamp --force-overwrite true --cudabacktrace=true --osrt-threshold=10000 -x true --capture-range=cudaProfilerApi --stop-on-range-end=true
 
 # To Profile everything, just remove: --capture-range=cudaProfilerApi --stop-on-range-end=true
+
+accelerate launch --main_process_port=$RANDOM --no_python scripts/accelerate_nsys_profile.sh python main.py ...normal args
+https://docs.nvidia.com/nsight-systems/UserGuide/index.html#deepspeed
 ```
 
 ## Configs

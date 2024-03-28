@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from gen.configs.utils import auto_store, store_child_config
 from gen.datasets.run_dataloader import iterate_dataloader
 from gen.datasets.scannetpp.run_sam import scannet_run_sam
+from gen.utils.decoupled_utils import all_gather
 from gen.utils.trainer_utils import Trainable
 from gen.models.cross_attn.base_inference import run_qualitative_inference, compose_two_images, interpolate_latents
 from functools import partial
@@ -35,7 +36,10 @@ class InferenceConfig:
 
     use_custom_pipeline: bool = True
     inference_func: Callable[[Trainable], None] = run_qualitative_inference
+    infer_val_dataset: bool = False
+    infer_train_dataset: bool = False
     dataloader_only_func: Callable[..., None] = iterate_dataloader
+    gather_results: bool = True
 
 
 auto_store(InferenceConfig, name="basemapper")

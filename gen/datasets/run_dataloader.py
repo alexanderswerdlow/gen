@@ -34,7 +34,7 @@ def coco_colormap_viz(batch: InputData):
     pass
 
 def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
-    exit: Optional[int] = 100
+    run_train = False
 
     cfg.dataset.train.return_tensorclass = True
     cfg.dataset.val.return_tensorclass = True
@@ -48,25 +48,32 @@ def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
     g = torch.Generator()
     g.manual_seed(int(time.time()))
     
-    train: AbstractDataset = hydra.utils.instantiate(cfg.dataset.train, _recursive_=True)(
-        cfg=cfg, split=Split.TRAIN, tokenizer=MockTokenizer()
-    )
+    additional_datasets = None
+    if run_train:
+        train: AbstractDataset = hydra.utils.instantiate(cfg.dataset.train, _recursive_=True)(
+            cfg=cfg, split=Split.TRAIN, tokenizer=MockTokenizer()
+        )
 
-    additional_train_datasets = None
-    if exists(cfg.dataset.additional_train):
-        additional_train_datasets = [instantiate(dataset_cfg)(cfg=cfg, split=Split.TRAIN, tokenizer=MockTokenizer()) for dataset_cfg in cfg.dataset.additional_train]
+        if exists(cfg.dataset.additional_train):
+            additional_datasets = [instantiate(dataset_cfg)(cfg=cfg, split=Split.TRAIN, tokenizer=MockTokenizer()) for dataset_cfg in cfg.dataset.additional_train]
 
-    dataset = train
-    dataloader = dataset.get_dataloader(generator=g, additional_datasets=additional_train_datasets)
+        dataset = train
+    else:
+        val: AbstractDataset = hydra.utils.instantiate(cfg.dataset.val, _recursive_=True)(
+            cfg=cfg, split=Split.VALIDATION, tokenizer=MockTokenizer()
+        )
+
+        if exists(cfg.dataset.additional_val):
+            additional_datasets = [instantiate(dataset_cfg)(cfg=cfg, split=Split.VALIDATION, tokenizer=MockTokenizer()) for dataset_cfg in cfg.dataset.additional_val]
+
+        dataset = val
+
+    dataloader = dataset.get_dataloader(generator=g, additional_datasets=additional_datasets)
 
     batch: InputData
-    for j in range(100000):
-        for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
-            pass
-            # names = [f'{batch.metadata["dataset"][i]}_{batch.metadata["name"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
-            # visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False, cfg=cfg)
-            # print(batch.metadata['dataset'])
-            # print(batch.src_pose[:, :3, 3].min(), batch.src_pose[:, :3, 3].max())
-            # print('')
-
-            # if exit is not None and i >= exit: break
+    for i, batch in tqdm(enumerate(dataloader), leave=False, disable=not is_main_process()):
+        names = [f'{batch.metadata["dataset"][i]}_{batch.metadata["name"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
+        visualize_input_data(batch, names=names, show_overlapping_masks=True, remove_invalid=False, cfg=cfg)
+        # print(batch.metadata['dataset'])
+        # print(batch.src_pose[:, :3, 3].min(), batch.src_pose[:, :3, 3].max())
+        # print('')

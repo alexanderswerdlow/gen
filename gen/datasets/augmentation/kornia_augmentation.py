@@ -155,7 +155,7 @@ class Augmentation:
         if self.src_transform is not None:
             # When we augment the source we need to also augment the target
             src_params = self.src_transform.forward_parameters(batch_shape=src_data.image.shape)
-            src_data = process(aug=self.src_transform, params=src_params, input_data=src_data, use_keypoints=use_keypoints)
+            src_data = process(aug=self.src_transform, params=src_params, input_data=src_data, return_grid=self.return_grid, use_keypoints=use_keypoints)
             if self.different_src_tgt_augmentation is False:
                 tgt_data = process(aug=self.src_transform, params=src_params, input_data=tgt_data, return_grid=self.return_grid, use_keypoints=use_keypoints)
 

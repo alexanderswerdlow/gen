@@ -49,18 +49,9 @@ def get_distance_matrix_vectorized(poses: np.ndarray) -> torch.Tensor:
     translations = poses[:, :3, 3]
     rotational_distances = 2 * np.arccos(np.clip(np.einsum('ij,kj->ik', rotations, rotations), -1.0, 1.0))
     translational_distances = np.linalg.norm(translations[:, None, :] - translations[None, :, :], axis=-1)
-    distance_matrix = np.stack((rotational_distances, translational_distances), axis=-1)
-    return torch.from_numpy(distance_matrix).to(torch.float32)
+    return torch.from_numpy(rotational_distances), torch.from_numpy(translational_distances)
 
-def get_split_data(split, directory, distance_threshold, frames_slice, cache: bool = False) -> List[Dict[str, Union[str, torch.Tensor]]]:
-    if cache:
-        scene_pose_data_path = SCANNETPP_CUSTOM_DATA_PATH / "scene_pose_data"
-        cache_key = f"{split.name}_{directory.replace('/', '_')}_{distance_threshold}_{sanitize_filename(str(frames_slice))}"
-        cache_path = get_available_path(scene_pose_data_path / f"{cache_key}.pt")
-
-        if cache_path.exists():
-            return torch.load(cache_path)
-
+def get_split_data(split, directory, distance_threshold, frames_slice) -> List[Dict[str, Union[str, torch.Tensor]]]:
     # Load data (Image + Camera Poses)
     image_folder = os.path.join(directory, "rgb")
     image_names = sorted(os.listdir(image_folder))[frames_slice]
@@ -78,21 +69,15 @@ def get_split_data(split, directory, distance_threshold, frames_slice, cache: bo
 
     frame_names = [frame for frame in poses.keys() if frame + ".jpg" in image_names]
     poses_c2w = np.stack([pose["aligned_pose"] for key, pose in poses.items() if key in frame_names])
-    K = np.stack([pose["intrinsic"] for key, pose in poses.items() if key in frame_names])
+    intrinsics = np.stack([pose["intrinsic"] for key, pose in poses.items() if key in frame_names])
 
-    distance_matrix = get_distance_matrix_vectorized(poses_c2w)
-    assert torch.isnan(distance_matrix).sum() == 0
-    mask = torch.logical_or(torch.logical_and(distance_matrix[..., 0] < 0.3, distance_matrix[..., 1] < 0.3), torch.logical_and(distance_matrix[..., 0] < 0.3, distance_matrix[..., 1] < 1.0))
+    rotational_distances, translational_distances = get_distance_matrix_vectorized(poses_c2w)
+    assert torch.isnan(rotational_distances).sum() == 0 and torch.isnan(translational_distances).sum() == 0
 
+    mask = torch.logical_or(torch.logical_and(rotational_distances < distance_threshold[0], translational_distances < distance_threshold[1]), torch.logical_and(rotational_distances < distance_threshold[2], translational_distances < distance_threshold[3]))
     candidate_indicies = torch.argwhere(mask)
-    pose_data = np.concatenate((poses_c2w.reshape(poses_c2w.shape[0], -1), K.reshape(K.shape[0], -1)), axis=1)
 
-    if cache:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save((candidate_indicies, frame_names, pose_data), cache_path)
-        log_info(f"Saved data to {cache_path}")
-
-    return candidate_indicies, frame_names, pose_data
+    return candidate_indicies, frame_names, poses_c2w, intrinsics
 
 def get_scene_data(split, directory, distance_threshold, frames_slice) -> List[Dict[str, Union[str, torch.Tensor]]]:
     image_folder = os.path.join(directory, "rgb")
@@ -100,8 +85,7 @@ def get_scene_data(split, directory, distance_threshold, frames_slice) -> List[D
 
     if output is None: return None
 
-    indices_arr, frame_names, pose_data = output
-    poses_c2w, intrinsics = pose_data[:, :16].reshape(-1, 4, 4), pose_data[:, 16:].reshape(-1, 3, 3)
+    indices_arr, frame_names, poses_c2w, intrinsics = output
 
     assert len(frame_names) == len(poses_c2w) == len(intrinsics)
     
@@ -118,7 +102,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         augmentation: Optional[Augmentation] = None,
         tokenizer = None,
         image_pairs_per_scene: int = 16384,
-        distance_threshold: float = 0.1,
+        distance_threshold: tuple[float] = (0.30, 0.1, 0.12, 0.8),
         depth_map_type: str = "gt",
         depth_map: bool = False,
         scenes_slice: Optional[tuple] = None,
@@ -132,7 +116,8 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         use_segmentation: bool = True,
         return_encoder_normalized_tgt: bool = False,
         only_preprocess_seg: bool = False,
-        scratch_only: bool = True,
+        scratch_only: bool = False,
+        src_eq_tgt: bool = False,
         # TODO: All these params are not actually used but needed because of a quick with hydra_zen
         num_objects=None,
         resolution=None,
@@ -159,8 +144,10 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
     ):
         self.root: str = root
         self.scenes = scenes
-        self.scenes_slice = scenes_slice if isinstance(scenes_slice, slice) else slice(*scenes_slice)
-        self.frames_slice = frames_slice if isinstance(frames_slice, slice) else slice(*frames_slice)
+        self.scenes_slice = scenes_slice if scenes_slice is not None else slice(None)
+        self.frames_slice = frames_slice if frames_slice is not None else slice(None)
+        self.scenes_slice = self.scenes_slice if isinstance(self.scenes_slice, slice) else slice(*self.scenes_slice)
+        self.frames_slice = self.frames_slice if isinstance(self.frames_slice, slice) else slice(*self.frames_slice)
         self.distance_threshold = distance_threshold
         self.depth_map = depth_map
         self.depth_map_type = depth_map_type
@@ -174,6 +161,8 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         self.return_encoder_normalized_tgt = return_encoder_normalized_tgt
         self.only_preprocess_seg = only_preprocess_seg
         self.scratch_only = scratch_only
+        self.sync_dataset_to_scratch = sync_dataset_to_scratch
+        self.src_eq_tgt = src_eq_tgt
 
         default_split_scenes: List[str] = train_scenes if self.split == Split.TRAIN else (val_scenes if self.split == Split.VALIDATION else test_scenes)
         self.scenes = default_split_scenes if (self.scenes is None or len(self.scenes) == 0) else self.scenes
@@ -183,20 +172,18 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         if single_scene_debug:
             self.scenes = ["712dc47104"]
 
-        if sync_dataset_to_scratch:
+        seg_data_path = SCANNETPP_CUSTOM_DATA_PATH / "all_pose_data"
+        if self.sync_dataset_to_scratch:
             sync_data(
                 nfs_path=SCANNETPP_DATASET_PATH, 
                 sync=self.num_workers == 0,
                 run_space_check=False,
                 options=["--archive", "--progress", "--include=*/", "--include=rgb/***", "--exclude=*"]
             )
-
-        seg_data_path = SCANNETPP_CUSTOM_DATA_PATH / "all_pose_data"
-        if self.scratch_only:
             sync_data(nfs_path=seg_data_path, sync=self.num_workers == 0)
 
         scenes_hash = hashlib.md5(("_".join(self.scenes)).encode()).hexdigest()
-        cache_key = f"{scenes_hash}_{str(self.root).replace('/', '_')}_{distance_threshold}"
+        cache_key = sanitize_filename(f"{scenes_hash}_{str(self.root).replace('/', '_')}_{distance_threshold}")
         cache_path = get_available_path(seg_data_path / f"{cache_key}.pt")
 
         if cache_path.exists():
@@ -205,7 +192,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         else:
             log_info(f"Cache not found at {cache_path}, creating...")
             self.dataset_idx_to_frame_pair, self.image_files, self.frame_poses, self.intrinsics, self.frame_scene_indices = torch.zeros((0, 2), dtype=torch.int32), [], [], [], []
-            for idx, scene in tqdm(enumerate(self.scenes), desc="Loading scenes"):
+            for idx, scene in tqdm(enumerate(self.scenes), desc="Loading scenes", total=len(self.scenes)):
                 output = get_scene_data(self.split, os.path.join(root, scene, "iphone"), self.distance_threshold, self.frames_slice)
                 if output is None: continue
 
@@ -225,17 +212,16 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
             self.intrinsics = torch.cat(self.intrinsics, dim=0).to(torch.float32)
             self.frame_scene_indices = torch.cat(self.frame_scene_indices, dim=0).to(torch.int32)
             log_info(f"Saving all scene data to {cache_path}")
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save((self.dataset_idx_to_frame_pair, self.image_files, self.frame_poses, self.intrinsics, self.frame_scene_indices), cache_path)
 
         log_info(f"Scannet++ has {len(self)} samples")
-        # image_paths = [path.split('data/')[-1] for path in self.image_files]
-        # with open('files.txt', "w") as file: file.write("\n".join(image_paths))
-        # rsync -a --files-from=files.txt /projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data /scratch/aswerdlo/cache/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data
 
     def open_lmdb(self):
         if self.use_segmentation:
             seg_data_path = SCANNETPP_CUSTOM_DATA_PATH / "segmentation" / 'v2'
-            sync_data(nfs_path=seg_data_path, sync=self.num_workers == 0)
+            if self.sync_dataset_to_scratch:
+                sync_data(nfs_path=seg_data_path, sync=self.num_workers == 0)
             cache_path = get_available_path(seg_data_path, return_scratch_only=self.scratch_only)
             self.seg_env = lmdb.open(str(cache_path), readonly=True, map_size=1099511627776)
     
@@ -262,10 +248,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
                 return self.__getitem__((idx + 1) % len(self))
             
     def get_image(self, image_path: Path):
-        image_path = get_available_path(image_path, resolve=False, return_scratch_only=False)
-
-        if not str(image_path).startswith("/scratch") and self.scratch_only:
-            log_warn(f"Image path {image_path} is not in scratch.")
+        image_path = get_available_path(image_path, resolve=False, return_scratch_only=self.scratch_only)
         
         with open(image_path, 'rb', buffering=100*1024) as fp: data = fp.read()
         image = simplejpeg.decode_jpeg(data)
@@ -310,6 +293,9 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         metadata = self.get_metadata(idx)
 
         src_img_idx, tgt_img_idx = metadata['metadata']['frame_idxs']
+
+        if self.src_eq_tgt:
+            tgt_img_idx = src_img_idx
         
         src_path = self.image_files[src_img_idx]
         tgt_path = self.image_files[tgt_img_idx]
@@ -351,10 +337,6 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         else:
             src_seg = src_img.new_zeros((1, 1, *src_img.shape[-2:]))
             tgt_seg = tgt_img.new_zeros((1, 1, *tgt_img.shape[-2:]))
-        
-        T = self.get_relative_pose(tgt_pose, src_pose)  # shape [7]
-
-        # scene_extent = self.frame_poses[self.dataset_idx_to_frame_pair[idx], :3, 3].max()
 
         src_pose[:3, 3] /= 10
         tgt_pose[:3, 3] /= 10
@@ -439,32 +421,6 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
                 "frame_idxs": frame_idxs,
             },
         }
-    
-    def get_rotational_difference(
-        self, rotation_1: Rotation, rotation_2: Rotation
-    ) -> np.ndarray:
-        # https://stackoverflow.com/questions/22157435/difference-between-the-two-quaternions
-        # http://www.boris-belousov.net/2016/12/01/quat-dist/#:~:text=Using%20quaternions%C2%B6&text=The%20difference%20rotation%20quaternion%20that,quaternion%20r%20%3D%20p%20q%20%E2%88%97%20.
-
-        return rotation_2.as_quat() * rotation_1.inv().as_quat()
-
-    def get_translational_difference(
-        self, translation_1: np.ndarray, translation_2: np.ndarray
-    ) -> np.ndarray:
-        return translation_1 - translation_2
-
-    def get_relative_pose(self, pose_1: np.ndarray, pose_2: np.ndarray) -> np.ndarray:
-        rotation_1 = Rotation.from_matrix(pose_1[:3, :3])
-        rotation_2 = Rotation.from_matrix(pose_2[:3, :3])
-        translation_1 = pose_1[:3, 3]
-        translation_2 = pose_2[:3, 3]
-
-        return np.concatenate(
-            [
-                self.get_rotational_difference(rotation_1, rotation_2),
-                self.get_translational_difference(translation_1, translation_2),
-            ]
-        )
 
     def cartesian_to_spherical(self, xyz: np.ndarray) -> np.ndarray:
         # https://github.com/cvlab-columbia/zero123/blob/main/zero123/ldm/data/simple.py#L318
@@ -514,7 +470,6 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
 
 
 import typer
-
 typer.main.get_command_name = lambda name: name
 app = typer.Typer(pretty_exceptions_show_locals=False)
 

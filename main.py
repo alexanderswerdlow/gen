@@ -1,15 +1,15 @@
-import importlib
 import autoroot
+
+import importlib
 import os
 import pickle
 import random
 import string
-import traceback
 import sys
+import traceback
 from pathlib import Path
 
 import cloudpickle
-import diffusers
 import hydra
 import numpy as np
 import torch
@@ -17,19 +17,20 @@ import torch.backends.cuda as cuda
 import torch.backends.cudnn as cudnn
 import torch.utils.checkpoint
 import transformers
-import wandb
-from accelerate import Accelerator, DistributedDataParallelKwargs
-from accelerate.utils import GradientAccumulationPlugin, ProjectConfiguration
-from accelerate import FullyShardedDataParallelPlugin
-from torch.distributed.fsdp.fully_sharded_data_parallel import FullOptimStateDictConfig, FullStateDictConfig
-from diffusers.utils import check_min_version
+from accelerate import Accelerator, DistributedDataParallelKwargs, FullyShardedDataParallelPlugin
+from accelerate.utils import GradientAccumulationPlugin, PrecisionType, ProjectConfiguration
 from hydra.utils import get_original_cwd
-from image_utils import library_ops  # This overrides repr() for tensors
 from omegaconf import OmegaConf, open_dict
+from torch.distributed.fsdp.fully_sharded_data_parallel import FullOptimStateDictConfig, FullStateDictConfig
 
+import diffusers
+import wandb
+from diffusers.utils import check_min_version
 from gen.configs.base import BaseConfig
-from gen.utils.decoupled_utils import check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint, set_global_exists, set_timing_builtins
+from gen.utils.decoupled_utils import (check_gpu_memory_usage, get_num_gpus, get_rank, is_main_process, set_global_breakpoint, set_global_exists,
+                                       set_timing_builtins)
 from gen.utils.logging_utils import log_error, log_info, log_warn, set_log_file, set_logger
+from image_utils import library_ops  # This overrides repr() for tensors
 from inference import inference
 from train import Trainer
 
@@ -52,23 +53,22 @@ def main(cfg: BaseConfig):
 
     if cfg.attach:
         import subprocess
-
         import debugpy
-
         subprocess.run("kill -9 $(lsof -i :5678 | grep $(whoami) | awk '{print $2}')", shell=True)
-        debugpy.listen(5678)
+        debugpy.listen(("0.0.0.0", 5678))
         log_info("Waiting for debugger attach")
         debugpy.wait_for_client()
 
-    cfg.output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
+    cfg.output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) if cfg.output_dir is None else Path(cfg.output_dir)
 
     assert not cfg.trainer.resume or cfg.trainer.ckpt is not None, "You must specify a checkpoint to resume from."
 
     if cfg.trainer.resume:
         if Path(cfg.trainer.ckpt).is_file():
-            top_level_dir = Path(cfg.trainer.ckpt).parent.parent.parent
+            top_level_dir = Path(cfg.trainer.ckpt).parent.parent.parent.parent
         else:
             top_level_dir = Path(cfg.trainer.ckpt).parent.parent
+
         with open(top_level_dir / '.hydra' / 'final_config.pkl', "rb") as f:
             loaded_cfg = pickle.load(f)
 
@@ -80,10 +80,11 @@ def main(cfg: BaseConfig):
         cfg.sweep_run_id = loaded_cfg.sweep_run_id
     
     cfg.logging_dir = Path(cfg.output_dir, cfg.logging_dir)
-    if is_main_process():
+    needs_checkpointing = cfg.run_inference is False and cfg.run_dataloader_only is False
+    if needs_checkpointing and is_main_process():
         if cfg.checkpoint_dir.is_absolute():
             if cfg.trainer.resume:
-                cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name + "".join(random.choices(string.ascii_letters, k=10))
+                cfg.checkpoint_dir = cfg.checkpoint_dir / (cfg.run_name + "".join(random.choices(string.ascii_letters, k=10)))
             elif cfg.checkpoint_dir.exists():
                 cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name / "".join(random.choices(string.ascii_letters, k=10))
             else:
@@ -184,6 +185,9 @@ def main(cfg: BaseConfig):
     else:
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=cfg.trainer.find_unused_parameters)
         accelerate_kwargs['kwargs_handlers'] = [ddp_kwargs]
+
+    if cfg.run_dataloader_only:
+        cfg.trainer.mixed_precision = PrecisionType.NO
     
     accelerator = Accelerator(
         mixed_precision=cfg.trainer.mixed_precision,

@@ -114,7 +114,7 @@ class Hypersim(AbstractDataset, Dataset):
     def __getitem__(self, index):
         index = index % len(self.hypersim)
         if self.return_different_views:
-            assert self.augmentation.reorder_segmentation is False
+            # assert self.augmentation.reorder_segmentation is False
             assert self.augmentation.return_grid is False
             camera_trajectory_frames = self.scene_cam_map[self.hypersim._load_identifier(index)[:2]]
             window_size = min(max(1, self.camera_trajectory_window), len(camera_trajectory_frames))
@@ -153,7 +153,7 @@ class Hypersim(AbstractDataset, Dataset):
 
         if self.return_raw_dataset_image: ret["raw_dataset_image"] = data["rgb"].copy()
 
-        rgb, seg, metadata = torch.from_numpy(data['rgb']), torch.from_numpy(data['instance']), data["identifier"]
+        rgb, seg, metadata = torch.from_numpy(data['rgb']).to(self.device), torch.from_numpy(data['instance']).to(self.device), data["identifier"]
         rgb = rearrange(rgb / 255, "h w c -> () c h w")
         seg = rearrange(seg.to(torch.float32), "h w -> () () h w")
         

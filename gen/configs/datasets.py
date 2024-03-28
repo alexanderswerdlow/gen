@@ -107,10 +107,13 @@ auto_store(DatasetConfig,
         CocoPanoptic,
         augmentation=augmentation,
         resolution="${model.decoder_resolution}",
+        scratch_only=False,
     ), 
     val=get_dataset(
         CocoPanoptic,
         augmentation=augmentation,
+        resolution="${model.decoder_resolution}",
+        scratch_only=False,
     ), 
     name="coco_panoptic"
 )
@@ -133,10 +136,12 @@ auto_store(DatasetConfig,
     train=get_dataset(
         Hypersim,
         augmentation=augmentation,
+        scratch_only=False,
     ), 
     val=get_dataset(
         Hypersim,
         augmentation=augmentation,
+        scratch_only=False,
     ), 
     name="hypersim"
 )
@@ -145,10 +150,12 @@ auto_store(DatasetConfig,
     train=get_dataset(
         ScannetppIphoneDataset,
         augmentation=augmentation,
+        scratch_only=False,
     ), 
     val=get_dataset(
         ScannetppIphoneDataset,
         augmentation=augmentation,
+        scratch_only=False,
     ), 
     name="scannetpp"
 )

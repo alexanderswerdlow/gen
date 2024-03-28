@@ -251,3 +251,4 @@ data/
 .python-version
 result.json
 *.nsys-rep
+output_debug/

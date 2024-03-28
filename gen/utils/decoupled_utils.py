@@ -474,6 +474,7 @@ def print_memory(verbose: bool = False):
 
 @contextlib.contextmanager
 def show_memory_usage(empty_cache: bool = True, verbose: bool = False):
+    torch.cuda.synchronize()
     if empty_cache: torch.cuda.empty_cache()
     if is_main_process():
         print("Before context", end="")
@@ -481,6 +482,7 @@ def show_memory_usage(empty_cache: bool = True, verbose: bool = False):
     
     yield
 
+    torch.cuda.synchronize()
     if empty_cache: torch.cuda.empty_cache()
     if is_main_process():
         print("After context", end="")

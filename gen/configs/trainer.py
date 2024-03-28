@@ -93,6 +93,7 @@ class TrainerConfig:
     init_pipeline_inference: bool = True
     backward_pass: bool = True
     fsdp: bool = False
+    load_accelerator_state: bool = True
 
     # Set in code
     num_gpus: Optional[int] = None

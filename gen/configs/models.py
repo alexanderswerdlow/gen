@@ -138,6 +138,14 @@ class ModelConfig:
     token_modulator: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     add_text_tokens: bool = True
 
+    clip_lora: bool = False  # Perform low-rank adaptation on the main U-Net
+    clip_lora_rank: int = 512
+
+    return_mean_pooled_mask_tokens: bool = False
+    mean_pooled_mask_token_layer: int = -1
+    mean_pooled_mask_tokens_in_bbox: bool = False
+    mean_pooled_mask_tokens_bbox_enlarge: int = 0
+
 @dataclass
 class ControlNetConfig(ModelConfig):
     model_type: ModelType = ModelType.CONTROLNET

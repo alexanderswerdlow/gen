@@ -1,4 +1,6 @@
+from calendar import leapdays
 from functools import partial
+from operator import le
 
 import torch
 from hydra_zen import builds
@@ -10,6 +12,7 @@ from gen.configs.old_configs import get_deprecated_experiments
 from gen.configs.utils import mode_store
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
 from gen.datasets.hypersim.hypersim import Hypersim
+from gen.metrics.compute_token_features import compute_token_features
 from gen.models.cross_attn.base_inference import compose_two_images, interpolate_latents
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
 from functools import partial
@@ -30,6 +33,34 @@ def get_inference_experiments():
         inference=dict(
             inference_func=compose_two_images
         ),
+    )
+
+    mode_store(
+        name="compute_mask_token_features",
+        run_inference=True,
+        debug=True,
+        inference=dict(
+            inference_func=compute_token_features,
+            set_seed=True,
+            infer_train_dataset=True,
+            infer_val_dataset=True,
+            gather_results=False,
+        ),
+        model=dict(
+            return_mean_pooled_mask_tokens=True,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=16,
+                subset_size=None,
+                num_workers=16,
+            ),
+            val=dict(
+                batch_size=16,
+                subset_size=None,
+                num_workers=16,
+            )
+        )
     )
 
 def get_experiments():
@@ -247,6 +278,41 @@ def get_experiments():
     )
 
     mode_store(
+        name="dino_v2_large",
+        model=dict(
+            encoder=dict(
+                model_name="vit_large_patch14_reg4_dinov2.lvd142m",
+                pretrained=True,
+            ),
+            encoder_dim=1024,
+            # clip_lora=True,
+            # clip_lora_rank=1024,
+            freeze_clip=True
+        ),
+    )
+
+    mode_store(
+        name="vit_small_dino",
+        model=dict(
+            encoder=dict(
+                model_name="vit_small_patch14_reg4_dinov2",
+                img_size=224,
+                return_nodes={
+                    "blocks.5": "blocks.5",
+                    "norm": "norm",
+                },
+            ),
+            feature_map_keys=(
+                "blocks.5",
+                "norm",
+            ),
+            encoder_resolution=224,
+            encoder_dim=384,
+            encoder_latent_dim=16,
+        ),
+    )
+
+    mode_store(
         name="coco_recon_only",
         model=dict(
             num_token_cls=133,
@@ -298,13 +364,13 @@ def get_experiments():
             learning_rate=1e-4, 
             scale_lr_gpus_grad_accum=False, 
             scale_lr_batch_size=False, 
-            checkpointing_steps=5000, 
-            eval_every_n_steps=2000, 
+            checkpointing_steps=2000, 
+            eval_every_n_steps=1000, 
             max_train_steps=1000000,
             validate_training_dataset=True,
             compile=True,
+            use_8bit_adam=True,
             use_fused_adam=False,
-            use_8bit_adam=False,
         ),
         hydra_defaults=["no_movi_augmentation", "multiscale", "low_res",  "coco_panoptic", "debug_vit_base_clip"], # "sd_15"
     )
@@ -409,8 +475,6 @@ def get_experiments():
             learning_rate=1e-4,
             lr_warmup_steps=2000,
             compile=False,
-            use_8bit_adam=True,
-            use_fused_adam=False,
             eval_every_n_steps=1000,
         ),
         dataset=dict(
@@ -553,14 +617,17 @@ def get_experiments():
         ),
         dataset=dict(
             train=dict(
+                batch_size=176,
+                num_workers=8,
                 augmentation=dict(
                     different_src_tgt_augmentation=True,
                     enable_random_resize_crop=True, 
                     enable_horizontal_flip=True,
                     enable_rotate=True,
                     enable_rand_augment=False,
-                    src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
-                    tgt_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                    src_random_scale_ratio=((0.7, 1.0), (0.9, 1.1)),
+                    tgt_random_scale_ratio=((0.7, 1.0), (0.9, 1.1)),
+                    return_grid=True,
                 )
             ),
             val=dict(
@@ -570,8 +637,9 @@ def get_experiments():
                     enable_horizontal_flip=True,
                     enable_rotate=True,
                     enable_rand_augment=False,
-                    src_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
-                    tgt_random_scale_ratio=((0.8, 1.0), (0.9, 1.1)),
+                    src_random_scale_ratio=((0.7, 1.0), (0.9, 1.1)),
+                    tgt_random_scale_ratio=((0.7, 1.0), (0.9, 1.1)),
+                    return_grid=True
                 )
             ),
         ),
@@ -587,14 +655,16 @@ def get_experiments():
             train=dict(
                 augmentation=dict(
                     different_src_tgt_augmentation=False,
-                    tgt_random_scale_ratio=None,
+                    src_random_scale_ratio=None,
                 )
             ),
             val=dict(
-                augmentation="${dataset.train.augmentation}",
+                augmentation=dict(
+                    different_src_tgt_augmentation=False,
+                    src_random_scale_ratio=None,
+                )
             ),
         ),
-        hydra_defaults=["soda_coco"],
     )
 
     mode_store(
@@ -627,25 +697,12 @@ def get_experiments():
     )
 
     mode_store(
-        name="noconcat_hypersim_scannet",
-        model=dict(
-            modulate_src_tokens_with_tgt_pose=True,
-            return_encoder_normalized_tgt=False,
-            src_tgt_consistency_loss_weight=0.1,
-        ),
-        dataset=dict(
-            train=dict(
-                return_encoder_normalized_tgt=False,
-            ),
-            val=dict(
-                return_encoder_normalized_tgt=False,
-            ),
-        )
-    )
-
-    mode_store(
         name="concat_hypersim_scannet",
+        trainer=dict(
+            learning_rate=1e-5,
+        ),
         model=dict(
+            eschernet=True,
             modulate_src_tokens_with_tgt_pose=True,
             return_encoder_normalized_tgt=True,
             src_tgt_consistency_loss_weight=0.1,
@@ -653,6 +710,7 @@ def get_experiments():
         dataset=dict(
             train=dict(
                 return_encoder_normalized_tgt=True,
+                num_workers=12,
             ),
             val=dict(
                 return_encoder_normalized_tgt=True,
@@ -722,10 +780,47 @@ def get_experiments():
                         src_transforms="${get_src_transform:model}",
                         tgt_transforms="${get_tgt_transform:model}",
                         populate_full_signature=True,
-                    )
+                    ),
                 ),
-            )
+            ),
         ),
+        hydra_defaults=["multiview_scannet"],
+    )
+
+    mode_store(
+        name="noconcat_hypersim_scannet",
+        dataset=dict(
+            additional_train=None,
+            additional_val=None
+        ),
+        hydra_defaults=["concat_hypersim_scannet"],
+    )
+
+    mode_store(
+        name="disable_debug_scannet",
+        model=dict(
+            return_encoder_normalized_tgt=False,
+            modulate_src_tokens_with_tgt_pose=False,
+            segmentation_map_size=16,
+            eschernet=False,
+        ),
+        dataset=dict(
+            train=dict(
+                return_encoder_normalized_tgt=False,
+                src_eq_tgt=True,
+                distance_threshold = (0.3, 0.1, 0.12, 0.7)
+            ),
+            val=dict(
+                return_encoder_normalized_tgt=False,
+                src_eq_tgt=True,
+                distance_threshold = (0.3, 0.1, 0.12, 0.7)
+            ),
+        ),
+        trainer=dict(
+            eval_every_n_steps=500,
+            learning_rate=5e-6,
+        ),
+        hydra_defaults=["noconcat_hypersim_scannet"], 
     )
 
     mode_store(
@@ -782,4 +877,49 @@ def get_experiments():
         trainer=dict(
             mixed_precision=PrecisionType.NO,
         )
+    )
+
+    mode_store(
+        name="coco_updated_03_26",
+        model=dict(
+            pretrained_model_name_or_path="lambdalabs/sd-image-variations-diffusers",
+            token_embedding_dim=768,
+            use_sd_15_tokenizer_encoder=True,
+            add_text_tokens=False,
+            masked_self_attention=False,
+            segmentation_map_size=77,
+        ),
+        inference=dict(
+            infer_new_prompts=False,
+        )
+    )
+
+    mode_store(
+        name="inference_aug",
+        dataset=dict(
+            train=dict(
+                augmentation=dict(
+                    center_crop=True,
+                    reorder_segmentation=False,
+                    enable_random_resize_crop=True,
+                    enable_horizontal_flip=False,
+                    enable_square_crop=True,
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                    different_src_tgt_augmentation=False,
+                )
+            ),
+            val=dict(
+                augmentation=dict(
+                    center_crop=True,
+                    reorder_segmentation=False,
+                    enable_random_resize_crop=True,
+                    enable_horizontal_flip=False,
+                    enable_square_crop=True,
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                    different_src_tgt_augmentation=False,
+                )
+            ),
+        ),
     )

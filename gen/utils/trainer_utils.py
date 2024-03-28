@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
 
 
-def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, load_model: bool) -> int:
+def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, load_model: bool, load_accelerator_state: bool = False) -> int:
     """
     Loads the model [or just returns the checkpoint global step]
     """
@@ -52,9 +52,12 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, 
         # if path.is_file() or cfg.trainer.load_weights_only_no_state:
         #     load_checkpoint_in_model(model, str(path))
         # else:
-        #     accelerator.load_state(path)
-
+        
         if load_model:
+            if path.parent.stem == "state" and load_accelerator_state:
+                log_info("Loading accelerator state!")
+                accelerator.load_state(path.parent)
+        
             state_dict = torch.load(path, map_location='cpu')
             model.load_state_dict(state_dict, strict=cfg.trainer.strict_load)
         try:
