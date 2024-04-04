@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from enum import Enum
+from math import e
 from typing import Any, Iterable, Optional
 
 from regex import D
@@ -68,7 +69,7 @@ class AbstractDataset(ABC):
         batch = self.process_batch(batch)
         return batch
 
-    def get_dataloader(self, generator: Optional[Generator] = None, pin_memory: bool = True, additional_datasets: Optional[Iterable[Dataset]] = None):
+    def get_dataloader(self, generator: Optional[Generator] = None, pin_memory: bool = True, additional_datasets: Optional[Iterable[Dataset]] = None, subset_range: Optional[Any] = None, **kwargs):
         if self.device != torch.device('cpu'):
             log_info(f"Setting start method to spawn for multi-processing. Using device: {self.device}", main_process_only=False)
             mp.set_start_method("spawn")
@@ -93,10 +94,13 @@ class AbstractDataset(ABC):
                     idxs = [idxs[int(round(step * i))] for i in range(self.subset_size)]
                     
                 dataset = Subset(orig_dataset, idxs)
+        elif subset_range is not None:
+            dataset = Subset(orig_dataset, subset_range)
         else: 
             dataset = orig_dataset
 
         extra_kwargs = dict()
+        extra_kwargs.update(kwargs)
         if self.repeat_dataset_n_times is not None:
             dataset = ConcatDataset(*[[dataset] * self.repeat_dataset_n_times])
         else:

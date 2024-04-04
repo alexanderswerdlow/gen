@@ -759,3 +759,171 @@ import antigravity
  # index = faiss.IndexIVFPQ(cpu_index, train_token_dim, nlist, 8, 8)
 # index.add(train_tokens)
 # index.train(train_tokens)
+            # dataset = client.scatter(dataset, broadcast=True)
+            # log_info("Scattered dataset...")
+                # from peft import LoraConfig, get_peft_model
+                # clip_lora_config = LoraConfig(
+                #     r=self.cfg.model.clip_lora_rank,
+                #     lora_alpha=self.cfg.model.clip_lora_rank,
+                #     init_lora_weights="gaussian",
+                #     lora_dropout=0.1,
+                #     bias="none",
+                #     target_modules=["qkv"],
+                # )
+                # self.clip.base_model_prefix = 'base_model'
+                # self.clip = get_peft_model(self.clip, clip_lora_config)
+                # cast_training_params(self.clip, dtype=torch.float32)
+    #                 def cartesian_to_spherical(self, xyz: np.ndarray) -> np.ndarray:
+    #     # https://github.com/cvlab-columbia/zero123/blob/main/zero123/ldm/data/simple.py#L318
+
+    #     # ptsnew = np.hstack((xyz, np.zeros(xyz.shape))) #what is this for?
+    #     xy = xyz[:, 0] ** 2 + xyz[:, 1] ** 2
+    #     z = np.sqrt(xy + xyz[:, 2] ** 2)
+    #     # for elevation angle defined from Z-axis down
+    #     theta = np.arctan2(np.sqrt(xy), xyz[:, 2])
+    #     # ptsnew[:,4] = np.arctan2(xyz[:,2], np.sqrt(xy))
+    #     # # for elevation angle defined from XY-plane up
+    #     azimuth = np.arctan2(xyz[:, 1], xyz[:, 0])
+    #     return np.array([theta, azimuth, z])
+
+    # def get_T(self, target_RT: np.ndarray, cond_RT: np.ndarray) -> torch.Tensor:
+    #     # https://github.com/cvlab-columbia/zero123/blob/main/zero123/ldm/data/simple.py#L318
+
+    #     R, T = target_RT[:3, :3], target_RT[:3, -1]  # double check this
+    #     T_target = -R.T @ T
+
+    #     R, T = cond_RT[:3, :3], cond_RT[:3, -1]  # double check this
+    #     T_cond = -R.T @ T
+
+    #     theta_cond, azimuth_cond, z_cond = self.cartesian_to_spherical(T_cond[None, :])
+    #     theta_target, azimuth_target, z_target = self.cartesian_to_spherical(
+    #         T_target[None, :]
+    #     )
+
+    #     d_theta = theta_target - theta_cond
+    #     d_azimuth = (azimuth_target - azimuth_cond) % (2 * math.pi)
+    #     d_z = z_target - z_cond
+
+    #     d_T = torch.tensor(
+    #         [
+    #             d_theta.item(),
+    #             math.sin(d_azimuth.item()),
+    #             math.cos(d_azimuth.item()),
+    #             d_z.item(),
+    #         ]
+    #     )
+
+    #     return d_T
+    
+        # dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=0, shuffle=False, pin_memory=True)    
+    # dask.config.set({'temporary_directory': "/scratch/aswerdlo/tmp/dask"})
+    # dask.config.set({'distributed.admin.tick.limit': '3600s'})
+# bs = len(masks)
+#     original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(bs)]))
+#     output, result = find_true_indices_batched(original, 16, 16)
+
+#     from ipdb import set_trace; set_trace()
+
+#     Im(rearrange(original[:, None].repeat(1, 3, 1, 1) * 1.0, 'b c h w -> b h w c')).save('high_res_mask')
+#     Im(rearrange(result[:, None].repeat(1, 3, 1, 1) * 1.0, 'b c h w -> b h w c')).scale(64).save('vit_feature_mask')
+
+#     output = mask_max_pool(rearrange(downscaled, 'h w e -> () (h w) e'), rearrange(result, 'b h w -> () b (h w)'))
+#     output_feats = output.values
+
+#     principal_components = calculate_principal_components(embeddings, num_components)
+#     pca(output_feats.squeeze(0))
+
+#     show_anns(image, masks)
+
+# print('0', torch.sum(src_seg, dim=(1, 2)))
+
+# src_seg = torch.where(src_seg.sum(dim=0) == 0, 255, src_seg.argmax(dim=0))
+# [None][None].float()
+# breakpoint()
+# breakpoint()
+# [None].float()
+# print('1', torch.unique(src_seg.int(), return_counts=True, sorted=True)[-1], torch.unique(src_seg.int(), return_counts=True)[-2])
+
+# masks = [torch.from_numpy(coco_decode_rle(mask['segmentation'])) for mask in masks]
+# scores = torch.tensor([mask.sum() for mask in masks], dtype=torch.float32)
+# seg = torch.stack(perform_nms(masks, scores, iou_threshold=0.7)).to(device)
+# seg = one_hot_to_integer(seg.permute(1, 2, 0), num_overlapping_masks, assert_safe=False).permute(2, 0, 1)[None]
+
+# src_seg_path = save_data_path / "seg_v0" / scene_id / f"{src_path.stem}.png"
+# tgt_seg_path = save_data_path / "seg_v0" / scene_id / f"{tgt_path.stem}.png"
+
+# src_seg_path = save_data_path / "masks" / scene_id / f"{src_path.stem}.msgpack"
+# src_seg = test_postprocess(src_seg_path)
+# src_seg = one_hot_to_integer(src_seg.permute(1, 2, 0), self.num_overlapping_masks, assert_safe=False).permute(2, 0, 1)
+# values, counts = torch.unique(src_seg.int(), return_counts=True, sorted=True)
+# src_seg[torch.isin(src_seg, values[counts < 256])] = 255
+# src_seg = src_seg[None].float()
+# src_seg[src_seg == 255] = -1
+
+# tgt_seg_path = save_data_path / "masks" / scene_id / f"{tgt_path.stem}.msgpack"
+# tgt_seg = test_postprocess(tgt_seg_path)
+# tgt_seg = one_hot_to_integer(tgt_seg.permute(1, 2, 0), self.num_overlapping_masks, assert_safe=False).permute(2, 0, 1)
+# values, counts = torch.unique(tgt_seg.int(), return_counts=True, sorted=True)
+# tgt_seg[torch.isin(tgt_seg, values[counts < 256])] = 255
+# tgt_seg = tgt_seg[None].float()
+# tgt_seg[tgt_seg == 255] = -1
+                        # rles = [x['segmentation'] for x in masks]
+                        # _masks = torch.cat([torch.from_numpy(mask_utils.decode(rle)).unsqueeze(0) for rle in rles], dim=0)
+                        # bbox_area = [x['bbox'][2] * x['bbox'][3] for x in masks]
+                        # real_area = [x['area'] for x in masks]
+                        # ratios = [x/y for x,y in zip(real_area, bbox_area)]
+                        # def plot_bbox_on_image(image: torch.Tensor, bbox_xywh: torch.Tensor, color: tuple = (0, 255, 0), thickness: int = 2) -> torch.Tensor:
+                        #     import cv2
+                        #     top_left = (int(bbox_xywh[0]), int(bbox_xywh[1]))
+                        #     bottom_right = (int(bbox_xywh[0] + bbox_xywh[2]), int(bbox_xywh[1] + bbox_xywh[3]))
+                        #     image_with_bbox = cv2.rectangle(image, top_left, bottom_right, color, thickness)
+                        #     return torch.tensor(image_with_bbox)
+                        # Im(torch.stack([plot_bbox_on_image(Im(x).bool_to_rgb().write_text(f"{y:.2f}").np, z['bbox']) for x,y,z in zip(_masks, ratios, masks)])).grid(padding=20, pad_value=0.5).save(f"{scene_id}_{frame_name}")
+    #                     def get_client(num_workers, use_slurm: bool = True, adaptive: bool = False):
+    # log_info(f"Starting client with {num_workers} workers...", main_process_only=False)
+    # if use_slurm:
+    #     from dask_jobqueue import SLURMCluster
+    #     hostname = socket.gethostname()
+    #     if any(s in hostname for s in ("matrix-0-36", "matrix-3-26", "matrix-3-28", "matrix-1-22")):
+    #         inferface = "ib1"
+    #     else:
+    #         inferface = "ib0"
+
+    #     print(f"Using interface {inferface}")
+    #     scheduler_host = os.environ['HOSTNAME'].removesuffix(".eth") + ".ib"
+    #     cluster = SLURMCluster(
+    #         cores=1,
+    #         processes=1,
+    #         memory="24GB", 
+    #         walltime="72:00:00", 
+    #         queue="kate_reserved",
+    #         job_extra_directives=['--cpus-per-task=8', "--gres=gpu:1", "--constraint=\'A100|6000ADA|A5500|volta|2080Ti\'"], 
+    #         # "--exclude=matrix-0-18,matrix-0-22"
+    #         # matrix-0-16,matrix-0-36,matrix-3-26,matrix-3-28,matrix-1-22
+    #         nanny=False,
+    #         log_directory='/home/aswerdlo/repos/gen/outputs/dask',
+    #         local_directory="/home/aswerdlo/repos/gen",
+    #         scheduler_options={'interface': inferface, 'dashboard_address': ':8787'},
+    #         # scheduler_options={"host": scheduler_host, 'dashboard_address': ':8787'},
+    #         # worker_extra_args=['--host ${SLURMD_NODENAME}.ib'],
+    #         # limit
+    #         # interface=inferface,
+    #         # env_extra=['module load anaconda', 'source activate mbircone'],
+    #         # job_extra=[system_specific_args],
+    #     )
+
+    #     if adaptive:
+    #         cluster.adapt(minimum_jobs=min(num_workers, 6), num_workers=num_workers)
+    #     else:
+    #         cluster.scale(num_workers)
+        
+    #     print(cluster.job_script())
+    # else:
+    #     from dask.distributed import LocalCluster
+    #     cluster = LocalCluster()
+    
+    # client = Client(cluster)
+    # return client
+                    # if self.no_filtering is False:
+                #     values, counts = torch.unique(src_seg.int(), return_counts=True, sorted=True)
+                #     src_seg[torch.isin(src_seg, values[counts < 128])] = 255

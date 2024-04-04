@@ -1,5 +1,4 @@
 
-import autoroot
 
 import os
 import pickle
@@ -170,8 +169,7 @@ class Hypersim(AbstractDataset, Dataset):
         def process_data(data_: Data):
             data_.image = data_.image.squeeze(0)
             data_.segmentation = rearrange(data_.segmentation, "() c h w -> h w c")
-            data_.segmentation[data_.segmentation >= self.top_n_masks_only] = 0
-            assert data_.segmentation.max() < 255
+            data_.segmentation[data_.segmentation >= 77] = 255
             data_.segmentation[data_.segmentation == -1] = 255
             data_.segmentation = torch.cat([data_.segmentation, data_.segmentation.new_full((*data_.segmentation.shape[:-1], self.num_overlapping_masks - 1), 255)], dim=-1)
             data_.pad_mask = ~(data_.segmentation < 255).any(dim=-1)

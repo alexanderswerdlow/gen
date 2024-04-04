@@ -23,6 +23,7 @@ if SCRATCH_COCO_PATH.exists():
     COCO_CUSTOM_PATH = SCRATCH_COCO_PATH / "annotations"
     log_info(f"Using scratch coco path: {COCO_DATASET_PATH}")
 
+GLOBAL_CACHE_PATH = Path(os.getenv("GLOBAL_CACHE_PATH", "/home/aswerdlo/data/cache"))
 SCRATCH_CACHE_PATH = Path(os.getenv("SCRATCH_CACHE_PATH", "/scratch/aswerdlo/cache"))
 MOVI_DATASET_PATH = Path(os.getenv("MOVI_DATASET_PATH", "/projects/katefgroup/datasets/movi"))
 MOVI_OVERFIT_DATASET_PATH = Path(os.getenv("MOVI_OVERFIT_DATASET_PATH", "/projects/katefgroup/aswerdlo/movi"))
@@ -51,4 +52,4 @@ if SCRATCH_HYPERSIM_PATH.exists():
     log_info(f"Using scratch hypersim path: {HYPERSIM_DATASET_PATH}")
 
 SCANNETPP_DATASET_PATH =  Path(os.getenv("SCANNETPP_DATASET_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data"))
-SCANNETPP_CUSTOM_DATA_PATH =  Path(os.getenv("SCANNETPP_CUSTOM_DATA_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom"))
+SCANNETPP_CUSTOM_DATA_PATH = Path(os.getenv("SCANNETPP_CUSTOM_DATA_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom"))

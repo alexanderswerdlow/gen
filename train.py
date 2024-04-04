@@ -60,12 +60,16 @@ def get_named_params(models: tuple[Union[nn.Module, dict]], requires_grad=True):
 
 def validate_params(models: Iterable[nn.Module], dtype: torch.dtype):
     # In general, we want all trainable params in FP32 and all non-trainable params possibly in BF16
-    for p in get_named_params(models).values():
+    num_requires_grad, num_no_grad = 0, 0
+    for k, p in get_named_params(models, requires_grad=False).items():
         if p.requires_grad:
-            assert p.dtype == torch.float32
+            assert p.dtype == torch.float32, f"Param {k} is trainable but not in {torch.float32}"
+            num_requires_grad += 1
         elif not p.requires_grad:
-            assert p.dtype == dtype
+            assert p.dtype == dtype, f"Param {k} is non-trainable but not in {dtype}"
+            num_no_grad += 1
 
+    log_info(f"Found {num_requires_grad} trainable {torch.float32} and {num_no_grad} non-trainable {dtype} params.")
 
 class Trainer:
     def __init__(self, cfg: BaseConfig, accelerator: Accelerator):

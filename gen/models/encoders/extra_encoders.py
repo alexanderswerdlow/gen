@@ -1,12 +1,15 @@
+import autoroot
 import functools
-from typing import Optional
+from typing import Callable, Optional
 
 from torchvision.models.feature_extraction import create_feature_extractor
-from gen.models.encoders.encoder import FeatureExtractorModel, ViT
+from gen.models.encoders.encoder import DINOV2, BaseModel, FeatureExtractorModel, ImArr, TimmModel, ViT, ViTFeatureExtractor
 import open_clip
 import timm
 import math
 import torch
+
+from gen.utils.decoupled_utils import breakpoint_on_error
 
 class ClipFeatureExtractor(FeatureExtractorModel):
     def __init__(
@@ -94,9 +97,38 @@ class ViTWithExtraChannelsFeatureExtractor(FeatureExtractorModel, ViT):
 
         return create_feature_extractor(self.base_model, return_nodes=self.return_nodes)
 
+class TransformersModel(BaseModel):
+    def __init__(self, model_name, **kwargs):
+        self.model_name = model_name
+        super().__init__(**kwargs)
+
+    @functools.cached_property
+    def transform(self):
+        pass
+
+    def create_model(self):
+        from transformers import AutoImageProcessor
+        image_processor = AutoImageProcessor.from_pretrained(self.model_name)
+        breakpoint()
+        return image_processor
+
+class IntermediateViT(TimmModel):
+    def __init__(self, model_name: str = "vit_base_patch14_reg4_dinov2", img_size=(224, 224), **kwargs):
+        self.model_name = model_name
+        super().__init__(model_name=model_name, img_size=img_size, features_only=False, **kwargs)
+
+    def forward_model(self, image, **kwargs):
+        _model = self.model.lora_vit if self.lora is not None else self.model
+        return {f'blocks.{i}':v for i,v in enumerate(_model.get_intermediate_layers(x=image, n=24 if 'large' in self.model_name else 12, norm=True))}
+
 if __name__ == "__main__":
-    from image_utils import Im
-    model = ViTWithExtraChannelsFeatureExtractor(num_total_input_channels=5).cuda()
-    image = Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").torch
-    output = model(image)
-    breakpoint()
+    with breakpoint_on_error():
+        from image_utils import Im
+        # model = ViTWithExtraChannelsFeatureExtractor(num_total_input_channels=5).cuda()
+        # model = TransformersModel("google/vit-base-patch16-224-in21k").cuda()
+        # model = ViTFeatureExtractor(lora=True).cuda()
+        # model = IntermediateViT(lora=dict(r=16, alpha=8)).cuda()
+
+        image = Im("https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png").torch
+        output = model(image)
+        breakpoint()

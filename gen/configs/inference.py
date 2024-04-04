@@ -26,6 +26,7 @@ class InferenceConfig:
     visualize_rotation_denoising: bool = False
     infer_new_prompts: bool = False
     save_prompt_embeds: bool = False
+    num_single_token_gen: Optional[int] = None
     vary_cfg_plot: bool = False
     max_batch_size: int = 16
 
@@ -36,7 +37,7 @@ class InferenceConfig:
 
     use_custom_pipeline: bool = True
     inference_func: Callable[[Trainable], None] = run_qualitative_inference
-    infer_val_dataset: bool = False
+    infer_val_dataset: bool = True
     infer_train_dataset: bool = False
     dataloader_only_func: Callable[..., None] = iterate_dataloader
     gather_results: bool = True

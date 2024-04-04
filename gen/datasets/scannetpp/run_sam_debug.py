@@ -94,7 +94,6 @@ def scannet_run_sam(cfg: BaseConfig, accelerator: Accelerator):
     )
     dataset = train
     dataloader = dataset.get_dataloader(generator=g)
-
     dataloader, model = accelerator.prepare(dataloader, model)
 
     max_masks = 36

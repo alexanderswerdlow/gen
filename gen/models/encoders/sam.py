@@ -6,7 +6,7 @@ from einops import rearrange
 from gen.utils.logging_utils import log_info
 
 if not torch.cuda.is_available() or not torch.cuda.get_device_name().startswith('NVIDIA A100'):
-    log_info("Warning: Custom flash attention kernels were written specifically for A100. Setting SEGMENT_ANYTHING_FAST_USE_FLASH_4=0")
+    # log_info("Warning: Custom flash attention kernels were written specifically for A100. Setting SEGMENT_ANYTHING_FAST_USE_FLASH_4=0")
     os.environ['SEGMENT_ANYTHING_FAST_USE_FLASH_4'] = '0'
 
 import time
@@ -18,7 +18,7 @@ from image_utils import Im
 from segment_anything_fast import SamAutomaticMaskGenerator, SamPredictor
 from segment_anything_fast import sam_model_fast_registry as sam_model_registry
 
-from gen.utils.decoupled_utils import load_checkpoint_from_url
+from gen.utils.decoupled_utils import load_checkpoint_from_url, set_timing_builtins
 
 model_urls = {
     "vit_b": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
@@ -26,18 +26,19 @@ model_urls = {
     "vit_h": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
 }
 
-def get_sam_model(model_type):
-    return sam_model_registry[model_type](checkpoint=load_checkpoint_from_url(model_urls[model_type]))
+def get_sam_model(model_type, **kwargs):
+    return sam_model_registry[model_type](checkpoint=load_checkpoint_from_url(model_urls[model_type]), **kwargs)
 
 class HQSam(nn.Module):
     def __init__(
             self,
             model_type = "vit_b",
             points_per_side: int = 24,
+            model_kwargs: dict = {},
             **kwargs
         ):
         super().__init__()
-        self.sam = get_sam_model(model_type)
+        self.sam = get_sam_model(model_type, **model_kwargs)
         self.mask_generator = SamAutomaticMaskGenerator(
             model=self.sam,
             points_per_side=points_per_side,
@@ -263,27 +264,10 @@ def pca(embeddings, num_components=3, principal_components=None):
     return embeddings
 
 if __name__ == '__main__':
-    # test_params()
-    # exit()
-    hqsam = HQSam(model_type='vit_b')
+    set_timing_builtins(False, True)
+    hqsam = HQSam(model_type='vit_l')
     hqsam = hqsam.to('cuda')
     image = Im('https://raw.githubusercontent.com/SysCV/sam-hq/main/demo/input_imgs/example8.png').pil
-    image = Im(image.crop(((image.size[0]-image.size[1]) // 2, 0, image.size[0] - (image.size[0]-image.size[1]) // 2, image.size[1]))).resize(224, 224).np
+    image = Im(image.crop(((image.size[0]-image.size[1]) // 2, 0, image.size[0] - (image.size[0]-image.size[1]) // 2, image.size[1]))).resize(512, 512).np
     masks = hqsam.forward(image)
-
-    bs = len(masks)
-    original = torch.from_numpy(np.array([masks[i]['segmentation'] for i in range(bs)]))
-    output, result = find_true_indices_batched(original, 16, 16)
-
-    from ipdb import set_trace; set_trace()
-
-    Im(rearrange(original[:, None].repeat(1, 3, 1, 1) * 1.0, 'b c h w -> b h w c')).save('high_res_mask')
-    Im(rearrange(result[:, None].repeat(1, 3, 1, 1) * 1.0, 'b c h w -> b h w c')).scale(64).save('vit_feature_mask')
-
-    output = mask_max_pool(rearrange(downscaled, 'h w e -> () (h w) e'), rearrange(result, 'b h w -> () b (h w)'))
-    output_feats = output.values
-
-    principal_components = calculate_principal_components(embeddings, num_components)
-    pca(output_feats.squeeze(0))
-
     show_anns(image, masks)

@@ -31,7 +31,7 @@ class TrainerConfig:
     num_train_epochs: int = 10
     max_train_steps: Optional[int] = None # Global step
 
-    checkpointing_steps: int = 10000
+    checkpointing_steps: Optional[int] = 10000
     checkpoints_total_limit: Optional[int] = None
     ckpt: Optional[str] = None
     resume: bool = False
@@ -94,6 +94,7 @@ class TrainerConfig:
     backward_pass: bool = True
     fsdp: bool = False
     load_accelerator_state: bool = True
+    ignore_clip_weights: bool = False
 
     # Set in code
     num_gpus: Optional[int] = None

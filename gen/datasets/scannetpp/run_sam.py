@@ -91,10 +91,10 @@ def downsample(tensor, scale_factor):
 def signal_handler(signum, frame):
     raise KeyboardInterrupt
 
-signal.signal(signal.SIGINT, signal_handler)
-
 # @profile_memory_decorator
 def scannet_run_sam(cfg: BaseConfig, accelerator: Accelerator, run_train: bool = True, points_per_batch: int = 256, process_batch_size: int = 1, model_type: str = "vit_h", max_masks: int = 128, viz: bool = False):
+    signal.signal(signal.SIGINT, signal_handler)
+
     cfg.dataset.train.num_workers = 2
     cfg.dataset.val.num_workers = 2
 
@@ -160,7 +160,6 @@ def scannet_run_sam(cfg: BaseConfig, accelerator: Accelerator, run_train: bool =
                     if viz:
                         show_anns(img, masks, (Path('output') / f'{i}_{b}').with_suffix('.png'))
                         Im(img).save(f'{i}_{b}_orig')
-
                     
                     metadata = {k:v[0] for k,v in batch.metadata.items() if isinstance(v[0], str)}
                     masks_msgpack = msgpack.packb((metadata, masks), use_bin_type=True)

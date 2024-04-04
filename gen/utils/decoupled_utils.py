@@ -241,8 +241,8 @@ def check_gpu_memory_usage():
     log_func(f"Reserved memory: {reserved_percent:.2f}%")
     log_func(f'Available devices (CUDA_VISIBLE_DEVICES): {os.environ.get("CUDA_VISIBLE_DEVICES")}')
 
-    assert allocated_percent <= 25
-    assert reserved_percent <= 25
+    assert allocated_percent <= 5
+    assert reserved_percent <= 5
 
 
 def load_checkpoint_from_url(url: str, file_path: Optional[str] = None) -> Path:
@@ -588,3 +588,16 @@ def sanitize_filename(filename: str) -> str:
 
 def hash_str_as_int(s: str):
     return int(hashlib.sha256(s.encode('utf-8')).hexdigest(), 16) % 10**8
+
+
+def torch_to_numpy(arr: Tensor):
+    if arr.dtype == torch.bfloat16:
+        return arr.float().cpu().detach().numpy()
+    else:
+        return arr.cpu().detach().numpy()
+    
+def to_numpy(arr: Tensor | np.ndarray):
+    if isinstance(arr, Tensor):
+        return torch_to_numpy(arr)
+    else:
+        return arr

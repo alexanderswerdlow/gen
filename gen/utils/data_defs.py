@@ -11,12 +11,15 @@ from jaxtyping import Bool, Float, Integer
 from tensordict import tensorclass
 from torch import Tensor
 
-from gen.utils.trainer_utils import TrainingState
 from image_utils import Im, hist
 from image_utils.standalone_image_utils import integer_to_color
+from torchvision.transforms.functional import InterpolationMode, resize
+
+from gen.utils.visualization_utils import get_dino_pca
 
 if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
+    from gen.utils.trainer_utils import TrainingState
 
 
 @tensorclass
@@ -30,7 +33,6 @@ class InputData:
     src_grid: Optional[Float[Tensor, "b h w 2"]] = None
     state: Optional[TrainingState] = None
     dtype: Optional[torch.dtype]  = None
-    bs: Optional[int] = None
     num_frames: Optional[int] = None
 
     quaternions: Optional[Float] = None
@@ -53,12 +55,15 @@ class InputData:
     tgt_enc_norm_segmentation: Optional[Integer[Tensor, "b h w"]] = None
     has_global_instance_ids: Optional[Bool[Tensor, "b"]] = None
 
+    attach_debug_info: bool = False
+    treat_as_train_batch: bool = False
+    force_forward_encoder_normalized_tgt: bool = False
+
     @staticmethod
     def from_dict(batch: dict):
         batch = InputData(
             num_frames=1,
             batch_size=[batch["tgt_pixel_values"].shape[0]],
-            bs=batch["tgt_pixel_values"].shape[0],
             **batch,
         )
         return batch
@@ -67,6 +72,10 @@ class InputData:
         assert -1 <= self.tgt_pixel_values.min() <= self.tgt_pixel_values.max() <= 1
         assert self.tgt_segmentation.dtype == torch.uint8
         assert self.src_segmentation.dtype == torch.uint8
+
+    @property
+    def bs(self):
+        return self.batch_size[0]
 
 
 def one_hot_to_integer(mask, num_overlapping_channels: int = 1, assert_safe: bool = True):
@@ -149,6 +158,8 @@ def visualize_input_data(
         remove_invalid: bool = True,
         cfg: Optional[BaseConfig] = None,
         image_only: bool = False,
+        return_img: bool = False,
+        cond: Optional[Any] = None
     ):
 
     from image_utils import Im, onehot_to_color
@@ -177,6 +188,8 @@ def visualize_input_data(
         batch.src_grid = (batch.src_grid + 1) / 2
 
     override_colors = {0: (128, 128, 128), 255: (0, 0, 0)}
+
+    output_imgs = []
 
     for b in range(batch.bs):
         if names is not None:
@@ -217,7 +230,7 @@ def visualize_input_data(
             initial_num_classes = masks.sum(axis=0).max() + 1
             initial_image = integer_to_color(masks.sum(axis=0), colormap='hot', num_classes=initial_num_classes, ignore_empty=False)
             first_hist = hist(np.sum(masks.cpu().numpy(), axis=0).reshape(-1), save=False)
-            first_masks = Im(masks.unsqueeze(-1)).scale(0.5).grid(pad_value=0.5)
+            first_masks = Im(masks.unsqueeze(-1)).scale(0.5).grid(pad_value=0.5).write_text(f"{batch.tgt_segmentation[b].min().item()}-{batch.tgt_segmentation[b][batch.tgt_segmentation[b] != 255].max().item()}, uniq: {len(torch.unique(batch.tgt_segmentation[b]))}", size=0.2).torch.cpu()
             output_img = Im.concat_horizontal(output_img, Im.concat_vertical(first_masks, initial_image, fill=(128, 128, 128)), spacing=40, fill=(128, 128, 128))
             output_img = Im.concat_vertical(
                 output_img,
@@ -233,8 +246,27 @@ def visualize_input_data(
             from gen.datasets.scannetpp.scannetpp import get_distance_matrix_vectorized
             rot, dist = get_distance_matrix_vectorized(torch.stack((batch.src_pose[b], batch.tgt_pose[b]), dim=0))
             output_img = output_img.write_text(f"Relative Pose Rot: {rot[0, 1]:.2f}, Relative Pose Dist: {dist[0, 1]:.2f}", (10, 10), size=0.25)
+        
+        if cond is not None and cond.src_feature_map is not None:
+            feats = cond.src_feature_map.to(torch.float32).permute(0, 1, 4, 2, 3).cpu()
+            for j in range(feats.shape[1]):
+                feature_img = get_dino_pca(rearrange(
+                    feats[b, j], "d h w -> (h w) d"), 
+                    patch_h=cfg.model.encoder_latent_dim, 
+                    patch_w=cfg.model.encoder_latent_dim, 
+                    threshold=0.6, 
+                    object_larger_than_bg=False, 
+                    return_all=True
+                )
+                output_img = Im.concat_horizontal(output_img, Im(feature_img).scale(10, resampling_mode=InterpolationMode.NEAREST))
 
-        output_img.save(save_name)
+        if return_img:
+            output_imgs.append(output_img)
+        else:
+            output_img.save(save_name)
+
+        if return_img:
+            return Im(torch.stack([img_.torch for img_ in output_imgs]))
 
 
 

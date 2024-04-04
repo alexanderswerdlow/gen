@@ -517,6 +517,7 @@ class StableDiffusionPipeline(
             return image_embeds, uncond_image_embeds
 
     def run_safety_checker(self, image, device, dtype):
+        return image, None
         if self.safety_checker is None:
             has_nsfw_concept = None
         else:

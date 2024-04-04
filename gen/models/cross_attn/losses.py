@@ -131,7 +131,9 @@ def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: Condition
             max_masks.append(torch.max(object_masks, axis=-1).values)
 
     max_masks = torch.stack(max_masks, dim=0)[:, None]
-    loss_mask = F.interpolate(input=max_masks.float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim))
+    # loss_mask = F.interpolate(input=max_masks.float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim)) # TODO: Change to bilinear
+    loss_mask = F.interpolate(max_masks.float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim), mode='bilinear', align_corners=False)
+    loss_mask = loss_mask > 0.5
 
     if cfg.model.viz and batch.state.true_step % 1 == 0:
         from image_utils import Im
@@ -367,7 +369,7 @@ def src_tgt_token_consistency_loss(
 ):
     losses = []
     for b in range(batch.bs):
-        if batch.has_global_instance_ids[b].item() is False: continue
+        if batch.has_global_instance_ids[b].item() is False and not cfg.model.token_subset_consistency_loss: continue
         src_valid = cond.mask_batch_idx == b
         tgt_valid = cond.tgt_mask_batch_idx == b
 

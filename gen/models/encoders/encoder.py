@@ -1,9 +1,9 @@
-from contextlib import nullcontext
 import functools
+import inspect
 import math
 from abc import ABC, abstractmethod, abstractproperty
+from contextlib import nullcontext
 from functools import partial
-from pyexpat import features
 from typing import Callable, Optional, TypeAlias, Union
 
 import imageio.v3 as iio
@@ -18,13 +18,11 @@ from PIL import Image
 from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
 from torch import Tensor
-from torchvision.models.feature_extraction import (create_feature_extractor,
-                                                   get_graph_node_names)
+from torchvision.models.feature_extraction import create_feature_extractor, get_graph_node_names
 
-from gen.models.encoders.extracted_encoder_utils import (interpolate_embeddings,
-                                              pad_image_and_adjust_coords)
+from gen.models.encoders.extracted_encoder_utils import interpolate_embeddings, pad_image_and_adjust_coords
+from gen.models.encoders.lora import LoRA_ViT_timm
 
-import inspect
 ImArr: TypeAlias = Union[Image.Image, Tensor, np.ndarray]
 
 
@@ -145,12 +143,22 @@ class BaseModel(ABC, nn.Module):
 
 
 class TimmModel(BaseModel):
-    def __init__(self, model_name: str, num_from_back: int = 0, tensor_input: bool = True, img_size: Optional[tuple[int]] = None, features_only: bool = True, **kwargs):
+    def __init__(
+            self,
+            model_name: str,
+            num_from_back: int = 0,
+            tensor_input: bool = True,
+            img_size: Optional[tuple[int]] = None,
+            features_only: bool = True,
+            lora: Optional[dict] = None,
+            **kwargs
+        ):
         self.model_name = model_name
         self.num_from_back = num_from_back
         self.tensor_input = tensor_input
         self.img_size = img_size
         self.features_only = features_only
+        self.lora = lora
         super().__init__(**kwargs)
 
     @functools.cached_property
@@ -180,7 +188,11 @@ class TimmModel(BaseModel):
         if self.features_only:
             kwargs["features_only"] = True
 
-        return timm.create_model(self.model_name, **kwargs)
+        model = timm.create_model(self.model_name, **kwargs)
+        if self.lora is not None:
+            model = LoRA_ViT_timm(vit_model=model, **self.lora)
+
+        return model
 
 
 class DINOV2(TimmModel):
@@ -311,7 +323,7 @@ class FeatureExtractorModel(BaseModel):
 
     def create_model(self, **kwargs):
         self.base_model = super().create_model(**kwargs)
-        if self.gradient_checkpointing:
+        if self.gradient_checkpointing and not self.lora:
             print("Setting grad checkpointing")
             self.base_model.set_grad_checkpointing(enable=True)
         return create_feature_extractor(self.base_model, return_nodes=self.return_nodes)
@@ -356,7 +368,8 @@ class ViTFeatureExtractor(FeatureExtractorModel, ViT):
         create_kwargs = {}
         if self.num_classes is not None:
             create_kwargs["num_classes"] = self.num_classes
-        return super().create_model(pretrained=self.pretrained, **create_kwargs)
+        model = super().create_model(pretrained=self.pretrained, **create_kwargs)
+        return model
 
 
 class ResNetFeatureExtractor(FeatureExtractorModel, ResNet):

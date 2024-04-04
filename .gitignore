@@ -252,3 +252,5 @@ data/
 result.json
 *.nsys-rep
 output_debug/
+dask-scratch-space/
+output*/

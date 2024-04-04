@@ -206,7 +206,7 @@ class BaseTrainer(Trainer):
                     if self.cfg.trainer.compose_inference:
                         self.validate_compose(state)
                 except Exception as e:
-                    if self.cfg.debug is True or (get_num_gpus() > 1 and state.global_step > 1):
+                    if get_num_gpus() > 1 and state.global_step > 100:
                         traceback.print_exc()
                         log_error(f"Error during validation: {e}. Continuing...")
                     else:

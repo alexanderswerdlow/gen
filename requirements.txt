@@ -44,5 +44,11 @@ msgpack
 simplejpeg
 sysrsync
 bitsandbytes
+dask
+dask-jobqueue
+distributed
+bokeh
+prometheus_client
+jupyter-server-proxy
 git+https://github.com/alexanderswerdlow/kornia.git@keypoint_visibility_rebased
 git+https://github.com/TUI-NICR/nicr-scene-analysis-datasets#[withpreparation,with3d]

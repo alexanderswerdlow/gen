@@ -169,22 +169,27 @@ def main(cfg: BaseConfig):
         log_info(f"Scaling finetuning learning rate by {scale_factor} to {cfg.trainer.finetune_learning_rate}.")
 
     accelerator_project_config = ProjectConfiguration(project_dir=cfg.output_dir, logging_dir=cfg.logging_dir)
-    gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=cfg.trainer.gradient_accumulation_steps, adjust_scheduler=False)
     
     accelerate_kwargs = dict()
+    gradient_kwargs = dict()
     if cfg.trainer.fsdp:
         fsdp_plugin = FullyShardedDataParallelPlugin(
             state_dict_config=FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
             optim_state_dict_config=FullOptimStateDictConfig(offload_to_cpu=False, rank0_only=False),
             sharding_strategy="FULL_SHARD",
             auto_wrap_policy="SIZE_BASED_WRAP",
+            backward_prefetch="BACKWARD_POST",
             use_orig_params=True,
             activation_checkpointing=True,
         )
         accelerate_kwargs['fsdp_plugin'] = fsdp_plugin
+        gradient_kwargs['sync_each_batch'] = True
+        log_info("Using FSDP...")
     else:
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=cfg.trainer.find_unused_parameters)
         accelerate_kwargs['kwargs_handlers'] = [ddp_kwargs]
+
+    gradient_accumulation_plugin = GradientAccumulationPlugin(num_steps=cfg.trainer.gradient_accumulation_steps, adjust_scheduler=False, **gradient_kwargs)
 
     if cfg.run_dataloader_only:
         cfg.trainer.mixed_precision = PrecisionType.NO

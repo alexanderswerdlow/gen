@@ -32,26 +32,26 @@ def inference(cfg: BaseConfig, accelerator: Accelerator):
     if not (cfg.debug and cfg.trainer.ckpt is None): load_from_ckpt(cfg=cfg, accelerator=accelerator, model=model, load_model=True)
     model = accelerator.prepare(model)
 
-    if cfg.inference.infer_val_dataset: run_inference_split(cfg, accelerator, model, Split.VALIDATION)
+    if cfg.inference.infer_val_dataset: run_inference_split(cfg, accelerator, model, Split.VALIDATION, cfg.dataset.val)
 
-    if cfg.inference.infer_train_dataset: run_inference_split(cfg, accelerator, model, Split.TRAIN)
+    if cfg.inference.infer_train_dataset: run_inference_split(cfg, accelerator, model, Split.TRAIN, cfg.dataset.train)
 
 
-def run_inference_split(cfg: BaseConfig, accelerator: Accelerator, model: Trainable, split: Split):
+def run_inference_split(cfg: BaseConfig, accelerator: Accelerator, model: Trainable, split: Split, dataset_cfg):
     g = torch.Generator()
     if cfg.inference.set_seed:
         g.manual_seed(42 + get_rank())
     else:
         g.manual_seed(int(time.time()) + get_rank())
 
-    dataloader = hydra.utils.instantiate(cfg.dataset.train, _recursive_=True)(
+    dataloader = hydra.utils.instantiate(dataset_cfg, _recursive_=True)(
         cfg=cfg, split=split, tokenizer=unwrap(model).tokenizer
     ).get_dataloader(generator=g)
 
     dataloader = accelerator.prepare(dataloader)
 
     run_inference_dataloader(
-        cfg=cfg, accelerator=accelerator, state=TrainingState(0, 0, 0, 0, 0), dataloader=dataloader, model=model, output_path=cfg.output_dir, prefix='inference/'
+        cfg=cfg, accelerator=accelerator, state=TrainingState(0, 0, 0, 0, 0), dataloader=dataloader, model=model, output_path=cfg.output_dir, prefix=f'inference_{split.name.lower()}/'
     )
 
 
@@ -87,6 +87,7 @@ def run_inference_dataloader(
             epoch=state.epoch,
             global_step=state.global_step,
             true_step=state.true_step,
+            split=Split.TRAIN if 'train' in prefix else Split.VALIDATION,
         )
         batch = unwrap(model).process_input(batch, state)
         batch = batch.to(accelerator.device)

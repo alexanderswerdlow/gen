@@ -139,12 +139,20 @@ class ModelConfig:
     add_text_tokens: bool = True
 
     clip_lora: bool = False  # Perform low-rank adaptation on the main U-Net
-    clip_lora_rank: int = 512
+    clip_lora_rank: int = 16
+    clip_lora_alpha: int = 8
+    clip_lora_dropout: float = 0.1
 
     return_mean_pooled_mask_tokens: bool = False
     mean_pooled_mask_token_layer: int = -1
     mean_pooled_mask_tokens_in_bbox: bool = False
     mean_pooled_mask_tokens_bbox_enlarge: int = 0
+
+    debug_feature_maps: bool = False
+    token_subset_consistency_loss: bool = False
+    mask_dropped_tokens: bool = False
+
+    less_token_dropout: bool = False
 
 @dataclass
 class ControlNetConfig(ModelConfig):

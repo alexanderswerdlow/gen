@@ -1,5 +1,6 @@
 from calendar import leapdays
 from functools import partial
+from gc import enable
 from operator import le
 
 import torch
@@ -13,11 +14,13 @@ from gen.configs.utils import mode_store
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
 from gen.datasets.hypersim.hypersim import Hypersim
 from gen.metrics.compute_token_features import compute_token_features
-from gen.models.cross_attn.base_inference import compose_two_images, interpolate_latents
+from gen.models.cross_attn.base_inference import compose_two_images, interpolate_frames, interpolate_latents
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
 from functools import partial
 from gen.datasets.scannetpp.run_sam import scannet_run_sam
 from accelerate.utils import PrecisionType
+
+from gen.models.encoders.extra_encoders import IntermediateViT
 
 
 def get_override_dict(**kwargs):
@@ -114,6 +117,23 @@ def get_experiments():
             num_images_per_prompt=1,
         ),
         hydra_defaults=["sm"],
+    )
+
+    mode_store(
+        name="24G",
+        debug=True,
+        model=dict(
+            freeze_unet=True,
+            unfreeze_single_unet_layer=True,
+        ),
+        trainer=dict(
+            enable_dynamic_grad_accum=False,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=8,
+            )
+        )
     )
 
     mode_store(
@@ -399,7 +419,8 @@ def get_experiments():
 
     mode_store(
         name="profiler",
-        trainer=dict(learning_rate=1e-4, eval_on_start=False, max_train_steps=10, gradient_accumulation_steps=1, enable_dynamic_grad_accum=False, profiler_active_steps=2),
+        profile=True,
+        trainer=dict(eval_on_start=False, max_train_steps=10, gradient_accumulation_steps=1, enable_dynamic_grad_accum=False, profiler_active_steps=2),
     )
 
     mode_store(
@@ -522,6 +543,17 @@ def get_experiments():
             validate_training_dataset=False,
             gradient_accumulation_steps=1,
         ),
+        dataset=dict(
+            train=dict(
+                shuffle=False,
+            ),
+            val=dict(
+                shuffle=False,
+            )
+        ),
+        model=dict(
+            training_mask_dropout=None,
+        )
     )
 
     mode_store(
@@ -710,7 +742,7 @@ def get_experiments():
         dataset=dict(
             train=dict(
                 return_encoder_normalized_tgt=True,
-                num_workers=12,
+                num_workers=10,
             ),
             val=dict(
                 return_encoder_normalized_tgt=True,
@@ -720,7 +752,7 @@ def get_experiments():
                     Hypersim, 
                     populate_full_signature=True,
                     zen_partial=True,
-                    repeat_n=10,
+                    repeat_n=50,
                     return_encoder_normalized_tgt="${model.return_encoder_normalized_tgt}",
                     camera_trajectory_window=32,
                     return_different_views=True,
@@ -728,7 +760,7 @@ def get_experiments():
                     bbox_area_threshold=0.75,
                     object_ignore_threshold=0.0,
                     top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
-                    num_overlapping_masks=6,
+                    num_overlapping_masks=1,
                     augmentation=builds(
                         Augmentation,
                         different_src_tgt_augmentation=False,
@@ -754,7 +786,7 @@ def get_experiments():
                     Hypersim, 
                     populate_full_signature=True,
                     zen_partial=True,
-                    repeat_n=10,
+                    repeat_n=50,
                     return_encoder_normalized_tgt="${model.return_encoder_normalized_tgt}",
                     camera_trajectory_window=32,
                     return_different_views=True,
@@ -762,7 +794,7 @@ def get_experiments():
                     bbox_area_threshold=0.75,
                     object_ignore_threshold=0.0,
                     top_n_masks_only="${eval:'${model.segmentation_map_size} - 1'}",
-                    num_overlapping_masks=6,
+                    num_overlapping_masks=1,
                     augmentation=builds(
                         Augmentation,
                         different_src_tgt_augmentation=False,
@@ -803,24 +835,104 @@ def get_experiments():
             modulate_src_tokens_with_tgt_pose=False,
             segmentation_map_size=16,
             eschernet=False,
+            token_subset_consistency_loss=True,
+            mask_dropped_tokens=True,
+            src_tgt_consistency_loss_weight=1.0,
         ),
         dataset=dict(
             train=dict(
                 return_encoder_normalized_tgt=False,
                 src_eq_tgt=True,
-                distance_threshold = (0.3, 0.1, 0.12, 0.7)
+                distance_threshold = (0.3, 0.1, 0.12, 0.7),
+                num_overlapping_masks=1,
             ),
             val=dict(
                 return_encoder_normalized_tgt=False,
                 src_eq_tgt=True,
-                distance_threshold = (0.3, 0.1, 0.12, 0.7)
+                distance_threshold = (0.3, 0.1, 0.12, 0.7),
+                num_overlapping_masks=1,
             ),
         ),
         trainer=dict(
             eval_every_n_steps=500,
             learning_rate=5e-6,
         ),
-        hydra_defaults=["noconcat_hypersim_scannet"], 
+        inference=dict(
+            num_single_token_gen=5,
+            num_masks_to_remove=5,
+            visualize_attention_map=True,
+        ),
+        # hydra_defaults=[""], noconcat_hypersim_scannet
+    )
+
+    mode_store(
+        name="base_clip_lora",
+        model=dict(
+            encoder=builds(
+                IntermediateViT,
+                populate_full_signature=False,
+                model_name="vit_base_patch14_reg4_dinov2.lvd142m",
+                img_size=518,
+                return_nodes=None,
+            ),
+            feature_map_keys=(
+                "blocks.5",
+                "blocks.11",
+            ),
+            encoder_dim=768,
+            encoder_resolution=518,
+            encoder_latent_dim=37,
+            clip_lora=True,
+            freeze_clip=True,
+            unfreeze_last_n_clip_layers=None,
+            segmentation_map_size=256,
+        ),
+        dataset=dict(
+            train=dict(use_new_seg=True, scenes_slice=None, frames_slice=None),
+            val=dict(use_new_seg=True, scenes_slice=None, frames_slice=None),
+        ),
+        trainer=dict(
+            fsdp=True,
+            checkpointing_steps=1000,
+        ),
+        inference=dict(
+            num_masks_to_remove=10,
+            num_single_token_gen=10,
+        )
+    )
+
+    mode_store(
+        name="high_res_lora",
+        model=dict(
+             encoder_dim=1024,
+             encoder=dict(
+                model_name="vit_large_patch14_reg4_dinov2.lvd142m",
+             ),
+             feature_map_keys=(
+                "blocks.11",
+                "blocks.23",
+            ),
+        ),
+    )
+
+    mode_store(
+        name="multi_frame_interpolation",
+        debug=True,
+        dataset=dict(
+            train=dict(
+                src_eq_tgt=False,
+                return_encoder_normalized_tgt=True,
+                distance_threshold = (0.25, 0.1, 0.1, 0.5),
+            ),
+            val=dict(
+                src_eq_tgt=False,
+                return_encoder_normalized_tgt=True,
+                distance_threshold = (0.25, 0.1, 0.1, 0.5),
+            ),
+        ),
+        inference=dict(
+            inference_func=interpolate_frames,
+        )
     )
 
     mode_store(
@@ -920,6 +1032,105 @@ def get_experiments():
                     tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
                     different_src_tgt_augmentation=False,
                 )
+            ),
+        ),
+    )
+
+    mode_store(
+        name="debug_feature_maps",
+        model=dict(
+            debug_feature_maps=True,
+            encoder=dict(
+                return_nodes={
+                    "blocks.0": "blocks.0",
+                    "blocks.1": "blocks.1",
+                    "blocks.2": "blocks.2",
+                    "blocks.3": "blocks.3",
+                    "blocks.4": "blocks.4",
+                    "blocks.5": "blocks.5",
+                    "blocks.6": "blocks.6",
+                    "blocks.7": "blocks.7",
+                    "blocks.8": "blocks.8",
+                    "blocks.9": "blocks.9",
+                    "blocks.10": "blocks.10",
+                    "blocks.11": "blocks.11",
+                    "norm": "norm",
+                    "blocks": "blocks",
+                },
+            )
+        )
+    )
+
+    mode_store(
+        name="tmp_disable",
+        debug=True,
+        model=dict(
+            training_mask_dropout=None,
+            token_subset_consistency_loss=False,
+            mask_dropped_tokens=True,
+            break_a_scene_masked_loss=True,
+        ),
+        inference=dict(
+            num_masks_to_remove=None,
+            num_single_token_gen=None,
+        ),
+        trainer=dict(
+            enable_dynamic_grad_accum=False,
+            checkpointing_steps=None,
+        )
+    )
+
+    mode_store(
+        name="tmp_disable_v2",
+        debug=True,
+        model=dict(
+            token_subset_consistency_loss=False,
+            mask_dropped_tokens=True,
+            break_a_scene_masked_loss=False,
+        ),
+        inference=dict(
+            num_masks_to_remove=8,
+            num_single_token_gen=8,
+        ),
+        trainer=dict(
+            enable_dynamic_grad_accum=False,
+            checkpointing_steps=1000,
+        )
+    )
+
+    mode_store(
+        name="merge_extra_masks",
+        debug=True,
+        dataset=dict(
+            train=dict(merge_masks=True),
+            val=dict(merge_masks=True),
+        ),
+    )
+
+
+    mode_store(
+        name="new_data",
+        model=dict(
+            segmentation_map_size=256,
+        ),
+        dataset=dict(
+            train=dict(use_new_seg=True, scenes_slice=None, frames_slice=None),
+            val=dict(use_new_seg=True, scenes_slice=None, frames_slice=None),
+        ),
+    )
+
+    mode_store(
+        name="old_data",
+        dataset=dict(
+            train=dict(
+                use_new_seg=False,
+                scenes_slice=(0, None, 4),
+                frames_slice=(0, None, 5),
+            ),
+            val=dict(
+                use_new_seg=False,
+                scenes_slice=(0, None, 4),
+                frames_slice=(0, None, 5),
             ),
         ),
     )

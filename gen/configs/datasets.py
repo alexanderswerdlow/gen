@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar, Optional
 
 from hydra_zen import builds
@@ -11,6 +12,7 @@ from gen.datasets.augmentation.kornia_augmentation import Augmentation
 from gen.datasets.coco.coco_panoptic import CocoPanoptic
 from gen.datasets.controlnet_dataset import ControlnetDataset
 from gen.datasets.hypersim.hypersim import Hypersim
+from gen.datasets.imagefolder.imagefolder import ImagefolderDataset
 from gen.datasets.imagenet_dataset import ImageNetCustomDataset
 from gen.datasets.kubrics.movi_dataset import MoviDataset
 from gen.datasets.objaverse.objaverse import ObjaverseData
@@ -158,6 +160,18 @@ auto_store(DatasetConfig,
         scratch_only=False,
     ), 
     name="scannetpp"
+)
+
+auto_store(DatasetConfig, 
+    train=get_dataset(
+        ImagefolderDataset,
+        augmentation=augmentation,
+    ), 
+    val=get_dataset(
+        ImagefolderDataset,
+        augmentation=augmentation,
+    ), 
+    name="imagefolder"
 )
 
 store_child_config(DatasetConfig, "dataset", "coco_panoptic", "coco_panoptic_test")
@@ -626,6 +640,25 @@ def get_datasets():  # TODO: These do not need to be global configs
         hydra_defaults=[
             "_self_",
             {"override /dataset": "scannetpp"},
+        ],
+    )
+
+    mode_store(
+        name="imagefolder",
+        dataset=dict(
+            train=dict(
+                root=Path("/home/aswerdlo/data/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom/imagefolder/data_v0")
+            ),
+            val=dict(
+                root=Path("/home/aswerdlo/data/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom/imagefolder/data_v0")
+            ),
+        ),
+        model=dict(
+            segmentation_map_size=256,
+        ),
+        hydra_defaults=[
+            {"override /dataset": "imagefolder"},
+            "_self_",
         ],
     )
 
