@@ -927,3 +927,12 @@ import antigravity
                     # if self.no_filtering is False:
                 #     values, counts = torch.unique(src_seg.int(), return_counts=True, sorted=True)
                 #     src_seg[torch.isin(src_seg, values[counts < 128])] = 255
+                    #             def find_all_linear_modules(model):
+                    # lora_module_names = set()
+                    # for name, module in model.named_modules():
+                    #     if isinstance(module, (torch.nn.Linear)):
+                    #         names = name.split(".")
+                    #         lora_module_names.add(names[0] if len(names) == 1 else names[-1])
+                    #         if "lm_head" in lora_module_names: # needed for 16-bit
+                    #             lora_module_names.remove("lm_head")
+                    # return list(lora_module_names)

@@ -321,14 +321,23 @@ class FeatureMapper(nn.Module):
 
         if self.cfg.model.modulate_src_tokens_with_tgt_pose:
             self.token_modulator_input_dim = self.cfg.model.token_embedding_dim * self.cfg.model.num_layer_queries
-            self.token_modulator = hydra.utils.instantiate(
-                self.cfg.model.token_modulator,
-                _recursive_=False,
-                embed_dim=self.token_modulator_input_dim,
-                use_flash_attn=self.cfg.trainer.mixed_precision != "no",
-            )
+            if self.cfg.model.modulate_src_tokens_with_mlp:
+                self.token_modulator = nn.Sequential(
+                    nn.Linear(self.token_modulator_input_dim * 2, self.token_modulator_input_dim, bias=True),
+                    nn.SiLU(),
+                    nn.Linear(self.token_modulator_input_dim, self.token_modulator_input_dim, bias=True),
+                )
+            elif self.cfg.model.modulate_src_tokens_with_film:
+                self.token_modulator = nn.Linear(self.token_modulator_input_dim, self.token_modulator_input_dim * 2, bias=True)
+            else:
+                self.token_modulator = hydra.utils.instantiate(
+                    self.cfg.model.token_modulator,
+                    _recursive_=False,
+                    embed_dim=self.token_modulator_input_dim,
+                    use_flash_attn=self.cfg.trainer.mixed_precision != "no",
+                )
 
-            in_channels = 16
+            in_channels = 30
             n_freqs = ((self.token_modulator_input_dim - in_channels) // 4) // in_channels
             self.camera_embed = FourierEmbedding(in_channels=in_channels, N_freqs=n_freqs)
 
@@ -338,6 +347,9 @@ class FeatureMapper(nn.Module):
         # TODO: Double check this is working
         self.apply(_init_weights)
 
+        if self.cfg.model.modulate_src_tokens_with_tgt_pose and self.cfg.model.modulate_src_tokens_with_film:
+            nn.init.constant_(self.token_modulator.weight, 0)
+            nn.init.constant_(self.token_modulator.bias, 0)
 
 class CrossAttn(nn.Module):
     def __init__(self, cfg: BaseConfig, input_dim: int, cross_attn_dim: int, output_dim: int):

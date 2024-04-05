@@ -31,7 +31,7 @@ class SlurmConfig:
     max_num_timeout: int = 5
     use_deepspeed: bool = False
     exclude: Optional[str] = None
-    constraint: str = "A100|6000ADA|A5500"
+    constraint: Optional[str] = None # "A100|6000ADA|A5500"
     env_vars: Optional[dict[str, str]] = None
     nodelist: Optional[str] = None
     comment: Optional[str] = None
@@ -185,9 +185,11 @@ def add_job(cfg: SlurmConfig):
     executor = submitit.AutoExecutor(folder=cfg.output_dir, max_num_timeout=cfg.max_num_timeout)
 
     slurm_additional_parameters = {
-        "ntasks_per_node": cfg.n_processes,
-        "constraint": cfg.constraint,
+        "ntasks_per_node": cfg.n_processes
     }
+
+    if cfg.constraint is not None:
+        slurm_additional_parameters["constraint"] = cfg.constraint
 
     if cfg.nodelist is not None:
         slurm_additional_parameters["nodelist"] = cfg.nodelist

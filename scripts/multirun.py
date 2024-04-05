@@ -1,7 +1,8 @@
+import autoroot
 import random
 import string
-import autoroot
 
+import time
 import itertools
 import os
 import subprocess
@@ -13,6 +14,7 @@ import typer
 from typing_extensions import Annotated
 
 from gen import CONDA_ENV, REPO_DIR
+from gen.configs.matrix_configs import get_excluded_nodes
 from scripts.launch_slurm import add_job, SlurmConfig, watch
 from rich.pretty import pprint
 
@@ -38,11 +40,13 @@ def main(
     name: str = f'{datetime.now().strftime("%Y_%m_%d_%H_%M_%S")}',
     gpus: Optional[int] = None,
     big_gpu: bool = False,
+    med_gpu: bool = False,
     long_job: bool = False,
     dry_run: bool = False,
     nodelist: Optional[str] = None,
     constraint: Optional[str] = None,
     watch_run: bool = True,
+    partition: str = "kate_reserved"
 ):
     """
     This script is used to run experiments in parallel on a SLURM cluster. It is a wrapper around launch_slurm.py to support hyperparameter sweeps.
@@ -59,7 +63,7 @@ def main(
     multirun_dir = output_dir / multirun_name
     regular_args = " ".join(args)
 
-    if prod is None:
+    if prod is None or len(prod) == 0:
         data = {None: (None,)}
     else:
         data = {item.split("=")[0]: item.split("=")[1].split(",") for item in prod}
@@ -69,8 +73,9 @@ def main(
 
     # Generating and printing all combinations
     num_jobs = 0
+    run_id = ""
     for idx, combination in enumerate(itertools.product(*data.values())):
-        if len(combination) == 0:
+        if len(combination) == 0 or (len(combination) == 1 and combination[0] is None):
             prod_args = ""
             if is_sweep:
                 run_id = f'{name}_{datetime.now().strftime("%H%M")}_{"".join(random.choices(string.ascii_letters, k=2))}'
@@ -93,6 +98,7 @@ def main(
             init_cmds=init_cmds,
             nodelist=nodelist,
             comment=f"{run_id}",
+            partition = partition
         )
 
         if constraint is not None:
@@ -102,9 +108,15 @@ def main(
             job.gpus = gpus
 
         if big_gpu:
-            job.constraint = "A100|6000ADA"
+            job.exclude = get_excluded_nodes("A100", "6000ADA")
+        elif med_gpu:
+            job.exclude = get_excluded_nodes("3090", "A5500")
+        else:
+            job.exclude = get_excluded_nodes("A100", "6000ADA", "3090", "A5500")
         
-        if long_job:
+        if partition == 'all':
+            job.time = "06:00:00"
+        elif long_job:
             job.time = "72:00:00"
 
         if not dry_run:
@@ -128,7 +140,6 @@ def main(
         else:
             watch()
 
-import time
 def tail_log_file(log_file_path):
     max_retries = 60
     retry_interval = 2

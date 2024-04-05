@@ -84,7 +84,7 @@ def scannet_run_sam():
         g = torch.Generator()
         g.manual_seed(int(time.time()))
         max_masks = 256
-        filenames = get_all_gt_images("a")
+        filenames = get_all_gt_images()
 
         batch: InputData
         for i, filename in tqdm(enumerate(filenames), leave=False, disable=not is_main_process()):

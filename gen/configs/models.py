@@ -48,6 +48,7 @@ class ModelConfig:
     unfreeze_last_n_clip_layers: Optional[int] = None  # Unfreeze specific clip layers
     unfreeze_unet_after_n_steps: Optional[int] = None
     unfreeze_gated_cross_attn: bool = False
+    freeze_token_encoder: bool = False
 
     training_mask_dropout: Optional[float] = None  # Randomly dropout object masks during training.
     training_layer_dropout: Optional[float] = None  # Randomly dropout layer conditioning during training.
@@ -132,9 +133,10 @@ class ModelConfig:
     eschernet: bool = False
     eschernet_6dof: bool = False
     use_sd_15_tokenizer_encoder: bool = False
-    return_encoder_normalized_tgt: bool = False
     modulate_src_tokens_with_tgt_pose: bool = False
-    src_tgt_consistency_loss_weight: float = 1.0
+    modulate_src_tokens_with_mlp: bool = False
+    modulate_src_tokens_with_film: bool = False
+    
     token_modulator: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     add_text_tokens: bool = True
 
@@ -149,10 +151,16 @@ class ModelConfig:
     mean_pooled_mask_tokens_bbox_enlarge: int = 0
 
     debug_feature_maps: bool = False
-    token_subset_consistency_loss: bool = False
-    mask_dropped_tokens: bool = False
 
+    encode_tgt: bool = False
+    encode_src_twice: bool = False
+    src_tgt_consistency_loss_weight: Optional[float] = 1.0
+    only_encode_shared_tokens: bool = False
+
+    mask_dropped_tokens: bool = False
     less_token_dropout: bool = False
+
+    max_num_training_masks: Optional[int] = None
 
 @dataclass
 class ControlNetConfig(ModelConfig):

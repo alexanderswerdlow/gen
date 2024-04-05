@@ -2,6 +2,7 @@ from calendar import leapdays
 from functools import partial
 from gc import enable
 from operator import le
+from pathlib import Path
 
 import torch
 from hydra_zen import builds
@@ -485,9 +486,6 @@ def get_experiments():
             pretrained_model_name_or_path="lambdalabs/sd-image-variations-diffusers",
             token_embedding_dim=768,
             use_sd_15_tokenizer_encoder=True,
-            # We pretrained by fine-tuning all layers.
-            # unfreeze_last_n_clip_layers=None,
-            # freeze_clip=False,
             freeze_clip=True,
             unfreeze_last_n_clip_layers=2,
             masked_self_attention=True
@@ -736,7 +734,7 @@ def get_experiments():
         model=dict(
             eschernet=True,
             modulate_src_tokens_with_tgt_pose=True,
-            return_encoder_normalized_tgt=True,
+            encode_tgt=True,
             src_tgt_consistency_loss_weight=0.1,
         ),
         dataset=dict(
@@ -831,11 +829,11 @@ def get_experiments():
     mode_store(
         name="disable_debug_scannet",
         model=dict(
-            return_encoder_normalized_tgt=False,
+            encode_tgt=False,
             modulate_src_tokens_with_tgt_pose=False,
             segmentation_map_size=16,
             eschernet=False,
-            token_subset_consistency_loss=True,
+            encode_src_twice=True,
             mask_dropped_tokens=True,
             src_tgt_consistency_loss_weight=1.0,
         ),
@@ -862,7 +860,6 @@ def get_experiments():
             num_masks_to_remove=5,
             visualize_attention_map=True,
         ),
-        # hydra_defaults=[""], noconcat_hypersim_scannet
     )
 
     mode_store(
@@ -970,7 +967,7 @@ def get_experiments():
             )
         ),
         model=dict(
-            return_encoder_normalized_tgt=False,
+            encode_tgt=False,
             modulate_src_tokens_with_tgt_pose=True,
         ),
     )
@@ -1066,7 +1063,7 @@ def get_experiments():
         debug=True,
         model=dict(
             training_mask_dropout=None,
-            token_subset_consistency_loss=False,
+            encode_src_twice=False,
             mask_dropped_tokens=True,
             break_a_scene_masked_loss=True,
         ),
@@ -1084,7 +1081,7 @@ def get_experiments():
         name="tmp_disable_v2",
         debug=True,
         model=dict(
-            token_subset_consistency_loss=False,
+            encode_src_twice=False,
             mask_dropped_tokens=True,
             break_a_scene_masked_loss=False,
         ),
@@ -1107,18 +1104,6 @@ def get_experiments():
         ),
     )
 
-
-    mode_store(
-        name="new_data",
-        model=dict(
-            segmentation_map_size=256,
-        ),
-        dataset=dict(
-            train=dict(use_new_seg=True, scenes_slice=None, frames_slice=None),
-            val=dict(use_new_seg=True, scenes_slice=None, frames_slice=None),
-        ),
-    )
-
     mode_store(
         name="old_data",
         dataset=dict(
@@ -1132,5 +1117,227 @@ def get_experiments():
                 scenes_slice=(0, None, 4),
                 frames_slice=(0, None, 5),
             ),
+        ),
+    )
+
+    mode_store(
+        name="vit_small_dino_finetune",
+        model=dict(
+            encoder=builds(
+                ViTFeatureExtractor,
+                num_classes=0,
+                return_only=None,
+                pretrained=False,
+                gradient_checkpointing=True,
+                model_name="vit_small_patch14_reg4_dinov2",
+                img_size=224,
+                return_nodes={
+                    "blocks.5": "blocks.5",
+                    "norm": "norm",
+                },
+                populate_full_signature=False,
+            ),
+            feature_map_keys=(
+                "blocks.5",
+                "norm",
+            ),
+            encoder_resolution=224,
+            encoder_dim=384,
+            encoder_latent_dim=16,
+            freeze_clip=False,
+            clip_lora=False,
+            unfreeze_last_n_clip_layers=None,
+        ),
+        hydra_defaults=[
+            "_self_",
+            {"override /model": "basemapper_vit_scratch"},
+        ],
+    )
+
+    mode_store(
+        name="efficient_training",
+        trainer=dict(
+            fsdp=True,
+            checkpointing_steps=1000,
+            enable_dynamic_grad_accum=False,
+        ),
+        inference=dict(
+            num_masks_to_remove=10,
+            num_single_token_gen=10,
+        ),
+    )
+
+    mode_store(
+        name="sam_segmentaton",
+        model=dict(
+            segmentation_map_size=255,
+        ),
+        dataset=dict(
+            train=dict(scenes_slice=None, frames_slice=None),
+            val=dict(scenes_slice=None, frames_slice=None),
+        ),
+    )
+
+    mode_store(
+        name="instance_segmentation",
+        model=dict(
+            segmentation_map_size=255,
+        ),
+        dataset=dict(
+            train=dict(
+                allow_instance_seg=True,
+                return_only_instance_seg=True,
+                scenes_slice=None,
+                frames_slice=None,
+                distance_threshold=(0.25, 0.35, 0.25, 0.0),
+            ),
+            val=dict(
+                allow_instance_seg=True,
+                return_only_instance_seg=True,
+                scenes_slice=None,
+                frames_slice=None,
+                distance_threshold=(0.25, 0.35, 0.25, 0.0)
+            ),
+        ),
+    )
+
+    mode_store(
+        name="exp_1_base",
+        debug=True,
+        model=dict(
+            segmentation_map_size=255,
+            max_num_training_masks=16,
+            
+            mask_dropped_tokens=False,
+            break_a_scene_masked_loss=False,
+
+            encode_src_twice=False,
+            encode_tgt=False,
+            src_tgt_consistency_loss_weight=None,
+            
+            only_encode_shared_tokens=True,
+
+            modulate_src_tokens_with_tgt_pose=True,
+            modulate_src_tokens_with_mlp=True,
+            
+            less_token_dropout=True,
+        ),
+        dataset=dict(
+            train=dict(
+                src_eq_tgt=False,
+            ),
+            val=dict(
+                src_eq_tgt=False,
+            ),
+        ),
+        trainer=dict(
+            fsdp=True,
+            checkpointing_steps=1000,
+            enable_dynamic_grad_accum=False,
+        ),
+        inference=dict(
+            num_masks_to_remove=10,
+            num_single_token_gen=10,
+        ),
+        hydra_defaults=[
+           "noconcat_hypersim_scannet",
+           "disable_debug_scannet",
+        ],
+    )
+
+    mode_store(
+        name="exp_0_8",
+        model=dict(
+            only_encode_shared_tokens=False,
+            training_mask_dropout=None,
+        ),
+        dataset=dict(
+            train=dict(
+                distance_threshold=(0.20, 0.1, 0.10, 0.3),
+            ),
+            val=dict(
+                distance_threshold=(0.20, 0.1, 0.10, 0.3),
+            ),
+        ),
+        hydra_defaults=[
+           "exp_1_base",
+           "sam_segmentaton",
+        ],
+    )
+
+    mode_store(
+        name="exp_0_9",
+        model=dict(
+            only_encode_shared_tokens=True,
+            training_mask_dropout=None,
+        ),
+        dataset=dict(
+            train=dict(
+                distance_threshold=(0.8, 0.70, 0.25, 0.0),
+                use_colmap_poses=True,
+            ),
+            val=dict(
+                distance_threshold=(0.8, 0.70, 0.25, 0.0),
+                use_colmap_poses=True,
+            ),
+        ),
+        hydra_defaults=[
+           "exp_1_base",
+           "instance_segmentation",
+        ],
+    )
+
+    mode_store(
+        name="exp_0_9_1",
+        model=dict(
+            only_encode_shared_tokens=True,
+            training_mask_dropout=None,
+            encode_tgt=True,
+            src_tgt_consistency_loss_weight=100.0,
+            modulate_src_tokens_with_film=True,
+            modulate_src_tokens_with_mlp=False,
+        ),
+        dataset=dict(
+            train=dict(
+                distance_threshold=(0.5, 0.50, 0.25, 0.0),
+                use_colmap_poses=True,
+                return_encoder_normalized_tgt=True,
+            ),
+            val=dict(
+                distance_threshold=(0.5, 0.50, 0.25, 0.0),
+                use_colmap_poses=True,
+                return_encoder_normalized_tgt=True,
+            ),
+        ),
+        hydra_defaults=[
+           "exp_1_base",
+           "instance_segmentation",
+        ],
+    )
+
+    mode_store(
+        name="freeze_exp",
+        model=dict(
+            freeze_unet=True,
+            unfreeze_last_n_clip_layers=None,
+            freeze_token_encoder=True,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=32
+            ),
+        ),
+        trainer=dict(
+            eval_every_n_steps=500,
+            learning_rate=1e-4,
+            log_gradients=50
+        )
+    )
+
+    mode_store(
+        name="load_ckpt",
+        trainer=dict(
+            ckpt=Path("/projects/katefgroup/aswerdlo/gen/checkpoints/debug_2024-04-01_17_27_31/yRVLCngRkN/checkpoint_28000/state/pytorch_model.bin"),
+            strict_load=False,
         ),
     )

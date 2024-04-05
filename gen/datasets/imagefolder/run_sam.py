@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 
+from gen.configs.matrix_configs import get_excluded_nodes
+
 sys.path.insert(0, "/home/aswerdlo/repos/gen")
 import io
 import os
@@ -306,58 +308,13 @@ def tail_log_file(log_file_path, glob_str):
     print(f"File not found: {log_file_path} after {max_retries * retry_interval} seconds...")
 
 
-node_gpus = {
-    "matrix-0-16": "titanx",
-    "matrix-0-18": "titanx",
-    "matrix-0-24": "P40,volta",
-    "matrix-0-26": "titanx",
-    "matrix-0-36": "2080Ti",
-    "matrix-1-1": "volta",
-    "matrix-1-6": "2080Ti",
-    "matrix-1-10": "2080Ti",
-    "matrix-1-14": "volta",
-    "matrix-1-16": "volta",
-    "matrix-1-18": "titanx",
-    "matrix-1-22": "2080Ti",
-    "matrix-1-24": "volta",
-    "matrix-2-1": "2080Ti",
-    "matrix-2-25": "A100",
-    "matrix-2-29": "A100",
-    "matrix-3-18": "6000ADA",
-    "matrix-3-22": "6000ADA",
-    "matrix-0-34": "2080Ti",
-    "matrix-0-22": "titanx",
-    "matrix-0-28": "titanx",
-    "matrix-0-38": "titanx",
-    "matrix-1-4": "2080Ti",
-    "matrix-1-8": "2080Ti",
-    "matrix-1-12": "2080Ti",
-    "matrix-1-20": "titanx",
-    "matrix-2-3": "2080Ti",
-    "matrix-2-5": "2080Ti",
-    "matrix-2-7": "2080Ti",
-    "matrix-2-9": "2080Ti",
-    "matrix-2-11": "2080Ti",
-    "matrix-2-13": "2080Ti",
-    "matrix-2-15": "2080Ti",
-    "matrix-2-17": "2080Ti",
-    "matrix-2-19": "2080Ti",
-    "matrix-2-21": "2080Ti",
-    "matrix-2-23": "2080Ti",
-    "matrix-3-13": "1080Ti",
-    "matrix-2-33": "3090",
-    "matrix-2-37": "3090",
-    "matrix-3-26": "A5500",
-    "matrix-3-28": "A5500"
-}
-
 def run_slurm(data_path, num_chunks, num_workers, current_datetime, partition, chunk_size):
     log_info(f"Running slurm job with {num_chunks} chunks and {num_workers} workers...")
     from simple_slurm import Slurm
 
     kwargs = dict()
     if partition == 'all':
-        kwargs['exclude'] = ",".join([x for x in node_gpus.keys() if not any(s in node_gpus[x] for s in ("volta", "2080Ti"))])
+        kwargs['exclude'] = get_excluded_nodes("volta", "2080Ti")
 
     print(kwargs)
     slurm = Slurm(

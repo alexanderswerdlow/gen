@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import sys
 
+from altair import Optional
+
 sys.path.insert(0, "/home/aswerdlo/repos/gen")
 import io
 import os
+import random
 import signal
 import socket
 import subprocess
@@ -98,7 +101,7 @@ save_data_path = SCANNETPP_CUSTOM_DATA_PATH / "data_v1"
 save_type_names = ("rgb", "masks", "seg_v1")
 
 @memory.cache()
-def get_all_gt_images(timestamp):
+def get_all_gt_images():
     log_info(f"Fetching all GT images from {SCANNETPP_DATASET_PATH}...")
     return list(SCANNETPP_DATASET_PATH.glob('*/iphone/rgb/*.jpg'))
 
@@ -109,7 +112,7 @@ def get_all_saved_data(timestamp, subdir_names):
 
 @memory.cache()
 def get_to_process(timestamp, subdir_names, return_raw_data=False):
-    orig_image_files = get_all_gt_images(timestamp)
+    orig_image_files = get_all_gt_images()
     image_files = [(frame_path.parent.parent.parent.stem, frame_path.stem) for frame_path in orig_image_files]
     log_info(f"Got a total of {len(orig_image_files)} GT images ")
 
@@ -166,7 +169,7 @@ def get_dataset(**kwargs):
     return dataset
 
 
-def train(image_files, indices):
+def train(image_files, indices, only_keyframes=False):
     log_info(f"Initializing...", main_process_only=False)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     try:
@@ -212,17 +215,20 @@ def train(image_files, indices):
 
     set_timing_builtins(False, True)
 
-    model = HQSam(
-        model_type=model_type,
-        process_batch_size=process_batch_size,
-        points_per_batch=points_per_batch,
-        points_per_side=32,
-        output_mode="coco_rle",
-        model_kwargs=model_kwargs,
-    )
-    model.requires_grad_(False)
-    model.eval()
-    model = model.to(device)
+    model = None
+    def get_model():
+        _model = HQSam(
+            model_type=model_type,
+            process_batch_size=process_batch_size,
+            points_per_batch=points_per_batch,
+            points_per_side=32,
+            output_mode="coco_rle",
+            model_kwargs=model_kwargs,
+        )
+        _model.requires_grad_(False)
+        _model.eval()
+        _model = _model.to(device)
+        return _model
     
     g = torch.Generator()
     g.manual_seed(int(time.time()))
@@ -237,15 +243,28 @@ def train(image_files, indices):
                     rgb_path = (save_data_path / "rgb" / scene_id / frame_name).with_suffix(".jpg")
 
                     if not rgb_path.exists():
-                        img = Image.open(Path(batch["tgt_path"]))
+                        if not Path(batch["tgt_path"]).exists():
+                            raise FileNotFoundError(f"File not found: {batch['tgt_path']}")
+
+                        try:
+                            img = Image.open(Path(batch["tgt_path"]))
+                        except Exception as e:
+                            log_info(f"Error opening {batch['tgt_path']}: {e}")
+                            continue
+
                         img = img.resize((img.width // 2, img.height // 2), Image.BICUBIC)
                         img.save(rgb_path)
+                        if only_keyframes: continue
                     else:
                         img = Image.open(rgb_path)
+
+                    if only_keyframes: continue
 
                     mask_path = (save_data_path / "masks" / scene_id / frame_name).with_suffix(".msgpack")
                     masks = None
                     if not mask_path.exists():
+                        if model is None:
+                            model = get_model()
                         masks = model(np.asarray(img))
                         masks = sorted(masks, key=lambda d: d["area"], reverse=True)
                         masks = masks[:max_masks]
@@ -279,6 +298,7 @@ def train(image_files, indices):
     finally:
         pass
 
+    log_info("Finished processing all images.", main_process_only=False)
 
 def tail_log_file(log_file_path, glob_str):
     max_retries = 60
@@ -380,7 +400,6 @@ app = typer.Typer(pretty_exceptions_show_locals=False)
 @app.command()
 def main(
     num_workers: int = 1,
-    use_dask: bool = False,
     use_slurm: bool = False,
     is_slurm_task: bool = False,
     slurm_task_datetme: str = None,
@@ -388,18 +407,25 @@ def main(
     max_chunk_size: int = 2000,
     shuffle: bool = True,
     shuffle_seed: int = 42,
-    partition: str = 'all'
+    partition: str = 'all',
+    only_keyframes: bool = False,
+    keyframe_path: Optional[Path] = '/home/aswerdlo/repos/gen/gen/datasets/scannetpp/scripts/all_image_file_paths.txt',
 ):
-    current_datetime = datetime.now()
-    datetime_up_to_hour = current_datetime.strftime('%Y_%m_%d_%H_00_00') if use_slurm else current_datetime.strftime('%Y_%m_%d_00_00_00')
-    image_files = get_to_process(slurm_task_datetme if is_slurm_task else datetime_up_to_hour, save_type_names)
+    if only_keyframes:
+        with open(keyframe_path, 'r') as f:
+            image_files = [line.strip() for line in f.readlines()]
+    else:
+        current_datetime = datetime.now()
+        datetime_up_to_hour = current_datetime.strftime('%Y_%m_%d_%H_00_00') if use_slurm else current_datetime.strftime('%Y_%m_%d_00_00_00')
+        image_files = get_to_process(slurm_task_datetme if is_slurm_task else datetime_up_to_hour, save_type_names)
+
     dataset = get_dataset(image_files=image_files)
     
     submission_list = list(range(len(dataset)))
     if shuffle:
-        import random
         random.seed(shuffle_seed)
         random.shuffle(submission_list)
+
     chunk_size = len(submission_list) // num_workers  # Adjust this based on the number of workers
     chunks = [submission_list[i:i + min(chunk_size, max_chunk_size)] for i in range(0, len(submission_list), min(chunk_size, max_chunk_size))]
     assert sum([len(chunk) for chunk in chunks]) == len(submission_list)
@@ -407,18 +433,18 @@ def main(
     if is_slurm_task:
         data_chunks = chunks[slurm_task_index]
         log_info(f"Running slurm task {slurm_task_index} with {len(data_chunks)} images...")
-        train(image_files, data_chunks)
+        train(image_files, data_chunks, only_keyframes=only_keyframes)
         exit()
 
     if use_slurm:
+        num_workers = min(num_workers, len(chunks))
         run_slurm(len(chunks), num_workers, datetime_up_to_hour, partition)
         exit()
     else:
-        import random
         random.shuffle(submission_list)
 
     with breakpoint_on_error():
-        train(image_files, submission_list)
+        train(image_files, submission_list, only_keyframes=only_keyframes)
 
 if __name__ == '__main__':
     app()

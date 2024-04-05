@@ -368,8 +368,9 @@ def src_tgt_token_consistency_loss(
     cond: ConditioningData,
 ):
     losses = []
+    num_total_shared_tokens = 0
     for b in range(batch.bs):
-        if batch.has_global_instance_ids[b].item() is False and not cfg.model.token_subset_consistency_loss: continue
+        if batch.has_global_instance_ids[b].item() is False and not cfg.model.encode_src_twice: continue
         src_valid = cond.mask_batch_idx == b
         tgt_valid = cond.tgt_mask_batch_idx == b
 
@@ -378,12 +379,16 @@ def src_tgt_token_consistency_loss(
         shared_instance_ids, src_idx, tgt_idx = np.intersect1d(src_loss_instance_idx.cpu().numpy(), tgt_loss_instance_idx.cpu().numpy(), return_indices=True)
         src_mask_tokens = cond.src_mask_tokens[src_valid][src_idx]
         tgt_mask_tokens = cond.tgt_mask_tokens[tgt_valid][tgt_idx]
+
         if len(shared_instance_ids) == 0:
             continue
+        
         loss = F.mse_loss(src_mask_tokens, tgt_mask_tokens, reduction="mean")
         losses.append(loss)
+        num_total_shared_tokens += len(shared_instance_ids)
         
     avg_loss = torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=batch.device, requires_grad=True)
     return {
         "src_tgt_consistency_loss": avg_loss * cfg.model.src_tgt_consistency_loss_weight,
+        "metric_avg_num_src_tgt_consistency": torch.tensor(num_total_shared_tokens / batch.bs, device=batch.device),
     }

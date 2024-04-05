@@ -58,6 +58,7 @@ class InputData:
     attach_debug_info: bool = False
     treat_as_train_batch: bool = False
     force_forward_encoder_normalized_tgt: bool = False
+    shared_src_tgt_instance_idxs: Optional[Integer[Tensor, "b max_instances"]] = None
 
     @staticmethod
     def from_dict(batch: dict):

@@ -355,7 +355,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
             Im(_diffusion_loss_mask.bool()).bool_to_rgb().resize(orig_src_image.height, orig_src_image.width, resampling_mode=InterpolationMode.NEAREST)
         )
 
-        if self.cfg.model.mask_dropped_tokens and self.cfg.model.token_subset_consistency_loss:
+        if self.cfg.model.mask_dropped_tokens and self.cfg.model.encode_src_twice:
             assert cond.encoder_input_pixel_values.shape[0] == 2
             _second_src_seg = batch.src_segmentation.clone()
             _second_valid_seg = torch.isin(_second_src_seg, cond.tgt_mask_instance_idx)
@@ -505,7 +505,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
                     gen_img_ =  Im(prompt_images[(i * bs_) + b_])
                     mask_ = batch.one_hot_tgt_segmentation[b_, ..., j]
 
-                    gen_img_ = overlay_mask(gen_img_, mask_, color=(0, 0, 0), alpha=0.6)
+                    gen_img_ = overlay_mask(gen_img_, mask_, color=(0, 0, 0), alpha=0.0)
                     ref_img_ = overlay_mask(orig_src_image, mask_, color=(255, 0, 0), alpha=0.9)
 
                     img_.append(Im.concat_vertical(gen_img_, ref_img_, spacing=5, fill=(128, 128, 128)))

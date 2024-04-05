@@ -61,7 +61,7 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, 
         
             state_dict = torch.load(path, map_location='cpu')
             if cfg.trainer.ignore_clip_weights:
-                state_dict = {k:v for k,v in state_dict.items() if 'clip' not in k and 'mapper.position_embedding' not in k}
+                state_dict = {k:v for k,v in state_dict.items() if 'clip' not in k and 'mapper.position_embedding' not in k and 'up_proj' not in k}
             model.load_state_dict(state_dict, strict=cfg.trainer.strict_load)
         try:
             if path.is_file():
