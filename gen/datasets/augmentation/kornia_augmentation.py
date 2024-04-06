@@ -43,6 +43,7 @@ class Data:
     grid: Optional[torch.Tensor] = None
     mask: Optional[torch.Tensor] = None
     pad_mask: Optional[torch.Tensor] = None
+    valid: Optional[torch.Tensor] = None
 
     def clone(self):
         return Data(

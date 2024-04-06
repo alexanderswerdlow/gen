@@ -40,6 +40,8 @@ class InputData:
     camera_quaternions: Optional[Float] = None
     positions: Optional[Float] = None
     valid: Optional[Bool[Tensor, "b classes"]] = None
+    src_valid: Optional[Bool[Tensor, "b classes"]] = None
+    tgt_valid: Optional[Bool[Tensor, "b classes"]] = None
     categories: Optional[Integer] = None
     asset_id: Optional[Integer] = None
     metadata: Optional[dict[str, Any]] = None
@@ -53,6 +55,7 @@ class InputData:
     id: Optional[Integer[Tensor, "b"]] = None
     tgt_enc_norm_pixel_values: Optional[Float[Tensor, "b c h w"]] = None
     tgt_enc_norm_segmentation: Optional[Integer[Tensor, "b h w"]] = None
+    tgt_enc_norm_valid: Optional[Bool[Tensor, "b classes"]] = None
     has_global_instance_ids: Optional[Bool[Tensor, "b"]] = None
 
     attach_debug_info: bool = False
@@ -172,8 +175,8 @@ def visualize_input_data(
         batch.src_segmentation[batch.src_segmentation < 0] = 1
     
     if remove_invalid and batch.tgt_segmentation.shape[-1] == 1:
-        batch.tgt_segmentation = replace_invalid(batch.tgt_segmentation, batch.valid)
-        batch.src_segmentation = replace_invalid(batch.src_segmentation, batch.valid)
+        batch.src_segmentation = replace_invalid(batch.src_segmentation, batch.src_valid)
+        batch.tgt_segmentation = replace_invalid(batch.tgt_segmentation, batch.tgt_valid)
 
     if cfg is not None:
         tgt_rgb = undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, batch.tgt_pixel_values)

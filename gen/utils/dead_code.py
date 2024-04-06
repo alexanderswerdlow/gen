@@ -936,3 +936,13 @@ import antigravity
                     #         if "lm_head" in lora_module_names: # needed for 16-bit
                     #             lora_module_names.remove("lm_head")
                     # return list(lora_module_names)
+                #                 elif False and self.no_filtering is False and self.allow_instance_seg is False:
+                # max_num_masks = 20
+                # _unique = torch.unique(data_.segmentation)
+                # _unique = _unique[_unique != 255]
+                # _allowed = torch.cat([_unique[:max_num_masks], torch.tensor([255])])
+                # data_.segmentation[~torch.isin(data_.segmentation, _allowed)] = 255
+                        # idxs = idxs[:int(self.cfg.inference.num_masks_to_remove * 1.2)]
+        # idxs = idxs[torch.randperm(len(idxs))]
+        #         idxs = idxs[:int(self.cfg.inference.num_masks_to_remove * 1.5)]
+        # idxs = idxs[torch.randperm(len(idxs))]

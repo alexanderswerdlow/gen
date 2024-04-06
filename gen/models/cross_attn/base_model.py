@@ -820,7 +820,7 @@ class BaseMapper(Trainable):
         for i in range(bs):
             one_hot_idx = torch.arange(segmentation_map_size, device=device)
             non_empty_mask = all_non_empty_mask[i] > 0
-            non_empty_mask[1:] &= batch.valid[i]
+            non_empty_mask &= batch.src_valid[i]
 
             if training_mask_dropout is not None and (self.training or batch.treat_as_train_batch):
                 dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), False, dtype=torch.bool)
@@ -960,11 +960,14 @@ class BaseMapper(Trainable):
 
         tgt_batch.src_pixel_values = tgt_batch.tgt_enc_norm_pixel_values
         tgt_batch.src_segmentation = tgt_batch.tgt_enc_norm_segmentation
+        tgt_batch.src_valid = tgt_batch.tgt_enc_norm_valid
 
         src_batch.tgt_enc_norm_pixel_values = None
         src_batch.tgt_enc_norm_segmentation = None
+        src_batch.tgt_enc_norm_valid = None
         tgt_batch.tgt_enc_norm_pixel_values = None
         tgt_batch.tgt_enc_norm_segmentation = None
+        tgt_batch.tgt_enc_norm_valid = None
 
         input_batch = torch.cat((src_batch, tgt_batch), dim=0)
         return input_batch

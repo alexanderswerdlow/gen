@@ -35,21 +35,16 @@ if TYPE_CHECKING:
 gso_pcds = None
 
 def get_valid_idxs(batch: InputData):
-    assert batch.valid.shape[0] == 1
+    assert batch.src_valid.shape[0] == 1
 
-    valids_ = torch.Tensor(batch.valid.all(dim=0).nonzero()[:, 0] + 1)
-    if ((batch.tgt_segmentation[0, ..., 0] == 0).sum() > 0):
-        valid_indices = torch.cat([torch.Tensor([0]).to(batch.device).long(), valids_])
-    else:
-        valid_indices = torch.cat([valids_])
-
+    _valids = torch.Tensor(batch.src_valid[0].nonzero()[:, 0])
     unique, counts = torch.unique(batch.src_segmentation.long(), return_counts=True)
     unique_counts = dict(zip(unique.cpu().numpy(), counts.cpu().numpy()))
     sorted_unique_counts = sorted(unique_counts.items(), key=lambda x: x[1], reverse=True)
     idxs = [integer for integer, count in sorted_unique_counts]
     idxs = filter(lambda x: x != 255, idxs)
     idxs = torch.tensor(list(idxs)).to(batch.device)
-    idxs = idxs[torch.isin(idxs, valid_indices)].long()
+    idxs = idxs[torch.isin(idxs, _valids)].long()
 
     return idxs
 
@@ -473,8 +468,6 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         modified_batches = []
         
         idxs = get_valid_idxs(batch)
-        idxs = idxs[:int(self.cfg.inference.num_masks_to_remove * 1.5)]
-        idxs = idxs[torch.randperm(len(idxs))]
         idxs = idxs[:self.cfg.inference.num_masks_to_remove]
 
         for _, j in enumerate(idxs):
@@ -517,12 +510,10 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     log_debug("Before single-mask", main_process_only=False)
 
     if self.cfg.inference.num_single_token_gen is not None:
-        modified_batches = []
-        assert batch.valid.shape[0] == 1
+        assert batch.bs == 1
 
+        modified_batches = []
         idxs = get_valid_idxs(batch)
-        idxs = idxs[:int(self.cfg.inference.num_masks_to_remove * 1.5)]
-        idxs = idxs[torch.randperm(len(idxs))]
         idxs = idxs[:self.cfg.inference.num_masks_to_remove]
         
         for _, j in enumerate(idxs):

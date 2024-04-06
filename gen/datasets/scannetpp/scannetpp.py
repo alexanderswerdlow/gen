@@ -483,38 +483,33 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         if self.return_encoder_normalized_tgt:
             tgt_data, tgt_data_src_transform = tgt_data
 
-        def process_data(data_: Data):
-            data_.image = data_.image.squeeze(0)
-            data_.segmentation = rearrange(data_.segmentation, "() c h w -> h w c")
-            assert data_.segmentation.max() < 255
-            data_.segmentation[data_.segmentation == -1] = 255
+        def process_data(_data: Data):
+            _data.image = _data.image.squeeze(0)
+            _data.segmentation = rearrange(_data.segmentation, "() c h w -> h w c")
+            assert _data.segmentation.max() < 255
+            _data.segmentation[_data.segmentation == -1] = 255
             
             if self.merge_masks:
-                data_.segmentation[data_.segmentation >= 8] = 0
+                _data.segmentation[_data.segmentation >= 8] = 0
 
-            elif False and self.no_filtering is False and self.allow_instance_seg is False:
-                max_num_masks = 20
-                _unique = torch.unique(data_.segmentation)
-                _unique = _unique[_unique != 255]
-                _allowed = torch.cat([_unique[:max_num_masks], torch.tensor([255])])
-                data_.segmentation[~torch.isin(data_.segmentation, _allowed)] = 255
+            _data.pad_mask = ~(_data.segmentation < 255).any(dim=-1)
 
-            data_.pad_mask = ~(data_.segmentation < 255).any(dim=-1)
-            return data_
+            pixels = _data.segmentation.long().contiguous().view(-1)
+            pixels = pixels[(pixels < 255) & (pixels >= 0)]
+            src_bincount = torch.bincount(pixels, minlength=255)
+            _data.valid = src_bincount > 0
+
+            return _data
 
         src_data = process_data(src_data)
         tgt_data = process_data(tgt_data)
-
-        pixels = src_data.segmentation.long().contiguous().view(-1)
-        pixels = pixels[(pixels < 255) & (pixels >= 0)]
-        src_bincount = torch.bincount(pixels, minlength=255)
-        valid = src_bincount > 0
 
         if self.return_encoder_normalized_tgt:
             tgt_data_src_transform = process_data(tgt_data_src_transform)
             ret.update({
                 "tgt_enc_norm_pixel_values": tgt_data_src_transform.image,
                 "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8),
+                "tgt_enc_norm_valid": tgt_data_src_transform.valid,
             })
         
         ret.update({
@@ -527,7 +522,9 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
             "src_pose": src_pose,
             "tgt_pose": tgt_pose,
             "input_ids": get_tokens(self.tokenizer),
-            "valid": valid[..., 1:],
+            "src_valid": src_data.valid,
+            "tgt_valid": tgt_data.valid,
+            "valid": src_data.valid[..., 1:],
             **metadata
         })
 
