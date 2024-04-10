@@ -645,20 +645,64 @@ def get_datasets():  # TODO: These do not need to be global configs
 
     mode_store(
         name="imagefolder",
-        dataset=dict(
-            train=dict(
-                root=Path("/home/aswerdlo/data/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom/imagefolder/data_v0")
-            ),
-            val=dict(
-                root=Path("/home/aswerdlo/data/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom/imagefolder/data_v0")
-            ),
-        ),
         model=dict(
-            segmentation_map_size=256,
+            encode_tgt=True,
+        ),
+        dataset=dict(
+            train=builds(
+                ImagefolderDataset,
+                populate_full_signature=True,
+                zen_partial=True,
+                root=Path("/home/aswerdlo/data/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom/imagefolder/data_v0"),
+                batch_size=1,
+                augmentation=builds(
+                    Augmentation,
+                    different_src_tgt_augmentation=False,
+                    enable_square_crop=True,
+                    center_crop=True,
+                    enable_random_resize_crop=False, 
+                    enable_horizontal_flip=False,
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                    initial_resolution=512,
+                    src_resolution=None,
+                    tgt_resolution=None,
+                    src_transforms="${get_src_transform:model}",
+                    tgt_transforms="${get_tgt_transform:model}",
+                    populate_full_signature=True,
+                )
+            ),
+            val=builds(
+                ImagefolderDataset,
+                populate_full_signature=True,
+                zen_partial=True,
+                root=Path("/home/aswerdlo/data/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom/imagefolder/data_v0"),
+                batch_size=1,
+                augmentation=builds(
+                    Augmentation,
+                    different_src_tgt_augmentation=False,
+                    enable_square_crop=True,
+                    center_crop=True,
+                    enable_random_resize_crop=False, 
+                    enable_horizontal_flip=False,
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+                    initial_resolution=512,
+                    src_resolution=None,
+                    tgt_resolution=None,
+                    src_transforms="${get_src_transform:model}",
+                    tgt_transforms="${get_tgt_transform:model}",
+                    populate_full_signature=True,
+                )
+            ),
         ),
         hydra_defaults=[
-            {"override /dataset": "imagefolder"},
             "_self_",
+            {"override /dataset": "imagefolder"},
         ],
     )
 

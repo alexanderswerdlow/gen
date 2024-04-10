@@ -33,6 +33,7 @@ class BaseTrainer(Trainer):
         if self.cfg.dataset.reset_val_dataset_every_epoch:
             g = torch.Generator()
             g.manual_seed(state.global_step + get_rank())
+            self.val_dataset_holder.batch_size = self.cfg.dataset.val.batch_size
             self.val_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.val_dataset_holder.batch_size, self.cfg.dataset.val.batch_size)
             self.val_dataset_holder.num_workers = self.cfg.dataset.val.num_workers
             log_debug(f"Resetting Validation Dataloader with {self.val_dataset_holder.num_workers} workers", main_process_only=False)
@@ -84,6 +85,8 @@ class BaseTrainer(Trainer):
     # TODO: This is model-specific and should be achieved by inheritance or some other mechanism
     def base_model_validate(self, state: TrainingState):
         start_time = time()
+
+        log_info(f"Starting base model validation at global step {state.global_step}, epoch {state.epoch}")
         from gen.models.cross_attn.base_inference import run_qualitative_inference, run_quantitative_inference
 
         unwrap(self.model).run_inference = types.MethodType(run_quantitative_inference, unwrap(self.model))
@@ -95,8 +98,9 @@ class BaseTrainer(Trainer):
         subset_size = min(subset_size, self.cfg.dataset.val.subset_size) if self.cfg.dataset.val.subset_size is not None else subset_size
         subset_size = min(subset_size, self.cfg.trainer.custom_inference_dataset_size) if self.cfg.trainer.custom_inference_dataset_size is not None else subset_size
         batch_size = self.cfg.trainer.custom_inference_batch_size if self.cfg.trainer.custom_inference_batch_size is not None else self.train_dataloader_holder.batch_size
+
         self.val_dataset_holder.subset_size = subset_size
-        self.train_dataloader_holder.random_subset = self.cfg.trainer.custom_inference_fixed_shuffle
+        self.val_dataset_holder.random_subset = self.cfg.trainer.custom_inference_fixed_shuffle
         self.val_dataset_holder.batch_size = batch_size
         self.validation_dataloader = self.val_dataset_holder.get_dataloader(pin_memory=False, generator=g)
         self.validation_dataloader = self.accelerator.prepare(self.validation_dataloader)
@@ -138,7 +142,8 @@ class BaseTrainer(Trainer):
         import gc; gc.collect()
         torch.cuda.empty_cache()
 
-        unwrap(self.model).set_training_mode()
+        from gen.models.cross_attn.base_model import BaseMapper
+        BaseMapper.set_training_mode(cfg=self.cfg, _other=self.model, device=self.accelerator.device, dtype=self.dtype, set_grad=False)
         validate_params(self.models, self.dtype)
         
         log_info(f"Finished base model validation at global step {state.global_step}, epoch {state.epoch}. Took: {time() - start_time:.2f} seconds")
@@ -208,7 +213,7 @@ class BaseTrainer(Trainer):
                 except Exception as e:
                     if get_num_gpus() > 1 and state.global_step > 100:
                         traceback.print_exc()
-                        log_error(f"Error during validation: {e}. Continuing...")
+                        log_error(f"Error during validation: {e}. Continuing...", main_process_only=False)
                     else:
                         raise
 

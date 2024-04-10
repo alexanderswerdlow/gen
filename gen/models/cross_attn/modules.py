@@ -295,6 +295,41 @@ class TokenMapper(nn.Module):
 
         return pred_data
 
+class TokenPredictor(nn.Module):
+    def __init__(
+        self,
+        cfg: BaseConfig,
+    ):
+        super().__init__()
+        self.cfg = cfg
+    
+        if self.cfg.model.modulate_src_tokens_with_tgt_pose:
+            self.token_modulator_input_dim = self.cfg.model.custom_cross_attn_output_dim if self.cfg.model.custom_cross_attn_output_dim is not None else self.cfg.model.token_embedding_dim * self.cfg.model.num_layer_queries
+            if self.cfg.model.modulate_src_tokens_with_mlp:
+                from timm.models.vision_transformer import Mlp
+                self.token_modulator = Mlp(in_features=self.token_modulator_input_dim * 2, out_features=self.token_modulator_input_dim)
+            elif self.cfg.model.modulate_src_tokens_with_film:
+                self.token_modulator = nn.Linear(self.token_modulator_input_dim, self.token_modulator_input_dim * 2, bias=True)
+            elif self.cfg.model.modulate_src_tokens_with_vanilla_transformer:
+                encoder_layer = nn.TransformerEncoderLayer(d_model=self.token_modulator_input_dim, nhead=8, batch_first=True)
+                self.token_modulator = nn.TransformerEncoder(encoder_layer, num_layers=6)
+                self.camera_position_embedding = nn.Parameter(torch.randn(self.token_modulator_input_dim) * 0.02)
+            else:
+                self.camera_position_embedding = nn.Parameter(torch.randn(self.token_modulator_input_dim) * 0.02)
+                self.token_modulator = hydra.utils.instantiate(
+                    self.cfg.model.token_modulator,
+                    _recursive_=False,
+                    embed_dim=self.token_modulator_input_dim,
+                    use_flash_attn=self.cfg.trainer.mixed_precision != "no",
+                )
+            
+        elif self.cfg.model.modulate_src_feature_map:
+            self.token_modulator_input_dim = self.cfg.model.encoder_dim
+            self.camera_position_embedding = nn.Parameter(torch.randn(self.cfg.model.encoder_dim) * 0.02)
+
+        in_channels = 6 if self.cfg.model.use_euler_camera_emb else 16
+        n_freqs = ((self.token_modulator_input_dim - in_channels) // 4) // in_channels
+        self.camera_embed = FourierEmbedding(in_channels=in_channels, N_freqs=n_freqs)
 
 class FeatureMapper(nn.Module):
     def __init__(
@@ -304,8 +339,9 @@ class FeatureMapper(nn.Module):
         super().__init__()
         self.cfg = cfg
 
+        custom_output_dim = cfg.model.custom_cross_attn_output_dim if cfg.model.custom_cross_attn_output_dim is not None else cfg.model.token_embedding_dim
         self.cross_attn = CrossAttn(
-            cfg=cfg, input_dim=self.cfg.model.encoder_dim, cross_attn_dim=self.cfg.model.cross_attn_dim, output_dim=cfg.model.token_embedding_dim
+            cfg=cfg, input_dim=self.cfg.model.encoder_dim, cross_attn_dim=self.cfg.model.cross_attn_dim, output_dim=custom_output_dim
         )
 
         self.learnable_token = nn.Parameter(
@@ -315,41 +351,25 @@ class FeatureMapper(nn.Module):
         # If we have per layer queries, we don't need to chop up the mask vector
         if self.cfg.model.layer_specialization and self.cfg.model.num_conditioning_pairs != self.cfg.model.num_layer_queries:
             self.layer_specialization = nn.Sequential(
-                nn.Linear(self.cfg.model.token_embedding_dim // (self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries), self.cfg.model.token_embedding_dim),
+                nn.Linear(custom_output_dim // (self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries), self.cfg.model.token_embedding_dim),
                 nn.LayerNorm(self.cfg.model.token_embedding_dim),
             )
 
-        if self.cfg.model.modulate_src_tokens_with_tgt_pose:
-            self.token_modulator_input_dim = self.cfg.model.token_embedding_dim * self.cfg.model.num_layer_queries
-            if self.cfg.model.modulate_src_tokens_with_mlp:
-                self.token_modulator = nn.Sequential(
-                    nn.Linear(self.token_modulator_input_dim * 2, self.token_modulator_input_dim, bias=True),
-                    nn.SiLU(),
-                    nn.Linear(self.token_modulator_input_dim, self.token_modulator_input_dim, bias=True),
-                )
-            elif self.cfg.model.modulate_src_tokens_with_film:
-                self.token_modulator = nn.Linear(self.token_modulator_input_dim, self.token_modulator_input_dim * 2, bias=True)
-            else:
-                self.token_modulator = hydra.utils.instantiate(
-                    self.cfg.model.token_modulator,
-                    _recursive_=False,
-                    embed_dim=self.token_modulator_input_dim,
-                    use_flash_attn=self.cfg.trainer.mixed_precision != "no",
-                )
+        if self.cfg.model.modulate_src_tokens_with_tgt_pose or self.cfg.model.modulate_src_feature_map:
+            self.token_predictor = TokenPredictor(cfg)
 
-            in_channels = 30
-            n_freqs = ((self.token_modulator_input_dim - in_channels) // 4) // in_channels
-            self.camera_embed = FourierEmbedding(in_channels=in_channels, N_freqs=n_freqs)
+        if self.cfg.model.feature_map_keys is not None and self.cfg.model.merge_feature_maps is False:
+            num_emb = self.cfg.model.num_feature_map_pos_emb if self.cfg.model.num_feature_map_pos_emb is not None else len(self.cfg.model.feature_map_keys)
+            self.position_embedding = nn.Parameter(torch.randn(num_emb, self.cfg.model.encoder_dim) * 0.02)
 
-        if self.cfg.model.feature_map_keys is not None:
-            self.position_embedding = nn.Parameter(torch.randn(len(self.cfg.model.feature_map_keys), self.cfg.model.encoder_dim) * 0.02)  #
-
+        if self.cfg.model.add_learned_pos_emb_to_feature_map:
+            self.feature_map_pos_emb = nn.Parameter(torch.randn(self.cfg.model.encoder_latent_dim**2, self.cfg.model.encoder_dim))
         # TODO: Double check this is working
         self.apply(_init_weights)
 
         if self.cfg.model.modulate_src_tokens_with_tgt_pose and self.cfg.model.modulate_src_tokens_with_film:
-            nn.init.constant_(self.token_modulator.weight, 0)
-            nn.init.constant_(self.token_modulator.bias, 0)
+            nn.init.constant_(self.token_predictor.modulator.weight, 0)
+            nn.init.constant_(self.token_predictor.modulator.bias, 0)
 
 class CrossAttn(nn.Module):
     def __init__(self, cfg: BaseConfig, input_dim: int, cross_attn_dim: int, output_dim: int):

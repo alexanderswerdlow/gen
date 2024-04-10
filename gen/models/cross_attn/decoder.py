@@ -76,6 +76,7 @@ class DecoderTransformer(nn.Module):
         fused_mlp: bool = True,
         add_self_attn: bool = True,
         add_cross_attn: bool = True,
+        final_norm: bool = True,
     ):
         super().__init__()
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
@@ -102,7 +103,7 @@ class DecoderTransformer(nn.Module):
         )
 
         self.dropout = nn.Dropout(p=drop_rate)
-        self.norm = norm_layer(embed_dim)
+        self.norm = norm_layer(embed_dim) if final_norm else nn.Identity()
         self.add_self_attn = add_self_attn
         self.add_cross_attn = add_cross_attn
 
@@ -119,7 +120,8 @@ class DecoderTransformer(nn.Module):
                 hidden_states, residual = _blocks[-1](hidden_states=hidden_states, residual=residual, mixer_kwargs=self_attn_dict)
 
         residual = self.dropout(hidden_states) + residual
-        hidden_states = self.norm(residual.to(dtype=self.norm.weight.dtype))
+        _dtype = self.norm.weight.dtype if hasattr(self.norm, "weight") else x.dtype
+        hidden_states = self.norm(residual.to(dtype=_dtype))
 
         return hidden_states
 

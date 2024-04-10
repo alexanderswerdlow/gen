@@ -1,6 +1,7 @@
-# 4DoF CaPE
 import einops
+import numpy as np
 import torch
+from scipy.spatial.transform import Rotation
 
 def rotate_every_two(x):
     x = einops.rearrange(x, '... (d j) -> ... d j', j=2)
@@ -46,8 +47,6 @@ def cape_embed_6dof(f, P):
     f = einops.rearrange(f, '... (d k) -> ... d k', k=4)
     return einops.rearrange(f @ P.to(f), '... d k -> ... (d k)', k=4)
 
-from scipy.spatial.transform import Rotation
-import numpy as np
 def get_relative_pose(pose_1, pose_2):
     orig_dtype, orig_device = pose_1.dtype, pose_1.device
     pose_1 = pose_1.cpu().numpy()

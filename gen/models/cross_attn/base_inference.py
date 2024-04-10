@@ -69,6 +69,17 @@ def get_composited_mask(batch: dict, b: int, j: int, alpha=0.5, mask=None, color
     mask = batch.one_hot_tgt_segmentation[b, ..., [j]].squeeze() if mask is None else mask
     return overlay_mask(orig_image, mask, color, alpha)
 
+def get_metrics(self: BaseMapper, batch: InputData, cond: ConditioningData):
+    loss_dict = self.compute_losses(batch, cond)
+    loss_dict = {k: (float(v.detach().cpu().item()) if isinstance(v, torch.Tensor) else v) for k, v in loss_dict.items() }
+    if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt:
+        loss_dict['hist_src_mask_tokens'] = cond.src_mask_tokens.detach().float().cpu()
+        loss_dict['hist_tgt_mask_tokens'] = cond.tgt_mask_tokens.detach().float().cpu()
+
+    loss_dict = {f"wandb_{k}": v for k, v in loss_dict.items()}
+
+    return loss_dict
+
 new_prompts = [
     "A photo of a {}",
     "A photo of {} in the jungle",
@@ -157,9 +168,11 @@ def infer_batch(
 def run_quantitative_inference(self: BaseMapper, batch: InputData, state: TrainingState):
     ret = {}
 
-    if self.cfg.model.token_rot_pred_loss or self.cfg.model.token_cls_pred_loss:
+    if self.cfg.model.token_rot_pred_loss or self.cfg.model.token_cls_pred_loss or self.cfg.inference.compute_quantitative_token_metrics:
         with torch.cuda.amp.autocast():
             cond = self.get_standard_conditioning_for_inference(batch=batch)
+
+        ret.update(get_metrics(self, batch, cond))
 
     pred_data = None
     if self.cfg.model.token_rot_pred_loss:
@@ -195,8 +208,15 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     """
     TODO: Support batched inference at some point. Right now it is batched under the hood (for CFG and if num_images_per_prompt > 1) but we can likely do much better.
     """
+    if batch.bs == 0:
+        log_info("No images in batch, skipping inference.")
+        return {}
 
-    assert batch.input_ids.shape[0] == 1 or self.cfg.model.predict_rotation_from_n_frames is not None
+    if len(torch.unique(batch.src_segmentation)) == 1 or len(torch.unique(batch.tgt_segmentation)) == 1:
+        log_info(f"Only one segmentation class, skipping inference. {batch.metadata}")
+        return {}
+    
+    assert batch.input_ids.shape[0] == 1 or self.cfg.model.predict_rotation_from_n_frames is not None, f"Batched inference is not supported for qualitative inference, bs: {batch.input_ids.shape[0]}"
     orig_batch = batch.clone()
     # is_training_batch
     batch.one_hot_tgt_segmentation = integer_to_one_hot(batch.tgt_segmentation, num_channels=self.cfg.model.segmentation_map_size)
@@ -307,11 +327,11 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
     bs_ = batch.input_ids.shape[0]
     b_ = 0
-    gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_tgt_image.torch[b_], onehot_to_color(batch.one_hot_tgt_segmentation[b_])).write_text(text="Target") for b_ in range(bs_)])
-    if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels or self.cfg.model.modulate_src_tokens_with_tgt_pose or True:
+    gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_tgt_image.torch[b_], onehot_to_color(batch.one_hot_tgt_segmentation[b_])).write_text(text="Target", color=(164, 164, 128)) for b_ in range(bs_)])
+    if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels or self.cfg.model.modulate_src_tokens_with_tgt_pose or self.cfg.model.modulate_src_feature_map:
         src_one_hot = integer_to_one_hot(batch.src_segmentation + 1, batch.src_segmentation.max() + 1)
         src_seg = Im(onehot_to_color(src_one_hot[b_].squeeze(0)))
-        src_info = Im.concat_vertical(orig_src_image, src_seg).write_text("Source")
+        src_info = Im.concat_vertical(orig_src_image, src_seg).write_text("Source", color=(164, 164, 128))
         gt_info = Im.concat_horizontal(src_info, gt_info, spacing=20)
 
     ret["validation"] = gt_info
@@ -322,24 +342,31 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
     batch.formatted_input_ids = None
     batch.attach_debug_info = True
-    batch.treat_as_train_batch = state.split == Split.TRAIN
+    batch.treat_as_train_batch = (state.split == Split.TRAIN)
     prompt_image, cond = self.infer_batch(batch=batch, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, **added_kwargs)
     batch.attach_debug_info = False
     batch.treat_as_train_batch = False
 
-    ret["data_viz"] = visualize_input_data(batch.clone(), cfg=self.cfg, show_overlapping_masks=True, return_img=True, cond=cond)
+    if self.cfg.inference.compute_quantitative_token_metrics is False or self.cfg.trainer.custom_inference_every_n_steps is None:
+        ret.update(get_metrics(self, batch, cond))
+    try:
+        ret["data_viz"] = visualize_input_data(orig_batch.clone(), cfg=self.cfg, show_overlapping_masks=True, return_img=True, cond=cond)
+    except Exception as e:
+        print(e)
+        ret["data_viz"] = Im.new(256, 256)
+        
     cond.src_feature_map = None
 
-    if self.cfg.model.break_a_scene_masked_loss and self.cfg.model.mask_token_conditioning:
+    if (self.cfg.model.break_a_scene_masked_loss or self.cfg.model.src_tgt_consistency_loss_weight is not None or self.cfg.model.mask_dropped_tokens) and self.cfg.model.mask_token_conditioning:
         assert batch.bs == 1
         
         _orig_src_one_hot = integer_to_one_hot(batch.src_segmentation.clone())
         _diffusion_loss_mask = break_a_scene_masked_loss(self.cfg, batch, cond)
 
-        _first_src_seg = batch.src_segmentation.clone()
-        _first_valid_seg = torch.isin(_first_src_seg, cond.mask_instance_idx)
-        _first_src_seg[~_first_valid_seg] = 255
-        _first_src_one_hot__ = integer_to_one_hot(_first_src_seg)
+        _conditioned_src_seg = batch.src_segmentation.clone()
+        _first_valid_seg = torch.isin(_conditioned_src_seg, cond.mask_instance_idx)
+        _conditioned_src_seg[~_first_valid_seg] = 255
+        _first_src_one_hot__ = integer_to_one_hot(_conditioned_src_seg)
         
         ret["loss_mask"] = Im.concat_horizontal(
             orig_src_image,
@@ -398,16 +425,21 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
             ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
         except Exception as e:
-            import traceback; traceback.print_exc()
             log_warn(f"Failed to visualize attention maps: {e}")
+            import traceback; traceback.print_exc()
 
     use_idx = self.cfg.model.predict_rotation_from_n_frames is not None
+
+    _conditioned_src_seg = batch.src_segmentation.clone()
+    _conditioned_src_seg[~torch.isin(_conditioned_src_seg, cond.mask_instance_idx)] = 255
+    _conditioned_src_seg = integer_to_one_hot(_conditioned_src_seg)
     generated_images = Im.concat_vertical(
         Im.concat_vertical(
             prompt_image_, 
             Im(onehot_to_color(
-                batch.one_hot_tgt_segmentation[i if use_idx else 0])
-            )).write_text(text=f"Gen {i}") for i, prompt_image_ in enumerate(prompt_image)
+                _conditioned_src_seg[i if use_idx else 0])
+            ).resize(Im(prompt_image_).height, Im(prompt_image_).width)
+        ).write_text(text=f"Gen {i}", color=(164, 164, 128)) for i, prompt_image_ in enumerate(prompt_image)
     )
     ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
 
@@ -420,6 +452,33 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
             all_masks.append(composited_image.write_text(f"token_{j}").resize(256, 256).np)
 
         ret["cond"] = {"mask_tokens": cond.mask_tokens, "mask_rgb": np.stack(all_masks), "orig_image": orig_tgt_image.np}
+
+    if self.cfg.model.only_encode_shared_tokens and (self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt):
+        _batch = repeat_batch(batch, 4)
+        assert _batch.bs == 4
+        _batch.force_encode_all_masks = torch.full((_batch.bs,), False, dtype=torch.bool)
+        _batch.force_encode_all_masks[[0, 3]] = True
+
+        with torch.cuda.amp.autocast():
+            _cond = self.get_standard_conditioning_for_inference(batch=_batch)
+        
+        layers = _cond.encoder_hidden_states.shape[-1] // self.uncond_hidden_states.shape[-1]
+        _cond.encoder_hidden_states[2:4, :, :] = rearrange('t d -> b t (l d)', self.uncond_hidden_states, l=layers, b=2)
+
+        shared_tgt_tokens = _cond.tgt_mask_tokens[_cond.tgt_mask_batch_idx == 2]
+        _cond.encoder_hidden_states[2, :shared_tgt_tokens.shape[0], :] = shared_tgt_tokens
+
+        all_tgt_tokens = _cond.tgt_mask_tokens[_cond.tgt_mask_batch_idx == 3]
+        _cond.encoder_hidden_states[3, :all_tgt_tokens.shape[0], :] = all_tgt_tokens
+        
+        _prompt_images, _ = self.infer_batch(batch=_batch, cond=_cond, num_images_per_prompt=1)
+
+        ret["view_pred"] = Im.concat_horizontal(
+            Im(_prompt_images[0]).write_text("Src Enc -> Tgt, All Tok", size=0.5),
+            Im(_prompt_images[1]).write_text("Src Enc -> Tgt, Shared Tok", size=0.5),
+            Im(_prompt_images[2]).write_text("GT Tgt Enc, Shared Tok", size=0.5),
+            Im(_prompt_images[3]).write_text("GT Tgt Enc, All Tok", size=0.5),
+        )
 
     if self.cfg.inference.vary_cfg_plot:
         scale_images = []
@@ -499,7 +558,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
                     mask_ = batch.one_hot_tgt_segmentation[b_, ..., j]
 
                     gen_img_ = overlay_mask(gen_img_, mask_, color=(0, 0, 0), alpha=0.0)
-                    ref_img_ = overlay_mask(orig_src_image, mask_, color=(255, 0, 0), alpha=0.9)
+                    ref_img_ = overlay_mask(orig_tgt_image, mask_, color=(255, 0, 0), alpha=0.9)
 
                     img_.append(Im.concat_vertical(gen_img_, ref_img_, spacing=5, fill=(128, 128, 128)))
                 removed_mask_imgs.append(Im.concat_vertical(*img_))
@@ -531,7 +590,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
         if len(modified_batches) != 0:
             prompt_images, cond_ = self.infer_batch(batch=modified_batches, num_images_per_prompt=1)
-            assert set(cond_.mask_instance_idx.tolist()) == set(idxs.tolist())
+            if self.cfg.model.only_encode_shared_tokens is False: assert set(cond_.mask_instance_idx.tolist()) == set(idxs.tolist())
             if self.cfg.model.break_a_scene_cross_attn_loss:
                 self.controller.reset()
             
@@ -540,11 +599,11 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
                 bs_ = batch.input_ids.shape[0]
                 img_ = []
                 for b_ in range(bs_):
-                    assert set(cond_.mask_instance_idx[cond_.mask_batch_idx == i].tolist()) == set([j.item()])
+                    if self.cfg.model.only_encode_shared_tokens is False:  assert set(cond_.mask_instance_idx[cond_.mask_batch_idx == i].tolist()) == set([j.item()])
                     alpha_mask = ~orig_tgt_segmentation[b_, ..., j.long()]
                     gen_img_ =  Im(prompt_images[(i * bs_) + b_])
                     gen_img_ = overlay_mask(gen_img_, alpha_mask, color=(0, 0, 0), alpha=0.75)
-                    ref_img_ = overlay_mask(orig_src_image, alpha_mask, color=(0, 0, 0), alpha=0.9)
+                    ref_img_ = overlay_mask(orig_tgt_image, alpha_mask, color=(0, 0, 0), alpha=0.9)
                     img_.append(Im.concat_vertical(gen_img_, ref_img_, spacing=15, fill=(128, 128, 128)))
                 removed_mask_imgs.append(Im.concat_vertical(*img_))
             
@@ -852,14 +911,3 @@ def interpolate_frames(
     ret['interp'].save(f"{batch.metadata['name'][0]}_interp")
 
     return ret
-
-
-# batch.one_hot_tgt_segmentation = integer_to_one_hot(batch.tgt_segmentation, num_classes=self.cfg.model.segmentation_map_size)
-# image_batch_tokens = {}
-# for b in range(batch.bs):
-#     orig_image = Im((batch.tgt_pixel_values[b] + 1) / 2)
-#     all_masks = []
-#     for j in orig_cond.mask_instance_idx[orig_cond.mask_batch_idx == b]:
-#         composited_image = get_composited_mask(batch, b, j)
-#         all_masks.append(composited_image.write_text(f"token_{j}").resize(self.cfg.model.decoder_resolution, self.cfg.model.decoder_resolution).np)
-#     image_batch_tokens[b] = {"mask_tokens": orig_cond.mask_tokens[orig_cond.mask_batch_idx == b], "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}

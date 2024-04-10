@@ -477,16 +477,16 @@ def show_memory_usage(empty_cache: bool = True, verbose: bool = False):
     torch.cuda.synchronize()
     if empty_cache: torch.cuda.empty_cache()
     if is_main_process():
-        print("Before context", end="")
-        print_memory(verbose)
+        log_func("Before context", end="")
+        log_func(verbose)
     
     yield
 
     torch.cuda.synchronize()
     if empty_cache: torch.cuda.empty_cache()
     if is_main_process():
-        print("After context", end="")
-        print_memory(verbose)
+        log_func("After context", end="")
+        log_func(verbose)
 
 
 def get_date_time_str():
@@ -524,6 +524,17 @@ def write_to_file(path: Path, text: str):
     except:
         log_func(f"Could not write to {path}")
 
+
+def to(obj, device):
+  if torch.is_tensor(obj):
+    return obj.to(device)
+  if isinstance(obj, dict):
+    return {k : to(v, device) for k, v in obj.items()}
+  if isinstance(obj, tuple):
+    return tuple(to(v, device) for v in obj)
+  if isinstance(obj, list):
+    return [to(v, device) for v in obj]
+  return obj
 
 def all_gather(data):
     """
@@ -563,7 +574,7 @@ def all_gather(data):
     data_list = []
     for size, tensor in zip(size_list, tensor_list):
         buffer = tensor.cpu().numpy().tobytes()[:size]
-        data_list.append(pickle.loads(buffer))
+        data_list.append(to(pickle.loads(buffer), torch.device('cpu')))
 
     return data_list
 

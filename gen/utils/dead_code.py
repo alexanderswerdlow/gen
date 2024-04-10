@@ -946,3 +946,13 @@ import antigravity
         # idxs = idxs[torch.randperm(len(idxs))]
         #         idxs = idxs[:int(self.cfg.inference.num_masks_to_remove * 1.5)]
         # idxs = idxs[torch.randperm(len(idxs))]
+
+        # batch.one_hot_tgt_segmentation = integer_to_one_hot(batch.tgt_segmentation, num_classes=self.cfg.model.segmentation_map_size)
+# image_batch_tokens = {}
+# for b in range(batch.bs):
+#     orig_image = Im((batch.tgt_pixel_values[b] + 1) / 2)
+#     all_masks = []
+#     for j in orig_cond.mask_instance_idx[orig_cond.mask_batch_idx == b]:
+#         composited_image = get_composited_mask(batch, b, j)
+#         all_masks.append(composited_image.write_text(f"token_{j}").resize(self.cfg.model.decoder_resolution, self.cfg.model.decoder_resolution).np)
+#     image_batch_tokens[b] = {"mask_tokens": orig_cond.mask_tokens[orig_cond.mask_batch_idx == b], "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}

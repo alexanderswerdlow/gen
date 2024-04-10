@@ -151,6 +151,7 @@ class TimmModel(BaseModel):
             img_size: Optional[tuple[int]] = None,
             features_only: bool = True,
             lora: Optional[dict] = None,
+            use_custom_vit: bool = True,
             **kwargs
         ):
         self.model_name = model_name
@@ -159,6 +160,7 @@ class TimmModel(BaseModel):
         self.img_size = img_size
         self.features_only = features_only
         self.lora = lora
+        self.use_custom_vit = use_custom_vit
         super().__init__(**kwargs)
 
     @functools.cached_property
@@ -188,7 +190,11 @@ class TimmModel(BaseModel):
         if self.features_only:
             kwargs["features_only"] = True
 
+        if self.use_custom_vit:
+            kwargs["strict"] = False
+
         model = timm.create_model(self.model_name, **kwargs)
+
         if self.lora is not None:
             model = LoRA_ViT_timm(vit_model=model, **self.lora)
 
@@ -224,7 +230,7 @@ class ViT(TimmModel):
     def reshape_func(self, output):
         return reshape_vit_output(x=output, num_to_truncate=1)["x"]
 
-    def forward_model(self, image: Float[Tensor, "b c h w"], **kwargs):
+    def forward_model(self, image: Float[Tensor, "b c h w"]):
         return self.model.forward_features(image)
 
 
@@ -326,13 +332,21 @@ class FeatureExtractorModel(BaseModel):
         if self.gradient_checkpointing and not self.lora:
             print("Setting grad checkpointing")
             self.base_model.set_grad_checkpointing(enable=True)
+
+        train_nodes, _ = self.get_nodes()
+
+        _return_nodes = {k: v for k, v in self.return_nodes.items() if any(k in s for s in train_nodes)}
+        if len(_return_nodes) != len(self.return_nodes):
+            print(f"Warning: Some nodes were not found in the model: {set(self.return_nodes) - set(_return_nodes)}")
+        
+        self.return_nodes = _return_nodes
         return create_feature_extractor(self.base_model, return_nodes=self.return_nodes)
 
     def get_nodes(self):
         return get_graph_node_names(self.base_model)
 
     def forward_model(self, image: ImArr, **kwargs):
-        output = self.model(image)
+        output = self.model(image, **kwargs)
 
         if self.return_only is not None:
             output = output[self.return_only]
@@ -354,12 +368,14 @@ class ViTFeatureExtractor(FeatureExtractorModel, ViT):
         model_name: str = "vit_base_patch14_reg4_dinov2",
         pretrained: bool = True,
         num_classes: Optional[int] = None,
+        use_custom_vit: bool = False,
+        img_size: Optional[int] = None,
         **kwargs,
     ):
         self.return_only = return_only
         self.pretrained = pretrained
         self.num_classes = num_classes
-        super().__init__(model_name=model_name, return_nodes=return_nodes, **kwargs)
+        super().__init__(model_name=model_name, return_nodes=return_nodes, use_custom_vit=use_custom_vit, img_size=img_size, **kwargs)
 
     def reshape_func(self, output):
         return output

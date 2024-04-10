@@ -121,6 +121,16 @@ class ImagefolderDataset(AbstractDataset, Dataset):
         return_different_views=None, # TODO: Needed for hydra
         bbox_area_threshold=None, # TODO: Needed for hydra
         bbox_overlap_threshold=None, # TODO: Needed for hydra
+        custom_data_root=None, # TODO: Needed for hydra
+        semantic_only=None, # TODO: Needed for hydra
+        ignore_stuff_in_offset=None, # TODO: Needed for hydra
+        small_instance_area=None, # TODO: Needed for hydra
+        small_instance_weight=None, # TODO: Needed for hydra
+        enable_orig_coco_augmentation=None, # TODO: Needed for hydra
+        enable_orig_coco_processing=None, # TODO: Needed for hydra
+        single_return=None, # TODO: Needed for hydra
+        merge_with_background=None, # TODO: Needed for hydra
+        return_multiple_frames=None, # TODO: Needed for hydra
         **kwargs
     ):
         
@@ -141,15 +151,10 @@ class ImagefolderDataset(AbstractDataset, Dataset):
         return len(self.saved_scene_frames)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        try:
-            return self.get_paired_data(idx)
-        except Exception as e:
-            log_warn(f"Failed to load image {idx}: {e}")
-            return self.__getitem__((idx + 1) % len(self))
+        return self.get_paired_data(idx)
             
     def get_image(self, image_path: Path):
         image_path = get_available_path(image_path, resolve=False, return_scratch_only=False)
-        
         with open(image_path, 'rb', buffering=100*1024) as fp: data = fp.read()
         image = simplejpeg.decode_jpeg(data)
         image = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)

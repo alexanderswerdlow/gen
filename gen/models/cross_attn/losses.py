@@ -368,6 +368,7 @@ def src_tgt_token_consistency_loss(
     cond: ConditioningData,
 ):
     losses = []
+    metric_losses = []
     num_total_shared_tokens = 0
     for b in range(batch.bs):
         if batch.has_global_instance_ids[b].item() is False and not cfg.model.encode_src_twice: continue
@@ -377,18 +378,58 @@ def src_tgt_token_consistency_loss(
         src_loss_instance_idx = cond.mask_instance_idx[src_valid]
         tgt_loss_instance_idx = cond.tgt_mask_instance_idx[tgt_valid]
         shared_instance_ids, src_idx, tgt_idx = np.intersect1d(src_loss_instance_idx.cpu().numpy(), tgt_loss_instance_idx.cpu().numpy(), return_indices=True)
-        src_mask_tokens = cond.src_mask_tokens[src_valid][src_idx]
-        tgt_mask_tokens = cond.tgt_mask_tokens[tgt_valid][tgt_idx]
+
+        if cfg.model.only_encode_shared_tokens and cfg.model.max_num_training_masks is None:
+            assert len(shared_instance_ids) == len(src_loss_instance_idx) == len(tgt_loss_instance_idx), "Only shared tokens should be encoded"
+
+        if cfg.model.modulate_src_tokens_loss_after_layer_specialization:
+            src_mask_tokens = cond.src_mask_tokens[src_valid][src_idx]
+            tgt_mask_tokens = cond.tgt_mask_tokens[tgt_valid][tgt_idx]
+        else:
+            src_mask_tokens = cond.loss_src_mask_tokens[src_valid][src_idx]
+            tgt_mask_tokens = cond.loss_tgt_mask_tokens[tgt_valid][tgt_idx]
 
         if len(shared_instance_ids) == 0:
             continue
         
+        with torch.no_grad():
+            metric_losses.append(F.mse_loss(src_mask_tokens, tgt_mask_tokens, reduction="none"))
+        
         loss = F.mse_loss(src_mask_tokens, tgt_mask_tokens, reduction="mean")
         losses.append(loss)
         num_total_shared_tokens += len(shared_instance_ids)
+
+    metric_dict = {}
+    with torch.no_grad():
+        metric_losses = torch.cat(metric_losses)
+        metric_dict = {f"metric_src_tgt_consistency_{i}_{cfg.model.num_conditioning_pairs}": _loss.mean() for i, _loss in enumerate(metric_losses.chunk(cfg.model.num_conditioning_pairs, dim=-1))}
         
     avg_loss = torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=batch.device, requires_grad=True)
-    return {
-        "src_tgt_consistency_loss": avg_loss * cfg.model.src_tgt_consistency_loss_weight,
+    ret = {}
+
+    if cfg.model.src_tgt_consistency_loss_weight is not None:
+        ret["src_tgt_consistency_loss"] = avg_loss * cfg.model.src_tgt_consistency_loss_weight
+
+    ret.update({
+        "metric_src_tgt_consistency": avg_loss,
         "metric_avg_num_src_tgt_consistency": torch.tensor(num_total_shared_tokens / batch.bs, device=batch.device),
+        **metric_dict
+    })
+
+    return ret
+
+def src_tgt_feature_map_consistency_loss(
+    cfg: BaseConfig,
+    batch: InputData,
+    cond: ConditioningData,
+):
+    src_to_tgt_loss = F.mse_loss(cond.src_warped_feature_map, cond.tgt_orig_feature_map, reduction="mean")
+    tgt_to_src_loss = F.mse_loss(cond.tgt_warped_feature_map, cond.src_orig_feature_map, reduction="mean")
+    loss = (src_to_tgt_loss + tgt_to_src_loss) / 2
+        
+    return {
+        "metric_src_tgt_feature_map_consistency": loss,
+        "src_tgt_feature_map_consistency_loss": loss * cfg.model.src_tgt_feature_map_consistency_loss_weight,
+        "metric_orig_feature_map_distribution": wandb.Histogram((torch.cat((cond.src_orig_feature_map, cond.tgt_orig_feature_map), dim=0)).detach().float().cpu()),
+        "metric_warped_feature_map_distribution": wandb.Histogram((torch.cat((cond.src_warped_feature_map, cond.tgt_warped_feature_map), dim=0)).detach().float().cpu()),
     }

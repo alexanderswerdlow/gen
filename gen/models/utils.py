@@ -141,15 +141,15 @@ class FourierEmbedding(nn.Module):
         in_channels: number of input channels
         """
         super(FourierEmbedding, self).__init__()
-        self.N_freqs = N_freqs
+        self.N_freqs = min(N_freqs, 30)
         self.in_channels = in_channels
         self.funcs = [torch.sin, torch.cos]
-        self.out_channels = in_channels*(len(self.funcs)*N_freqs+1)
+        self.out_channels = in_channels*(len(self.funcs)*self.N_freqs+1)
 
         if logscale:
-            self.freq_bands = 2**torch.linspace(0, N_freqs-1, N_freqs)
+            self.freq_bands = 2**torch.linspace(0, self.N_freqs-1, self.N_freqs)
         else:
-            self.freq_bands = torch.linspace(1, 2**(N_freqs-1), N_freqs)
+            self.freq_bands = torch.linspace(1, 2**(self.N_freqs-1), self.N_freqs)
 
     def forward(self, x):
         """

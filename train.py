@@ -87,6 +87,9 @@ class Trainer:
         self.train_dataloader: DataLoader = None
         self.validation_dataloader: DataLoader = None
 
+        if self.cfg.trainer.set_even_batches_false:
+            accelerator.even_batches = False
+
         self.init_models()
         self.init_dataloader()
         self.init_optimizer()
@@ -126,7 +129,7 @@ class Trainer:
         if exists(self.cfg.dataset.additional_train):
             additional_train_datasets = [instantiate(dataset_cfg)(cfg=self.cfg, split=Split.TRAIN, tokenizer=self.tokenizer) for dataset_cfg in self.cfg.dataset.additional_train]
 
-        self.train_dataloader: DataLoader = self.train_dataloader_holder.get_dataloader(additional_datasets=additional_train_datasets)
+        self.train_dataloader: DataLoader = self.train_dataloader_holder.get_dataloader(additional_datasets=additional_train_datasets, pin_memory=True)
         assert len(self.train_dataloader) > 0
 
         log_info("Creating val_dataset + self.validation_dataloader")
@@ -172,7 +175,7 @@ class Trainer:
         if self.cfg.trainer.momentum is not None:
             kwargs['momentum'] = self.cfg.trainer.momentum
 
-        print(f"Using optimizer_class: {optimizer_class}")
+        log_info(f"Using optimizer_class: {optimizer_class}")
             
         self.optimizer = optimizer_class(
             get_named_params(self.models).values() if (params_ := unwrap(self.model).get_param_groups()) is None else params_,

@@ -18,7 +18,7 @@ from gen.configs.base import BaseConfig
 from gen.datasets.abstract_dataset import Split
 from gen.models.utils import get_model_from_cfg
 from gen.utils.decoupled_utils import all_gather, get_num_gpus, get_rank, is_main_process, sanitize_filename, save_tensor_dict
-from gen.utils.logging_utils import log_debug, log_info
+from gen.utils.logging_utils import log_debug, log_error, log_info
 from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, unwrap
 import itertools
 import time
@@ -89,12 +89,19 @@ def run_inference_dataloader(
             true_step=state.true_step,
             split=Split.TRAIN if 'train' in prefix else Split.VALIDATION,
         )
-        batch = unwrap(model).process_input(batch, state)
-        batch = batch.to(accelerator.device)
-        output = unwrap(model).run_inference(batch=batch, state=inference_state)
-        outputs.append(output)
+        try:
+            batch = unwrap(model).process_input(batch, state)
+            batch = batch.to(accelerator.device)
+            output = unwrap(model).run_inference(batch=batch, state=inference_state)
+            outputs.append(output)
+        except Exception as e:
+            if get_num_gpus() > 1 and state.global_step > 100:
+                import traceback; traceback.print_exc()
+                log_error(f"Error during validation: {e}. Continuing...", main_process_only=False)
+            else:
+                raise
 
-    log_info(f"Before all_gather.", main_process_only=False)
+    log_debug(f"Before all_gather.", main_process_only=False)
     if cfg is None or cfg.inference.gather_results:
         del model; torch.cuda.empty_cache()
         outputs = all_gather(outputs)  # Combine over GPUs.
@@ -108,7 +115,18 @@ def run_inference_dataloader(
 
         if prefix: new_dict = {f"{prefix}{k}":v for k,v in new_dict.items()}
         for k, v in sorted(new_dict.items()):
-            if "pred_" in k:
+            if "wandb_" in k:
+                _k = k.replace("wandb_", "")
+                if isinstance(v[0], wandb.Histogram):
+                    continue
+                if "hist_" in k:
+                    v_ = torch.cat(v, dim=0).numpy()
+                    log_obj = wandb.Histogram(v_)
+                else:
+                    log_obj = sum(v) / len(v)
+                
+                accelerator.log({f"metrics_{_k}": log_obj}, step=state.global_step)
+            elif "pred_" in k:
                 if v[0].ndim == 0:
                     v_ = torch.stack(v).mean()
                 else:

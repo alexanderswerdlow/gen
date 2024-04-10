@@ -21,6 +21,21 @@ def get_stable_diffusion_transforms(resolution):
         ]
     )
 
+def get_stable_diffusion_transforms_sd_images_variations_diffusers(resolution):
+    import torchvision.transforms.v2 as transforms
+
+    return transforms.Compose(
+        [
+            transforms.Resize(
+                resolution,
+                interpolation=transforms.InterpolationMode.BICUBIC,
+                antialias=False,
+            ),
+            transforms.CenterCrop(resolution),
+            transforms.Compose([transforms.ToImage(), transforms.ToDtype(torch.float32, scale=True)]),
+            transforms.Normalize([0.5], [0.5]),
+        ]
+    )
 
 def get_open_clip_transforms_v1():
     import torchvision.transforms as transforms

@@ -61,7 +61,9 @@ class InputData:
     attach_debug_info: bool = False
     treat_as_train_batch: bool = False
     force_forward_encoder_normalized_tgt: bool = False
+    force_encode_all_masks: Optional[Bool[Tensor, "b"]] = None
     shared_src_tgt_instance_idxs: Optional[Integer[Tensor, "b max_instances"]] = None
+    
 
     @staticmethod
     def from_dict(batch: dict):
@@ -176,7 +178,7 @@ def visualize_input_data(
     
     if remove_invalid and batch.tgt_segmentation.shape[-1] == 1:
         batch.src_segmentation = replace_invalid(batch.src_segmentation, batch.src_valid)
-        batch.tgt_segmentation = replace_invalid(batch.tgt_segmentation, batch.tgt_valid)
+        batch.tgt_segmentation = replace_invalid(batch.tgt_segmentation, batch.tgt_valid) if batch.tgt_valid is not None else batch.tgt_segmentation
 
     if cfg is not None:
         tgt_rgb = undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, batch.tgt_pixel_values)
@@ -205,6 +207,8 @@ def visualize_input_data(
         if image_only:
             Im(batch.raw_dataset_image[b]).save(save_name)
             continue
+        
+        if len(torch.unique(batch.tgt_segmentation[b])) == 1: continue
 
         tgt_one_hot = integer_to_one_hot(batch.tgt_segmentation[b], add_background_channel=False)
         src_one_hot = integer_to_one_hot(batch.src_segmentation[b], add_background_channel=False)
@@ -251,18 +255,31 @@ def visualize_input_data(
             rot, dist = get_distance_matrix_vectorized(torch.stack((batch.src_pose[b], batch.tgt_pose[b]), dim=0))
             output_img = output_img.write_text(f"Relative Pose Rot: {rot[0, 1]:.2f}, Relative Pose Dist: {dist[0, 1]:.2f}", (10, 10), size=0.25)
         
-        if cond is not None and cond.src_feature_map is not None:
-            feats = cond.src_feature_map.to(torch.float32).permute(0, 1, 4, 2, 3).cpu()
-            for j in range(feats.shape[1]):
-                feature_img = get_dino_pca(rearrange(
-                    feats[b, j], "d h w -> (h w) d"), 
-                    patch_h=cfg.model.encoder_latent_dim, 
-                    patch_w=cfg.model.encoder_latent_dim, 
-                    threshold=0.6, 
-                    object_larger_than_bg=False, 
-                    return_all=True
-                )
-                output_img = Im.concat_horizontal(output_img, Im(feature_img).scale(10, resampling_mode=InterpolationMode.NEAREST))
+        if cond is not None:
+            def get_pca_img(_feat_map):
+                try:
+                    _feat_map = _feat_map.to(torch.float32).cpu()
+                    return get_dino_pca(
+                        _feat_map,
+                        patch_h=cfg.model.encoder_latent_dim, 
+                        patch_w=cfg.model.encoder_latent_dim, 
+                        threshold=0.6, 
+                        object_larger_than_bg=False, 
+                        return_all=True
+                    )
+                except:
+                    print("Error in get_pca_img")
+                    return np.zeros((cfg.model.encoder_latent_dim, cfg.model.encoder_latent_dim, 3))
+            if cond.src_feature_map is not None:
+                for j in range(cond.src_feature_map.shape[1]):
+                    _feats = cond.src_feature_map[b, j]
+                    feature_img = get_pca_img(rearrange(_feats.permute(2, 0, 1), "d h w -> (h w) d"))
+                    output_img = Im.concat_horizontal(output_img, Im(feature_img).scale(10, resampling_mode=InterpolationMode.NEAREST))
+
+            if cond.src_orig_feature_map is not None:
+                _first_img = Im.concat_horizontal(Im(get_pca_img(cond.src_warped_feature_map[0, b])).scale(10, resampling_mode=InterpolationMode.NEAREST), Im(get_pca_img(cond.tgt_orig_feature_map[0, b])).scale(10, resampling_mode=InterpolationMode.NEAREST)).add_border(75, (128, 128, 128)).write_text("Left: Warped Src, Right: Tgt Orig", size=0.5)
+                _second_img = Im.concat_horizontal(Im(get_pca_img(cond.src_orig_feature_map[0, b])).scale(10, resampling_mode=InterpolationMode.NEAREST), Im(get_pca_img(cond.tgt_warped_feature_map[0, b])).scale(10, resampling_mode=InterpolationMode.NEAREST)).add_border(75, (128, 128, 128)).write_text("Left: Orig Src, Right: Tgt Warped", size=0.5)
+                output_img = Im.concat_horizontal(output_img, Im.concat_vertical(_first_img, _second_img, fill=(128, 128, 128)), spacing=40, fill=(128, 128, 128))
 
         if return_img:
             output_imgs.append(output_img)

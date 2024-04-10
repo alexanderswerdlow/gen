@@ -95,6 +95,7 @@ class TrainerConfig:
     fsdp: bool = False
     load_accelerator_state: bool = True
     ignore_clip_weights: bool = False
+    set_even_batches_false: bool = False
 
     # Set in code
     num_gpus: Optional[int] = None

@@ -262,8 +262,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         saved_data = None
         saved_scene_frames = None
         current_datetime = datetime.now()
-        rounded_datetime = current_datetime.replace(hour=current_datetime.hour // 12 * 12, minute=0, second=0)
-        formatted_datetime = rounded_datetime.strftime('%Y_%m_%d_00_00_00')
+        formatted_datetime = current_datetime.strftime('%Y_%m_%d_00_00_00')
 
         save_type_names = ["rgb", "masks"] + (["instance_seg_v1"] if self.return_only_instance_seg else ["seg_v1"])
         image_files, saved_data = get_to_process(formatted_datetime, save_type_names, return_raw_data=True)
@@ -362,7 +361,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
                 try:
                     return self.get_paired_data(idx)
                 except Exception as e:
-                    log_warn(f"Failed to load image {idx}: {e}")
+                    # log_info(f"Failed to load image {idx}: {e}")
                     idx = torch.randint(0, len(self), (1,)).item()
 
             raise Exception(f"Failed to load image {idx}")
@@ -408,9 +407,6 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
                 raise Exception()
             
             src_seg = torch.from_numpy(im_to_numpy(Image.open(sam_path)))
-            if len(torch.unique(src_seg)) <= 2:
-                raise Exception()
-            
             src_seg = src_seg.float().unsqueeze(0).unsqueeze(0)
             src_seg[src_seg == 255] = -1
         return src_seg
@@ -504,6 +500,9 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         src_data = process_data(src_data)
         tgt_data = process_data(tgt_data)
 
+        if len(torch.unique(src_data.segmentation)) <= 2:
+            raise Exception()
+
         if self.return_encoder_normalized_tgt:
             tgt_data_src_transform = process_data(tgt_data_src_transform)
             ret.update({
@@ -556,6 +555,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
                 "index": idx,
                 "camera_trajectory": "0", # Dummy value
                 "frame_idxs": frame_idxs,
+                "split": self.split.name.lower(),
             },
         }
 

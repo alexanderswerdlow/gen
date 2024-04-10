@@ -1,4 +1,4 @@
-
+import autoroot
 
 import os
 import pickle
@@ -70,6 +70,16 @@ class Hypersim(AbstractDataset, Dataset):
             use_preprocessed_masks=None, # TODO: Needed for hydra
             preprocessed_mask_type=None, # TODO: Needed for hydra
             erode_dialate_preprocessed_masks=None, # TODO: Needed for hydra
+            custom_data_root=None, # TODO: Needed for hydra
+            semantic_only=None, # TODO: Needed for hydra
+            ignore_stuff_in_offset=None,
+            small_instance_area=None,
+            small_instance_weight=None,
+            enable_orig_coco_augmentation=None,
+            enable_orig_coco_processing=None,
+            single_return=None,
+            merge_with_background=None,
+            return_multiple_frames=None,
             **kwargs
         ):
 
@@ -111,9 +121,19 @@ class Hypersim(AbstractDataset, Dataset):
         return super().collate_fn(batch)
     
     def __getitem__(self, index):
+        for i in range(60):
+            try:
+                return self.getitem(index)
+            except Exception as e:
+                index = random.randint(0, len(self) - 1)
+                if i == 59:
+                    log_error(e)
+
+        raise Exception(f'Hypersim Failed to get item for index {index}')
+    
+    def getitem(self, index):
         index = index % len(self.hypersim)
         if self.return_different_views:
-            # assert self.augmentation.reorder_segmentation is False
             assert self.augmentation.return_grid is False
             camera_trajectory_frames = self.scene_cam_map[self.hypersim._load_identifier(index)[:2]]
             window_size = min(max(1, self.camera_trajectory_window), len(camera_trajectory_frames))
@@ -131,34 +151,31 @@ class Hypersim(AbstractDataset, Dataset):
                 if self.sum_largest_face_areas(first_frame_idx, second_frame_idx):
                     break
             
-            frame_data = [self.get_single_frame(camera_trajectory_frames[idx][0]) for idx in [first_frame_idx, second_frame_idx]]
-            ret = frame_data[0]
-            for k, v in frame_data[1].items():
-                if 'tgt' in k:
-                    ret[k] = v
-
+            ret = self.get_two_frames(camera_trajectory_frames[first_frame_idx][0], camera_trajectory_frames[second_frame_idx][0])
             return ret
         else:
             return self.get_single_frame(index)
 
-    def get_single_frame(self, index):
-        try:
-            data = self.hypersim.__getitem__(index)
-        except Exception as e:
-            log_error(e)
-            return self.__getitem__(random.randint(0, len(self))) # Very hacky but might save us in case of an error with a single instance.
+    def get_two_frames(self, src_index, tgt_index):
+        init_src_data = self.hypersim.__getitem__(src_index)
+        init_tgt_data = self.hypersim.__getitem__(tgt_index)
 
         ret = {}
 
-        if self.return_raw_dataset_image: ret["raw_dataset_image"] = data["rgb"].copy()
-
-        rgb, seg, metadata = torch.from_numpy(data['rgb']).to(self.device), torch.from_numpy(data['instance']).to(self.device), data["identifier"]
-        rgb = rearrange(rgb / 255, "h w c -> () c h w")
-        seg = rearrange(seg.to(torch.float32), "h w -> () () h w")
+        def _process(_data):
+            rgb, seg, metadata = torch.from_numpy(_data['rgb']).to(self.device), torch.from_numpy(_data['instance']).to(self.device), _data["identifier"]
+            if seg.max().item() < 0: raise Exception(f"Segmentation mask has only one unique value for index {src_index}")
+            rgb = rearrange(rgb / 255, "h w c -> () c h w")
+            seg = rearrange(seg.to(torch.float32), "h w -> () () h w")
+            return rgb, seg, metadata
         
+        src_rgb, src_seg, src_metadata = _process(init_src_data)
+        tgt_rgb, tgt_seg, tgt_metadata = _process(init_tgt_data)
+
+
         src_data, tgt_data = self.augmentation(
-            src_data=Data(image=rgb, segmentation=seg),
-            tgt_data=Data(image=rgb, segmentation=seg),
+            src_data=Data(image=src_rgb, segmentation=src_seg),
+            tgt_data=Data(image=tgt_rgb, segmentation=tgt_seg),
             use_keypoints=False, 
             return_encoder_normalized_tgt=self.return_encoder_normalized_tgt
         )
@@ -169,7 +186,6 @@ class Hypersim(AbstractDataset, Dataset):
         def process_data(data_: Data):
             data_.image = data_.image.squeeze(0)
             data_.segmentation = rearrange(data_.segmentation, "() c h w -> h w c")
-            data_.segmentation[data_.segmentation >= 77] = 255
             data_.segmentation[data_.segmentation == -1] = 255
             data_.segmentation = torch.cat([data_.segmentation, data_.segmentation.new_full((*data_.segmentation.shape[:-1], self.num_overlapping_masks - 1), 255)], dim=-1)
             data_.pad_mask = ~(data_.segmentation < 255).any(dim=-1)
@@ -187,7 +203,100 @@ class Hypersim(AbstractDataset, Dataset):
 
         pixels = src_data.segmentation.long().contiguous().view(-1)
         pixels = pixels[(pixels < 255) & (pixels >= 0)]
-        src_bincount = torch.bincount(pixels, minlength=self.top_n_masks_only + 1)
+        src_bincount = torch.bincount(pixels, minlength=self.top_n_masks_only)
+        valid = src_bincount > 0
+
+        name = "_".join(src_metadata) + "_" + "_".join(tgt_metadata)
+
+        def get_rt(_data):
+            extrinsics = _data['extrinsics']
+            rot = R.from_quat((extrinsics['quat_x'], extrinsics['quat_y'], extrinsics['quat_z'], extrinsics['quat_w']))
+            T = torch.tensor([extrinsics['x'], extrinsics['y'], extrinsics['z']]).view(3, 1) / 50
+            RT = torch.cat((torch.from_numpy(rot.as_matrix()), T), dim=1)
+            RT = torch.cat((RT, torch.tensor([[0, 0, 0, 1]])), dim=0)
+            return RT
+
+        ret.update({
+            "tgt_pad_mask": tgt_data.pad_mask,
+            "tgt_pixel_values": tgt_data.image,
+            "tgt_segmentation": tgt_data.segmentation.to(torch.uint8),
+            "src_pad_mask": src_data.pad_mask,
+            "src_pixel_values": src_data.image,
+            "src_segmentation": src_data.segmentation.to(torch.uint8),
+            "src_pose": get_rt(init_src_data),
+            "tgt_pose": get_rt(init_tgt_data),
+            "src_valid": valid,
+            "input_ids": get_tokens(self.tokenizer),
+            "valid": valid[..., 1:],
+            "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
+            "has_global_instance_ids": torch.tensor(True),
+            "metadata": {
+                "dataset": "hypersim",
+                "name": name,
+                "scene_id": src_metadata[0],
+                "camera_frame": src_metadata[2],
+                "index": src_index,
+                "camera_trajectory": src_metadata[1],
+                "split": self.split.name.lower(),
+                "frame_idxs": (0, 0) # Dummy value
+            },
+        })
+
+        if src_data.grid is not None: ret["src_grid"] = src_data.grid.squeeze(0)
+        if tgt_data.grid is not None: ret["tgt_grid"] = tgt_data.grid.squeeze(0)
+
+        return ret
+
+
+    def get_single_frame(self, index):
+        try:
+            data = self.hypersim.__getitem__(index)
+        except Exception as e:
+            log_error(e)
+            return self.__getitem__(random.randint(0, len(self))) # Very hacky but might save us in case of an error with a single instance.
+
+        ret = {}
+
+        if self.return_raw_dataset_image: ret["raw_dataset_image"] = data["rgb"].copy()
+
+        rgb, seg, metadata = torch.from_numpy(data['rgb']).to(self.device), torch.from_numpy(data['instance']).to(self.device), data["identifier"]
+        rgb = rearrange(rgb / 255, "h w c -> () c h w")
+        seg = rearrange(seg.to(torch.float32), "h w -> () () h w")
+
+        if len(torch.unique(seg)) <= 1:
+            raise Exception(f"Segmentation mask has only one unique value for index {index}")
+        
+        src_data, tgt_data = self.augmentation(
+            src_data=Data(image=rgb, segmentation=seg),
+            tgt_data=Data(image=rgb, segmentation=seg),
+            use_keypoints=False, 
+            return_encoder_normalized_tgt=self.return_encoder_normalized_tgt
+        )
+
+        if self.return_encoder_normalized_tgt:
+            tgt_data, tgt_data_src_transform = tgt_data
+
+        def process_data(data_: Data):
+            data_.image = data_.image.squeeze(0)
+            data_.segmentation = rearrange(data_.segmentation, "() c h w -> h w c")
+            data_.segmentation[data_.segmentation == -1] = 255
+            data_.segmentation = torch.cat([data_.segmentation, data_.segmentation.new_full((*data_.segmentation.shape[:-1], self.num_overlapping_masks - 1), 255)], dim=-1)
+            data_.pad_mask = ~(data_.segmentation < 255).any(dim=-1)
+            return data_
+        
+        src_data = process_data(src_data)
+        tgt_data = process_data(tgt_data)
+
+        if self.return_encoder_normalized_tgt:
+            tgt_data_src_transform = process_data(tgt_data_src_transform)
+            ret.update({
+                "tgt_enc_norm_pixel_values": tgt_data_src_transform.image,
+                "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8),
+            })
+
+        pixels = src_data.segmentation.long().contiguous().view(-1)
+        pixels = pixels[(pixels < 255) & (pixels >= 0)]
+        src_bincount = torch.bincount(pixels, minlength=self.top_n_masks_only)
         valid = src_bincount > 0
 
         name = "_".join(metadata)
@@ -211,6 +320,7 @@ class Hypersim(AbstractDataset, Dataset):
             "src_segmentation": src_data.segmentation.to(torch.uint8),
             "src_pose": RT,
             "tgt_pose": RT,
+            "src_valid": valid,
             "input_ids": get_tokens(self.tokenizer),
             "valid": valid[..., 1:],
             "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
@@ -222,6 +332,7 @@ class Hypersim(AbstractDataset, Dataset):
                 "camera_frame": metadata[2],
                 "index": index,
                 "camera_trajectory": metadata[1],
+                "split": self.split.name.lower(),
                 "frame_idxs": (0, 0) # Dummy value
             },
         })
@@ -321,7 +432,7 @@ def main():
         shuffle=True,
         cfg=None,
         split=Split.TRAIN,
-        num_workers=2,
+        num_workers=0,
         batch_size=32,
         tokenizer=MockTokenizer(),
         augmentation=soda_augmentation,
@@ -335,13 +446,14 @@ def main():
 
     start_time = time.time()
     for step, batch in enumerate(dataloader):
+        if step == 2: exit()
         print(f'Time taken: {time.time() - start_time}')
-        names = [f'{batch.metadata["scene_id"][i]}_{batch.metadata["camera_trajectory"][i]}_{batch.metadata["camera_frame"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
-        # visualize_input_data(batch, names=names, show_overlapping_masks=True)
-        start_time = time.time()
-        print(batch.src_pose[:, :3, 3].min(), batch.src_pose[:, :3, 3].max())
-        if step > 20:
-            break
+        # names = [f'{batch.metadata["scene_id"][i]}_{batch.metadata["camera_trajectory"][i]}_{batch.metadata["camera_frame"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
+        # # visualize_input_data(batch, names=names, show_overlapping_masks=True)
+        # start_time = time.time()
+        # print(batch.src_pose[:, :3, 3].min(), batch.src_pose[:, :3, 3].max())
+        # if step > 20:
+        #     break
       
 if __name__ == "__main__":
     with breakpoint_on_error():

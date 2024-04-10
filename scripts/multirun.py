@@ -111,6 +111,7 @@ def main(
             job.exclude = get_excluded_nodes("A100", "6000ADA")
         elif med_gpu:
             job.exclude = get_excluded_nodes("3090", "A5500")
+            job.mem_gb = "32GB"
         else:
             job.exclude = get_excluded_nodes("A100", "6000ADA", "3090", "A5500")
         

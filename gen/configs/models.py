@@ -119,6 +119,7 @@ class ModelConfig:
     diffusion_timestep_range: Optional[tuple[int, int]] = None
     diffusion_loss_weight: float = 1.0
     token_cls_loss_weight: float = 0.1
+    disable_unet_during_training: bool = False
     
     # SODA
     add_grid_to_input_channels: bool = False
@@ -136,6 +137,9 @@ class ModelConfig:
     modulate_src_tokens_with_tgt_pose: bool = False
     modulate_src_tokens_with_mlp: bool = False
     modulate_src_tokens_with_film: bool = False
+    modulate_src_tokens_with_vanilla_transformer: bool = False
+    modulate_src_tokens_loss_after_layer_specialization: bool = False
+    modulate_src_feature_map: bool = False
     
     token_modulator: Builds[type[DecoderTransformer]] = builds(DecoderTransformer, populate_full_signature=True)
     add_text_tokens: bool = True
@@ -154,13 +158,21 @@ class ModelConfig:
 
     encode_tgt: bool = False
     encode_src_twice: bool = False
-    src_tgt_consistency_loss_weight: Optional[float] = 1.0
+    src_tgt_consistency_loss_weight: Optional[float] = None
+    src_tgt_feature_map_consistency_loss_weight: Optional[float] = None
     only_encode_shared_tokens: bool = False
 
     mask_dropped_tokens: bool = False
     less_token_dropout: bool = False
 
     max_num_training_masks: Optional[int] = None
+    num_feature_map_pos_emb: Optional[int] = None
+    custom_cross_attn_output_dim: Optional[int] = None
+    custom_dino_v2: bool = False
+    add_learned_pos_emb_to_feature_map: bool = False
+    merge_feature_maps: bool = False
+    use_euler_camera_emb: bool = False
+    
 
 @dataclass
 class ControlNetConfig(ModelConfig):

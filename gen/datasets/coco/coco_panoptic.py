@@ -21,7 +21,7 @@ from pycocotools import mask as maskUtils
 from pycocotools.coco import COCO
 from torch.utils.data import Dataset
 
-from gen import COCO_CUSTOM_PATH, COCO_DATASET_PATH, SCRATCH_CACHE_PATH
+from gen import COCO_CUSTOM_PATH, COCO_DATASET_PATH, GLOBAL_CACHE_PATH, SCRATCH_CACHE_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
@@ -36,14 +36,14 @@ from gen.utils.tokenization_utils import get_tokens
 
 torchvision.disable_beta_transforms_warning()
 
-# memory = Memory(SCRATCH_CACHE_PATH, verbose=0)
-# @memory.cache(ignore=["coco"])
+memory = Memory(GLOBAL_CACHE_PATH, verbose=0)
+@memory.cache(ignore=["coco"])
 def process(coco_split, coco, erode_dialate_preprocessed_masks, num_masks, num_overlapping_masks, image_id):
     annIds = coco.getAnnIds(imgIds=[image_id])
     anns = coco.loadAnns(ids=annIds)
     anns = [(maskUtils.area(ann['segmentation']), ann) for ann in anns if len(ann['segmentation']) > 0]
     anns = sorted(anns, key=lambda d: d[0], reverse=True)
-    anns = [ann[1] for ann in anns][:num_masks]
+    anns = [ann[1] for ann in anns][:24]
 
     if len(anns) == 0:
         log_warn(f"Image {image_id} has no annotations")
@@ -431,6 +431,15 @@ class CocoPanoptic(AbstractDataset, Dataset):
         return instance_with_pad_mask, unique_instance, unique_semantic
 
     def __getitem__(self, index):
+        for _ in range(30):
+            try:
+                return self.getitem(index)
+            except Exception as e:
+                index = (index + 1) % len(self)
+
+        raise Exception(f'CoCo Panoptic Failed to get item for index {index}')
+
+    def getitem(self, index):
         if self.single_return:
             index = 2186
         
@@ -441,15 +450,10 @@ class CocoPanoptic(AbstractDataset, Dataset):
         num_masks = min(self.top_n_masks_only, self.num_classes)
         image_id = int(Path(self.ann_list[index]).stem)
         if self.use_preprocessed_masks:
-            try:
-                image_id = int(Path(self.ann_list[index]).stem)
-                instance_with_pad_mask = process(self.coco_split, self.coco, self.erode_dialate_preprocessed_masks, num_masks, self.num_overlapping_masks, image_id)
-                if instance_with_pad_mask is None:
-                    raise Exception(f'No masks found for image_id {image_id}')
-                
-            except Exception as e:
-                log_error(e)
-                return self.__getitem__((index + 1) % len(self)) # Very hacky but might save us in case of an error with a single instance.
+            image_id = int(Path(self.ann_list[index]).stem)
+            instance_with_pad_mask = process(self.coco_split, self.coco, self.erode_dialate_preprocessed_masks, num_masks, self.num_overlapping_masks, image_id)
+            if instance_with_pad_mask is None:
+                raise Exception(f'No masks found for image_id {image_id}')
         else:
             instance_with_pad_mask, unique_instance, unique_semantic = self.get_coco_label(index)
 
@@ -472,7 +476,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         tgt_data = process_data(tgt_data)
 
         pixels = src_data.segmentation.squeeze(0).long().contiguous().view(-1)
-        src_bincount = torch.bincount(pixels[(pixels < 255) & (pixels >= 0)], minlength=num_masks + 1)
+        src_bincount = torch.bincount(pixels[(pixels < 255) & (pixels >= 0)], minlength=255)
 
         valid = src_bincount > (src_data.segmentation.shape[0] * self.object_ignore_threshold)**2 # We remove instance masks that are too small
 
@@ -507,8 +511,6 @@ class CocoPanoptic(AbstractDataset, Dataset):
             categories[~valid] = -1
             categories = categories[..., 1:]
             ret["categories"] = categories
-
-        valid = valid[..., 1:]
         
         ret.update({
             "tgt_pad_mask": tgt_pad_mask,
@@ -518,11 +520,18 @@ class CocoPanoptic(AbstractDataset, Dataset):
             "src_pixel_values": src_data.image,
             "src_segmentation": src_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
-            "valid": valid,
+            "src_valid": valid,
+            "valid": valid[..., 1:],
+            "has_global_instance_ids": torch.tensor(False),
             "metadata" : {
+                "dataset": "coco_panoptic",
                 "name": str(image_id),
                 "scene_id": str(image_id),
                 "split": self.split.name.lower(),
+                "camera_frame": "0",
+                "index": index,
+                "camera_trajectory": "0",
+                "frame_idxs": (0, 10),
             }
         })
 

@@ -29,6 +29,7 @@ class InferenceConfig:
     num_single_token_gen: Optional[int] = None
     vary_cfg_plot: bool = False
     max_batch_size: int = 16
+    compute_quantitative_token_metrics: bool = False
 
     set_seed: bool = False
     batched_cfg: bool = False # WARNING: This may silently break things

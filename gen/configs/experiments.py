@@ -13,7 +13,9 @@ from gen.configs.datasets import get_datasets
 from gen.configs.old_configs import get_deprecated_experiments
 from gen.configs.utils import mode_store
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
+from gen.datasets.coco.coco_panoptic import CocoPanoptic
 from gen.datasets.hypersim.hypersim import Hypersim
+from gen.datasets.scannetpp.scannetpp import ScannetppIphoneDataset
 from gen.metrics.compute_token_features import compute_token_features
 from gen.models.cross_attn.base_inference import compose_two_images, interpolate_frames, interpolate_latents
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
@@ -393,7 +395,7 @@ def get_experiments():
             use_8bit_adam=True,
             use_fused_adam=False,
         ),
-        hydra_defaults=["no_movi_augmentation", "multiscale", "low_res",  "coco_panoptic", "debug_vit_base_clip"], # "sd_15"
+        hydra_defaults=["no_movi_augmentation", "multiscale", "low_res",  "coco_panoptic", "debug_vit_base_clip"],
     )
 
     mode_store(
@@ -926,6 +928,8 @@ def get_experiments():
                 return_encoder_normalized_tgt=True,
                 distance_threshold = (0.25, 0.1, 0.1, 0.5),
             ),
+            additional_train=None,
+            additional_val=None,
         ),
         inference=dict(
             inference_func=interpolate_frames,
@@ -1232,12 +1236,13 @@ def get_experiments():
         ),
         trainer=dict(
             fsdp=True,
-            checkpointing_steps=1000,
+            checkpointing_steps=None,
             enable_dynamic_grad_accum=False,
         ),
         inference=dict(
             num_masks_to_remove=10,
             num_single_token_gen=10,
+            compute_quantitative_token_metrics=True,
         ),
         hydra_defaults=[
            "noconcat_hypersim_scannet",
@@ -1293,12 +1298,13 @@ def get_experiments():
             only_encode_shared_tokens=True,
             training_mask_dropout=None,
             encode_tgt=True,
-            src_tgt_consistency_loss_weight=100.0,
+            src_tgt_consistency_loss_weight=1.0,
             modulate_src_tokens_with_film=True,
             modulate_src_tokens_with_mlp=False,
         ),
         dataset=dict(
             train=dict(
+                batch_size=12,
                 distance_threshold=(0.5, 0.50, 0.25, 0.0),
                 use_colmap_poses=True,
                 return_encoder_normalized_tgt=True,
@@ -1316,6 +1322,93 @@ def get_experiments():
     )
 
     mode_store(
+        name="exp_0_9_2",
+        debug=True,
+        model=dict(
+            max_num_training_masks=None,
+            disable_unet_during_training=True,
+            src_tgt_consistency_loss_weight=1.0,
+            diffusion_loss_weight=0.0,
+            modulate_src_tokens_with_film=False,
+            modulate_src_tokens_with_mlp=False,
+            token_modulator=dict(final_norm=False, depth=2)
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=6,
+            ),
+            val=dict(
+                subset_size=64,
+            )
+        ),
+        trainer=dict(
+            eval_on_start=True,
+            custom_inference_every_n_steps=2000,
+            eval_every_n_steps=4000,
+            learning_rate=5e-6,
+            log_gradients=100,
+            set_even_batches_false=True,
+        ),
+        inference=dict(
+            num_masks_to_remove=None,
+            visualize_attention_map=False,
+            visualize_embeds=False,
+            infer_new_prompts=False,
+            save_prompt_embeds=False,
+            num_single_token_gen=None,
+            vary_cfg_plot=False,
+        ),
+        hydra_defaults=[
+           "exp_0_9_1",
+           "freeze_exp",
+           "load_ckpt"
+        ],
+    )
+
+
+    mode_store(
+        name="exp_0_9_2_single",
+        dataset=dict(
+            train=dict(
+                batch_size=1,
+                overfit_subset_size=1,
+            ),
+            val=dict(
+                subset_size=1,
+            )
+        ),
+        hydra_defaults=[
+           "exp_0_9_2",
+        ],
+    )
+
+    mode_store(
+        name="exp_0_9_2_unfrozen_enc",
+        debug=True,
+        model=dict(
+            unfreeze_last_n_clip_layers=8,
+            freeze_token_encoder=False,
+            disable_unet_during_training=False,
+
+            src_tgt_consistency_loss_weight=1.0,
+            diffusion_loss_weight=0.01,
+        ),
+        hydra_defaults=[
+           "exp_0_9_2",
+           "subset_exp"
+        ],
+    )
+
+    mode_store(
+        name="subset_exp",
+        dataset=dict(
+            train=dict(
+                overfit_subset_size=12,
+            ),
+        ),
+    )
+
+    mode_store(
         name="freeze_exp",
         model=dict(
             freeze_unet=True,
@@ -1324,14 +1417,54 @@ def get_experiments():
         ),
         dataset=dict(
             train=dict(
-                batch_size=32
+                batch_size=48
             ),
         ),
         trainer=dict(
             eval_every_n_steps=500,
-            learning_rate=1e-4,
-            log_gradients=50
+            learning_rate=2e-5,
+            log_gradients=100
         )
+    )
+
+    mode_store(
+        name="feature_map_warp",
+        model=dict(
+            freeze_unet=True,
+            freeze_token_encoder=True,
+            modulate_src_tokens_with_tgt_pose=False,
+            modulate_src_feature_map=True,
+            src_tgt_consistency_loss_weight=None,
+            src_tgt_feature_map_consistency_loss_weight=1.0,
+            unfreeze_last_n_clip_layers=None,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=4,
+                overfit_subset_size=4,
+            ),
+        ),
+        trainer=dict(
+            eval_every_n_steps=2000,
+            strict_load=False,
+        ),
+        hydra_defaults=[
+           "exp_0_9_2",
+           "custom_vit"
+        ],
+    )
+
+    mode_store(
+        name="feature_map_warp_unfreeze",
+        debug=True,
+        model=dict(
+            freeze_token_encoder=False,
+            disable_unet_during_training=False,
+            diffusion_loss_weight=1.0,
+        ),
+        hydra_defaults=[
+           "feature_map_warp",
+        ],
     )
 
     mode_store(
@@ -1339,5 +1472,332 @@ def get_experiments():
         trainer=dict(
             ckpt=Path("/projects/katefgroup/aswerdlo/gen/checkpoints/debug_2024-04-01_17_27_31/yRVLCngRkN/checkpoint_28000/state/pytorch_model.bin"),
             strict_load=False,
+        ),
+    )
+
+
+    mode_store(
+        name='custom_vit',
+        model=dict(
+            feature_map_keys=('blocks.5', "norm"),
+            num_feature_map_pos_emb=2,
+            encoder=dict(
+                num_classes=0,
+                return_only=None,
+                pretrained=True,
+                gradient_checkpointing=True,
+                model_name="vit_base_patch14_reg4_dinov2.lvd142m",
+                img_size=518,
+                return_nodes={
+                    "blocks.0": "blocks.0",
+                    "blocks.5": "blocks.5",
+                    "blocks.6": "blocks.6",
+                    "norm": "norm",
+                    "mid_blocks": "mid_blocks",
+                    "final_norm": "final_norm",
+                },
+            ),
+        )
+    )
+
+
+    def get_train_aug():
+        return builds(
+            Augmentation,
+            reorder_segmentation=False,
+            different_src_tgt_augmentation=False,
+            enable_square_crop=True,
+            center_crop=False,
+            enable_random_resize_crop=True, 
+            enable_horizontal_flip=True,
+            enable_rand_augment=False,
+            enable_rotate=False,
+            src_random_scale_ratio=None,
+            tgt_random_scale_ratio=((0.7, 1.0), (0.9, 1.1)),
+            initial_resolution=512,
+            src_resolution=None,
+            tgt_resolution=None,
+            src_transforms="${get_src_transform:model}",
+            tgt_transforms="${get_tgt_transform:model}",
+            populate_full_signature=True,
+        )
+    
+    def get_val_aug():
+        return builds(
+            Augmentation,
+            different_src_tgt_augmentation=False,
+            enable_square_crop=True,
+            center_crop=True,
+            enable_random_resize_crop=False, 
+            enable_horizontal_flip=False,
+            enable_rand_augment=False,
+            enable_rotate=False,
+            src_random_scale_ratio=None,
+            tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+            initial_resolution=512,
+            src_resolution=None,
+            tgt_resolution=None,
+            src_transforms="${get_src_transform:model}",
+            tgt_transforms="${get_tgt_transform:model}",
+            populate_full_signature=True,
+        )
+
+
+    mode_store(
+        name="single_image_pretraining",
+        model=dict(
+            encoder=builds(
+                ViTFeatureExtractor,
+                img_size=518,
+                pretrained=False,
+                model_name="vit_large_patch14_dinov2.lvd142m",
+                return_only=None,
+                return_nodes={
+                    "blocks.0": "blocks.0",
+                    "blocks.11": "blocks.11",
+                    "blocks.23": "blocks.23",
+                    "blocks.5": "blocks.5",
+                    "blocks.11": "blocks.11",
+                    "blocks.19": "blocks.19",
+                    # "blocks.39": "blocks.39",
+                },
+            ),
+            encoder_dim=4096,
+            decoder_latent_dim=32,
+            decoder_resolution=256,
+            encoder_resolution=518,
+            encoder_latent_dim=37,
+
+            layer_specialization=True,
+            num_conditioning_pairs=8,
+            num_layer_queries=1,
+            custom_conditioning_map=False,
+            unet=True,
+            gated_cross_attn=False,
+            unfreeze_gated_cross_attn=False,
+            unet_lora=False,
+            freeze_unet=False,
+            freeze_clip=True,
+            per_layer_queries=False,
+            custom_dino_v2=True,
+            feature_map_keys=(
+                "blocks.0",
+                "blocks.11",
+                "blocks.17",
+                "blocks.23",
+            ),
+            decoder_transformer=dict(
+                add_self_attn=False,
+                add_cross_attn=True,
+                depth=4,
+                num_heads=16,
+            ),
+            lr_finetune_version=2,
+            finetune_unet_with_different_lrs=False,
+            unfreeze_last_n_clip_layers=None,
+            custom_cross_attn_output_dim=4096,
+            cross_attn_dim=2048,
+            use_sd_15_tokenizer_encoder=True,
+            masked_self_attention=False,
+            add_text_tokens=False,
+            eschernet=False,
+            modulate_src_tokens_with_tgt_pose=False,
+            encode_tgt=False,
+            segmentation_map_size=255,
+    
+            revision="v2.0",
+            pretrained_model_name_or_path="lambdalabs/sd-image-variations-diffusers",
+            token_embedding_dim=768,
+
+            max_num_training_masks=12,
+            only_encode_shared_tokens=False,
+            less_token_dropout=True,
+            break_a_scene_masked_loss=False,
+            mask_dropped_tokens=True,
+
+            encode_src_twice=False,
+            src_tgt_consistency_loss_weight=None,
+            add_pos_emb=False,
+            add_learned_pos_emb_to_feature_map=False,
+            merge_feature_maps=True,
+        ),
+        dataset=dict(
+            reset_val_dataset_every_epoch=True,
+            train=builds(
+                CocoPanoptic,
+                populate_full_signature=True,
+                repeat_single_dataset_n_times=20,
+                num_workers=8,
+                batch_size=36,
+                object_ignore_threshold=0.0,
+                top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                use_preprocessed_masks=True,
+                scratch_only=False,
+                num_overlapping_masks=1,
+                preprocessed_mask_type="custom_postprocessed",
+                augmentation=get_train_aug(),
+                allowed_keys=("tgt_pixel_values", "src_pixel_values", "tgt_mask", "src_mask", "src_segmentation", "tgt_segmentation", "input_ids", "metadata", "valid", "src_valid", "has_global_instance_ids"),
+            ),
+            val=builds(
+                CocoPanoptic,
+                populate_full_signature=True,
+                repeat_single_dataset_n_times=20,
+                batch_size=1,
+                object_ignore_threshold=0.0,
+                top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                use_preprocessed_masks=True,
+                scratch_only=False,
+                num_overlapping_masks=1,
+                preprocessed_mask_type="custom_postprocessed",
+                augmentation=get_val_aug(),
+                allowed_keys=("tgt_pixel_values", "src_pixel_values", "tgt_mask", "src_mask", "src_segmentation", "tgt_segmentation", "input_ids", "metadata", "valid", "src_valid", "has_global_instance_ids"),
+            ),
+            additional_train=(
+                builds(
+                    ScannetppIphoneDataset,
+                    zen_partial=True,
+                    image_pairs_per_scene=16384,
+                    top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                    return_encoder_normalized_tgt=False,
+                    src_eq_tgt=True,
+                    distance_threshold=(0.3, 0.1, 0.12, 0.7),
+                    num_overlapping_masks=1,
+                    augmentation=get_train_aug(),
+                ),
+                builds(
+                    Hypersim, 
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    repeat_n=75,
+                    return_encoder_normalized_tgt=False,
+                    camera_trajectory_window=32,
+                    return_different_views=False,
+                    bbox_overlap_threshold=0.75,
+                    bbox_area_threshold=0.75,
+                    object_ignore_threshold=0.0,
+                    top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                    num_overlapping_masks=1,
+                    augmentation=get_train_aug(),
+                ),
+            ),
+            additional_val=(
+                builds(
+                    ScannetppIphoneDataset,
+                    image_pairs_per_scene=16384,
+                    top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                    return_encoder_normalized_tgt=False,
+                    src_eq_tgt=True,
+                    distance_threshold=(0.3, 0.1, 0.12, 0.7),
+                    num_overlapping_masks=1,
+                    augmentation=get_val_aug(),
+                    zen_partial=True,
+                ),
+                builds(
+                    Hypersim, 
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    repeat_n=50,
+                    return_encoder_normalized_tgt=False,
+                    camera_trajectory_window=32,
+                    return_different_views=False,
+                    bbox_overlap_threshold=0.75,
+                    bbox_area_threshold=0.75,
+                    object_ignore_threshold=0.0,
+                    top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                    num_overlapping_masks=1,
+                    augmentation=get_val_aug(),
+                ),
+            ),
+        ),
+        trainer=dict(
+            scale_lr_gpus_grad_accum=False, 
+            scale_lr_batch_size=False, 
+            checkpointing_steps=2000, 
+            eval_every_n_steps=1000, 
+            max_train_steps=1000000,
+            validate_training_dataset=True,
+            use_8bit_adam=True,
+            use_fused_adam=False,
+            lr_warmup_steps=5000,
+            compile=False,
+            enable_dynamic_grad_accum=False,
+            gradient_accumulation_steps=4,
+            cudnn_benchmark=True,
+            learning_rate=5e-6,
+            fsdp=True,
+        ),
+        inference=dict(
+            guidance_scale=7.0,
+            infer_new_prompts=False,
+            vary_cfg_plot=True,
+            visualize_attention_map=True,
+            num_single_token_gen=4,
+            num_masks_to_remove=4,
+        ),
+        hydra_defaults=[
+           {"override /model": "basemapper_vit_scratch"},
+           {"override /dataset": "coco_panoptic"},
+        ],
+    )
+
+    mode_store(
+        name="hypersim_nvs",
+        model=dict(
+            only_encode_shared_tokens=True,
+            modulate_src_tokens_with_tgt_pose=True,
+            lr_finetune_version=3,
+            finetune_unet_with_different_lrs=True,
+            use_euler_camera_emb=True,
+            token_modulator=dict(
+                num_heads=16,
+            )
+        ),
+        dataset=dict(
+            reset_val_dataset_every_epoch=True,
+            train=builds(
+                Hypersim, 
+                populate_full_signature=True,
+                zen_partial=True,
+                batch_size=64,
+                repeat_n=75,
+                return_encoder_normalized_tgt=True,
+                camera_trajectory_window=32,
+                return_different_views=True,
+                bbox_overlap_threshold=0.75,
+                bbox_area_threshold=0.75,
+                object_ignore_threshold=0.0,
+                top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                num_overlapping_masks=1,
+                augmentation=get_val_aug(),
+            ),
+            val=builds(
+                Hypersim, 
+                populate_full_signature=True,
+                zen_partial=True,
+                batch_size=1,
+                repeat_n=50,
+                return_encoder_normalized_tgt=True,
+                camera_trajectory_window=32,
+                return_different_views=True,
+                bbox_overlap_threshold=0.75,
+                bbox_area_threshold=0.75,
+                object_ignore_threshold=0.0,
+                top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                num_overlapping_masks=1,
+                augmentation=get_val_aug(),
+            ),
+            additional_train=None,
+            additional_val=None,
+        ),
+        trainer=dict(strict_load=False),
+        hydra_defaults=["single_image_pretraining", {"override /dataset": "hypersim"}],
+    )
+
+    mode_store(
+        name="freeze_nvs",
+        model=dict(
+            finetune_unet_with_different_lrs=False,
+            freeze_unet=True,
+            freeze_token_encoder=True,
         ),
     )

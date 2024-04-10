@@ -19,6 +19,7 @@ import hydra
 
 from gen.datasets.run_dataloader import iterate_dataloader
 from gen.models.encoders.encoder import TimmModel
+from gen.utils.logging_utils import log_info
 
 defaults = [
     "_self_",
@@ -93,8 +94,12 @@ def get_src_transform(_, *, _root_: BaseConfig):
     return model.transform
 
 def get_tgt_transform(_, *, _root_: BaseConfig):
-    from gen.datasets.utils import get_stable_diffusion_transforms
-    return get_stable_diffusion_transforms(resolution=_root_.model.decoder_resolution)
+    from gen.datasets.utils import get_stable_diffusion_transforms, get_stable_diffusion_transforms_sd_images_variations_diffusers
+    if _root_.model.pretrained_model_name_or_path == "lambdalabs/sd-image-variations-diffusers":
+        log_info("Using sd-image-variations-diffusers")
+        return get_stable_diffusion_transforms_sd_images_variations_diffusers(resolution=_root_.model.decoder_resolution)
+    else:
+        return get_stable_diffusion_transforms(resolution=_root_.model.decoder_resolution)
 
 OmegaConf.register_new_resolver("get_run_dir", get_run_dir)
 OmegaConf.register_new_resolver("get_src_transform", get_src_transform)
@@ -158,7 +163,7 @@ exp_store(
         training_layer_dropout=0.15,
         unfreeze_last_n_clip_layers=None,
         layer_specialization=True,
-        token_modulator=dict(add_self_attn=True, add_cross_attn=False, depth=2),
+        token_modulator=dict(add_self_attn=True, add_cross_attn=False, depth=4, embed_dim=2048, drop_rate=0.1),
     ),
     hydra_defaults=[
         "_self_",

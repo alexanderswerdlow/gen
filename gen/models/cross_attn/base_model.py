@@ -1,4 +1,5 @@
 from ast import Pass
+from contextlib import nullcontext
 import dataclasses
 import gc
 import math
@@ -19,7 +20,7 @@ from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
 from peft import LoraConfig
 from scipy.spatial.transform import Rotation as R
-from torch import Tensor
+from torch import FloatTensor, Tensor
 from transformers import AutoTokenizer, CLIPTokenizer
 from transformers.models.clip.modeling_clip import CLIPTextModel
 
@@ -32,7 +33,7 @@ from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
 from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale, shift_scale_uncond_hidden_states)
 from gen.models.cross_attn.eschernet import get_relative_pose
-from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, get_gt_rot, src_tgt_token_consistency_loss,
+from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, get_gt_rot, src_tgt_feature_map_consistency_loss, src_tgt_token_consistency_loss,
                                           token_cls_loss, token_rot_loss)
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel
@@ -44,6 +45,7 @@ from gen.utils.logging_utils import log_debug, log_error, log_info, log_warn
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
 from gen.utils.visualization_utils import get_dino_pca, viz_feats
+from scipy.spatial.transform import Rotation
 
 def print_trainable_parameters(model):
     """
@@ -80,8 +82,17 @@ class ConditioningData:
     tgt_mask_instance_idx: Optional[Integer[Tensor, "n"]] = None
     tgt_mask_dropout: Optional[Bool[Tensor, "n"]] = None
 
+    loss_src_mask_tokens: Optional[Float[Tensor, "n d"]] = None # We duplicate for loss calculation
+    loss_tgt_mask_tokens: Optional[Float[Tensor, "n d"]] = None
+
     src_feature_map: Optional[Float[Tensor, "b d h w"]] = None
     encoder_input_pixel_values: Optional[Float[Tensor, "b c h w"]] = None
+
+    src_orig_feature_map: Optional[Float[Tensor, "b d h w"]] = None
+    tgt_orig_feature_map: Optional[Float[Tensor, "b d h w"]] = None
+
+    src_warped_feature_map: Optional[Float[Tensor, "b d h w"]] = None
+    tgt_warped_feature_map: Optional[Float[Tensor, "b d h w"]] = None
 
     # These are passed to the U-Net or pipeline
     encoder_hidden_states: Optional[Float[Tensor, "b d"]] = None
@@ -166,7 +177,14 @@ class BaseMapper(Trainable):
     def initialize_custom_models(self):
         if self.cfg.model.mask_token_conditioning:
             self.mapper = FeatureMapper(cfg=self.cfg).to(self.cfg.trainer.device)
-            self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, compile=False) #, compile=not self.cfg.model.clip_lora)
+            if self.cfg.model.modulate_src_feature_map:
+                from gen.models.encoders.vision_transformer import vit_base_patch14_dinov2
+            
+            if self.cfg.model.custom_dino_v2:
+                self.clip = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg')
+                self.clip = torch.compile(self.clip)
+            else:
+                self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, compile=False) #, compile=not self.cfg.model.clip_lora)
             self.clip.to(self.dtype)
 
             if self.cfg.model.clip_lora:
@@ -190,8 +208,9 @@ class BaseMapper(Trainable):
     def initialize_diffusers_models(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
         # Load the tokenizer
         tokenizer_encoder_name = "runwayml/stable-diffusion-v1-5" if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.pretrained_model_name_or_path
+        revision = None if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.revision
         self.tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_encoder_name, subfolder="tokenizer", revision=self.cfg.model.revision, use_fast=False
+            tokenizer_encoder_name, subfolder="tokenizer", revision=revision, use_fast=False
         )
 
         # Load scheduler and models
@@ -365,6 +384,21 @@ class BaseMapper(Trainable):
             #     model_.norm.requires_grad_(True)
             # model_.norm.train()
 
+        if md.modulate_src_feature_map:
+            if hasattr(other.clip, "base_model"):
+                model_ = other.clip.base_model
+            elif hasattr(other.clip, "model"):
+                model_ = other.clip.model
+
+            if set_grad:
+                model_.mid_blocks.requires_grad_(True)
+                model_.final_blocks.requires_grad_(True)
+                model_.final_norm.requires_grad_(True)
+
+            model_.mid_blocks.train()
+            model_.final_blocks.train()
+            model_.final_norm.train()
+
         if hasattr(other, "clip") and set_grad:
             cast_training_params(other.clip, dtype=torch.float32)
             print_trainable_parameters(other.clip)
@@ -452,10 +486,15 @@ class BaseMapper(Trainable):
                 other.mapper.requires_grad_(False)
             other.mapper.eval()
 
-            if set_grad:
-                other.mapper.token_modulator.requires_grad_(True)
-                other.mapper.token_modulator.to(device=_device, dtype=torch.float32)
-            other.mapper.token_modulator.train()
+            if md.modulate_src_tokens_with_tgt_pose or md.modulate_src_feature_map:
+                if set_grad:
+                    other.mapper.token_predictor.requires_grad_(True)
+                    other.mapper.token_predictor.to(device=_device, dtype=torch.float32)
+
+                    other.mapper.layer_specialization.requires_grad_(True)
+                    other.mapper.layer_specialization.to(device=_device, dtype=torch.float32)
+                other.mapper.token_predictor.train()
+                other.mapper.layer_specialization.train()
 
     def unfreeze_unet(self):
         self.cfg.model.freeze_unet = False
@@ -495,26 +534,27 @@ class BaseMapper(Trainable):
         Returns all params directly managed by the top-level model.
         Other params may be nested [e.g., in diffusers]
         """
-        params = []
+        params = {}
         if self.cfg.model.clip_shift_scale_conditioning:
-            params.extend(self.clip_proj_layers.parameters())
+            params.update(dict(self.clip_proj_layers.named_parameters()))
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
-            params.extend(self.token_mapper.parameters())
+            params.update(dict(self.token_mapper.named_parameters()))
                         
-        params.extend(self.mapper.parameters())
+        params.update(dict(self.mapper.named_parameters()))
 
         # Add clip parameters
-        params.extend([p for p in self.clip.parameters() if p.requires_grad])
+        params.update({k:p for k,p in self.clip.named_parameters() if p.requires_grad})
 
         return params
 
     def get_unet_params(self):
         is_unet_trainable = self.cfg.model.unet and (not self.cfg.model.freeze_unet or self.cfg.model.unet_lora)
-        return {k:v for k,v in dict(self.unet.named_parameters()) if v.requires_grad} if is_unet_trainable else dict()
+        return {k:v for k,v in self.unet.named_parameters() if v.requires_grad} if is_unet_trainable else dict()
     
     def get_param_groups(self):
         if self.cfg.model.finetune_unet_with_different_lrs:
             unet_params = self.get_unet_params()
+            custom_params = self.get_custom_params()
 
             def get_params(params, keys):
                 group = {k: v for k, v in params.items() if all([key in k for key in keys])}
@@ -524,20 +564,27 @@ class BaseMapper(Trainable):
 
             if self.cfg.model.lr_finetune_version == 0:
                 return [  # Order matters here
-                    {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate * 2},
+                    {"params": self.get_custom_params().values(), "lr": self.cfg.trainer.learning_rate * 2},
                     {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate},
                     {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
                 ]
             elif self.cfg.model.lr_finetune_version == 1:
                 return [  # Order matters here
-                    {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate},
+                    {"params": self.get_custom_params().values(), "lr": self.cfg.trainer.learning_rate},
                     {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate / 4},
                     {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 8},
                 ]
             elif self.cfg.model.lr_finetune_version == 2:
                 return [  # Order matters here
-                    {"params": self.get_custom_params(), "lr": self.cfg.trainer.learning_rate * 2},
+                    {"params": self.get_custom_params().values(), "lr": self.cfg.trainer.learning_rate * 2},
                     {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate},
+                ]
+            elif self.cfg.model.lr_finetune_version == 3:
+                return [  # Order matters here
+                    {"params": get_params(custom_params, ("token_predictor",)).values(), "lr": self.cfg.trainer.learning_rate},
+                    {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate / 10},
+                    {"params": custom_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
+                    {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 100},
                 ]
         elif self.cfg.model.unfreeze_gated_cross_attn:
             unet_params = self.get_unet_params()
@@ -726,6 +773,19 @@ class BaseMapper(Trainable):
             uncond_encoder_hidden_states = torch.zeros((self.cfg.model.num_decoder_cross_attn_tokens, self.cfg.model.token_embedding_dim), device=self.device, dtype=self.dtype)
         return uncond_encoder_hidden_states
 
+    def get_pose_embedding(self, batch: InputData, src_pose: FloatTensor, tgt_pose: FloatTensor, hidden_dim: int):
+        if self.cfg.model.use_euler_camera_emb:
+            relative_rot = torch.bmm(tgt_pose[:, :3, :3].mT, src_pose[:, :3, :3])
+            rot = Rotation.from_matrix(relative_rot.cpu().numpy())
+            relative_rot = torch.from_numpy(rot.as_euler("xyz", degrees=False)).to(src_pose)
+            relative_trans = torch.bmm(tgt_pose[:, :3, :3].mT, (src_pose[:, :3, 3] - tgt_pose[:, :3, 3])[:, :, None]).squeeze(-1)
+            relative_pose = torch.cat((relative_rot, relative_trans), dim=1)
+        else:
+            relative_pose = get_relative_pose(src_pose, tgt_pose).to(src_pose)
+        register_tokens = self.mapper.token_predictor.camera_embed(relative_pose.view(batch.bs, -1).to(self.dtype)).unsqueeze(1)
+        register_tokens = torch.cat((register_tokens, register_tokens.new_zeros((*register_tokens.shape[:-1], hidden_dim - register_tokens.shape[-1]))), dim=-1)
+        return register_tokens
+
     def get_feature_map(self, batch: InputData, cond: ConditioningData):
         bs: int = batch.src_pixel_values.shape[0]
         device = batch.tgt_pixel_values.device
@@ -744,7 +804,33 @@ class BaseMapper(Trainable):
         if batch.attach_debug_info:
             cond.encoder_input_pixel_values = clip_input.clone()
 
-        clip_feature_map = self.clip.forward_model(clip_input)  # b (h w) d
+        if self.cfg.model.modulate_src_feature_map:
+            pose_emb = self.get_pose_embedding(batch, batch.src_pose, batch.tgt_pose, self.cfg.model.encoder_dim) + self.mapper.token_predictor.camera_position_embedding
+            clip_feature_map = self.clip.forward_model(clip_input, y=pose_emb)  # b (h w) d
+
+            clip_feature_map['mid_blocks'] = clip_feature_map['mid_blocks'][:, 1:, :]
+            clip_feature_map['final_norm'] = clip_feature_map['final_norm'][:, 1:, :]
+
+            orig_bs = batch.bs // 2
+            assert self.cfg.model.encode_tgt
+
+            _orig_feature_maps = torch.stack((clip_feature_map['blocks.5'], clip_feature_map['norm']), dim=0)[:, :, 5:, :]
+            _warped_feature_maps = torch.stack((clip_feature_map['mid_blocks'], clip_feature_map['final_norm']), dim=0)[:, :, 5:, :]
+
+            cond.src_orig_feature_map = _orig_feature_maps[:, :orig_bs].clone()
+            cond.tgt_orig_feature_map = _orig_feature_maps[:, orig_bs:].clone()
+
+            cond.src_warped_feature_map = _warped_feature_maps[:, :orig_bs].clone()
+            cond.tgt_warped_feature_map = _warped_feature_maps[:, orig_bs:].clone()
+
+            clip_feature_map['blocks.5'] = torch.cat((clip_feature_map['mid_blocks'][:orig_bs], clip_feature_map['blocks.5'][orig_bs:]), dim=0)
+            clip_feature_map['norm'] = torch.cat((clip_feature_map['final_norm'][:orig_bs], clip_feature_map['norm'][orig_bs:]), dim=0)
+        elif self.cfg.model.custom_dino_v2:
+            with torch.no_grad():
+                clip_feature_map = {f'blocks.{i}':v[:, 4:] for i,v in enumerate(self.clip.get_intermediate_layers(x=clip_input, n=24 if 'large' in self.cfg.model.encoder.model_name else 12, norm=True))}
+        else:
+            with torch.no_grad() if self.cfg.model.freeze_clip and self.cfg.model.unfreeze_last_n_clip_layers is None else nullcontext():
+                clip_feature_map = self.clip.forward_model(clip_input)  # b (h w) d
 
         if self.cfg.model.debug_feature_maps and batch.attach_debug_info:
             from image_utils import Im
@@ -752,7 +838,7 @@ class BaseMapper(Trainable):
             import copy
             orig_trained = copy.deepcopy(self.clip.state_dict())
             trained_viz = viz_feats(clip_feature_map, "trained_feature_map")
-            self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, compile=False).to(torch.bfloat16).to(self.device)
+            self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, compile=False).to(self.dtype).to(self.device)
             clip_feature_map = self.clip.forward_model(clip_input)
             stock_viz = viz_feats(clip_feature_map, "stock_feature_map")
             Im.concat_vertical(stock_viz, trained_viz).save(batch.metadata['name'][0])
@@ -772,19 +858,24 @@ class BaseMapper(Trainable):
         clip_feature_map = clip_feature_map.to(self.dtype)
         latent_dim = self.cfg.model.encoder_latent_dim
 
-        if clip_feature_map.shape[-2] != latent_dim**2 and "resnet" not in self.clip.model_name:
+        if clip_feature_map.shape[-2] != latent_dim**2 and "resnet" not in self.cfg.model.encoder.model_name:
             clip_feature_map = clip_feature_map[:, :, 1:, :]
-            if "dino" in self.clip.model_name and "reg" in self.clip.model_name:
+            if "dino" in self.cfg.model.encoder.model_name and "reg" in self.cfg.model.encoder.model_name:
                 clip_feature_map = clip_feature_map[:, :, 4:, :]
 
         if batch.attach_debug_info:
             cond.src_feature_map = rearrange("b n (h w) d -> b n h w d", clip_feature_map.clone(), h=latent_dim, w=latent_dim)
+
+        if self.cfg.model.merge_feature_maps:
+            clip_feature_map = rearrange("b n (h w) d -> b () (h w) (n d)", clip_feature_map)
         
         if self.cfg.model.add_pos_emb:
             pos_emb = positionalencoding2d(clip_feature_map.shape[-1], latent_dim, latent_dim, device=clip_feature_map.device, dtype=clip_feature_map.dtype).to(clip_feature_map)
             clip_feature_map = add("... (h w) d, d h w -> ... (h w) d", clip_feature_map, pos_emb)
+        elif self.cfg.model.add_learned_pos_emb_to_feature_map:
+            clip_feature_map = add("... (h w) d, (h w) d -> ... (h w) d", clip_feature_map, self.mapper.feature_map_pos_emb)
 
-        if self.cfg.model.feature_map_keys is not None:
+        if self.cfg.model.feature_map_keys is not None and self.cfg.model.merge_feature_maps is False:
             clip_feature_map = add("b n (h w) d, n d -> b n (h w) d", clip_feature_map, self.mapper.position_embedding)
 
         return clip_feature_map
@@ -809,6 +900,9 @@ class BaseMapper(Trainable):
         dropout_foreground_only = self.cfg.model.dropout_foreground_only
         dropout_background_only = self.cfg.model.dropout_background_only
         background_mask_idx = self.cfg.model.background_mask_idx
+        only_encode_shared_tokens = self.cfg.model.only_encode_shared_tokens
+        encode_src_twice = self.cfg.model.encode_src_twice
+        less_token_dropout = self.cfg.model.less_token_dropout
 
         indices_ = batch.src_segmentation.view(batch.batch_size[0], -1)
         ones_ = torch.ones_like(indices_, dtype=torch.bool)
@@ -820,41 +914,41 @@ class BaseMapper(Trainable):
         for i in range(bs):
             one_hot_idx = torch.arange(segmentation_map_size, device=device)
             non_empty_mask = all_non_empty_mask[i] > 0
-            non_empty_mask &= batch.src_valid[i]
+            # non_empty_mask &= batch.src_valid[i]
+            
+            dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), False, dtype=torch.bool)
+            non_empty_idx = non_empty_mask.nonzero().squeeze(1)
 
-            if training_mask_dropout is not None and (self.training or batch.treat_as_train_batch):
-                dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), False, dtype=torch.bool)
-                non_empty_idx = non_empty_mask.nonzero().squeeze(1)
+            if only_encode_shared_tokens and (batch.force_encode_all_masks is None or batch.force_encode_all_masks[i] is False):
+                allowed_idxs = batch.shared_src_tgt_instance_idxs[i][batch.shared_src_tgt_instance_idxs[i] != 255]
+                non_empty_idx = non_empty_idx[torch.isin(non_empty_idx, allowed_idxs)]
 
-                if self.cfg.model.only_encode_shared_tokens:
-                    allowed_idxs = batch.shared_src_tgt_instance_idxs[i][batch.shared_src_tgt_instance_idxs[i] != 255]
-                    non_empty_idx = non_empty_idx[torch.isin(non_empty_idx, allowed_idxs)]
-
-                if self.cfg.model.encode_src_twice and i >= batch.bs // 2:
-                    first_img_non_empty_idx = mask_instance_idx[i - batch.bs // 2]
-                    non_empty_idx = first_img_non_empty_idx
-
-                if non_empty_idx.shape[0] > 0:
-                    if self.cfg.model.less_token_dropout:
-                        num_sel_masks = torch.randint(max(1, int(non_empty_idx.shape[0] * 3/4)), non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
-                    else:
-                        num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
-                    selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
-                    dropout_mask[selected_masks] = True
+            if encode_src_twice and i >= batch.bs // 2 and (self.training or batch.treat_as_train_batch):
+                first_img_non_empty_idx = mask_instance_idx[i - batch.bs // 2]
+                non_empty_idx = first_img_non_empty_idx
+            
+            can_dropout = training_mask_dropout is not None and non_empty_idx.shape[0] > 0 and (self.training or batch.treat_as_train_batch)
+            if can_dropout:
+                if less_token_dropout:
+                    num_sel_masks = torch.randint(max(1, int(non_empty_idx.shape[0] * 3/4)), non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
+                else:
+                    num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
+                selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
+                dropout_mask[selected_masks] = True
 
                 if dropout_foreground_only:
                     dropout_mask[background_mask_idx] = True  # We always keep the background mask
                 elif dropout_background_only:
                     dropout_mask[torch.arange(dropout_mask.shape[0]) != background_mask_idx] = True
-
-                if dropout_mask.sum().item() == 0:
-                    if non_empty_idx.shape[0] > 0:
-                        dropout_mask[non_empty_idx[0]] = True
-                    else:
-                        log_warn("We would have dropped all masks but instead we preserved the background", main_process_only=False)
-                        dropout_mask[background_mask_idx] = True
             else:
-                dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), True, dtype=torch.bool)
+                dropout_mask[non_empty_idx] = True
+
+            if can_dropout and dropout_mask.sum().item() == 0:
+                if non_empty_idx.shape[0] > 0:
+                    dropout_mask[non_empty_idx[0]] = True
+                elif False:
+                    log_warn("We would have dropped all masks but instead we preserved the background", main_process_only=False)
+                    dropout_mask[background_mask_idx] = True
 
             combined_mask = dropout_mask & non_empty_mask
 
@@ -869,7 +963,7 @@ class BaseMapper(Trainable):
 
             if one_hot_idx.shape[0] == 0:
                 if len(torch.unique(batch.src_segmentation[i])) <= 1:
-                    log_warn(f"We have no masks for image {i}. Valid Mask Sum: {non_empty_mask.sum().item()}, Dropout Mask Sum: {dropout_mask.sum().item()}, Pixel Count Mask Sum: {(all_non_empty_mask[i] > 0).sum().item()}, Unique Src Seg: {len(torch.unique(batch.src_segmentation[i]))}. Element: {batch.metadata['name'][i]}", main_process_only=False)
+                    log_warn(f"We have no masks for image {i}. Valid Mask Sum: {non_empty_mask.sum().item()}, Dropout Mask Sum: {dropout_mask.sum().item()}, Pixel Count Mask Sum: {(all_non_empty_mask[i] > 0).sum().item()}, Unique Src Seg: {len(torch.unique(batch.src_segmentation[i]))}.", main_process_only=False)
                 continue
 
             assert batch.src_pixel_values.shape[-1] == batch.src_pixel_values.shape[-2]
@@ -962,9 +1056,13 @@ class BaseMapper(Trainable):
         tgt_batch.src_segmentation = tgt_batch.tgt_enc_norm_segmentation
         tgt_batch.src_valid = tgt_batch.tgt_enc_norm_valid
 
+        tgt_batch.src_pose = src_batch.tgt_pose
+        tgt_batch.tgt_pose = src_batch.src_pose
+
         src_batch.tgt_enc_norm_pixel_values = None
         src_batch.tgt_enc_norm_segmentation = None
         src_batch.tgt_enc_norm_valid = None
+
         tgt_batch.tgt_enc_norm_pixel_values = None
         tgt_batch.tgt_enc_norm_segmentation = None
         tgt_batch.tgt_enc_norm_valid = None
@@ -982,7 +1080,7 @@ class BaseMapper(Trainable):
             unique_idxs = []
             for b in range(batch.bs):
                 valid_src_idxs = torch.unique(batch.src_segmentation[b][batch.src_segmentation[b] != 255])
-                valid_tgt_idxs = torch.unique(batch.tgt_segmentation[b][batch.tgt_segmentation[b] != 255])
+                valid_tgt_idxs = torch.unique(batch.tgt_enc_norm_segmentation[b][batch.tgt_enc_norm_segmentation[b] != 255])
                 allowed_idxs = torch.from_numpy(np.intersect1d(valid_src_idxs.cpu().numpy(), valid_tgt_idxs.cpu().numpy())).to(batch.device)
                 allowed_idxs = torch.cat((allowed_idxs, allowed_idxs.new_full((255 - allowed_idxs.shape[0],), 255)))
                 unique_idxs.append(allowed_idxs)
@@ -1036,22 +1134,33 @@ class BaseMapper(Trainable):
            cond.mask_batch_idx = cond.mask_batch_idx[token_mask]
            cond.mask_instance_idx = cond.mask_instance_idx[token_mask]
            cond.mask_dropout = cond.mask_dropout[torch.arange(cond.mask_dropout.shape[0], device=self.device) < batch.bs]
-               
+
+           assert cond.mask_batch_idx.max().item() <= batch.bs - 1
+
         if self.cfg.model.modulate_src_tokens_with_tgt_pose:
             hidden_dim = cond.mask_tokens.shape[1]
-
-            relative_pose = get_relative_pose(batch.src_pose, batch.tgt_pose).to(batch.src_pose)
-            register_tokens = self.mapper.camera_embed(relative_pose.view(batch.bs, -1).to(self.dtype)).unsqueeze(1)
-            register_tokens = torch.cat((register_tokens, register_tokens.new_zeros((*register_tokens.shape[:-1], hidden_dim - register_tokens.shape[-1]))), dim=-1)
+            register_tokens = self.get_pose_embedding(batch, batch.src_pose, batch.tgt_pose, hidden_dim)
 
             if self.cfg.model.modulate_src_tokens_with_mlp:
                 token_modulator_input = torch.cat((cond.mask_tokens, register_tokens.squeeze(1)[cond.mask_batch_idx]), dim=-1)
-                cond.mask_tokens = self.mapper.token_modulator(token_modulator_input)
+                cond.mask_tokens = self.mapper.token_predictor.token_modulator(token_modulator_input)
             elif self.cfg.model.modulate_src_tokens_with_film:
-                _output = self.mapper.token_modulator(register_tokens.squeeze(1))[cond.mask_batch_idx]
+                _output = self.mapper.token_predictor.token_modulator(register_tokens.squeeze(1))[cond.mask_batch_idx]
                 scale, shift = einops.rearrange(_output, "b (n a) -> a b n", a=2)
                 cond.mask_tokens = cond.mask_tokens * (1 - scale) + shift
+            elif self.cfg.model.modulate_src_tokens_with_vanilla_transformer:
+                register_tokens = register_tokens + self.mapper.token_predictor.camera_position_embedding[None, None]
+                all_output_tokens = []
+                for b in range(batch.bs):
+                    mask = (cond.mask_batch_idx == b)
+                    _input = torch.cat((cond.mask_tokens[mask], register_tokens[b]), dim=0)
+                    output_tokens = self.mapper.token_predictor.token_modulator(_input[None]).squeeze(0)[:-1]
+                    all_output_tokens.append(output_tokens)
+
+                cond.mask_tokens = torch.cat(all_output_tokens, dim=0)
             else:
+                register_tokens = register_tokens + self.mapper.token_predictor.camera_position_embedding[None, None]
+
                 batch_size = cond.mask_batch_idx.max().item() + 1  
 
                 seq_lengths = torch.bincount(cond.mask_batch_idx)
@@ -1062,17 +1171,22 @@ class BaseMapper(Trainable):
                 split_tokens = torch.split(cond.mask_tokens, seq_lengths.tolist())  
                 new_tokens = [torch.cat([tokens, register_tokens[i]], dim=0) for i, tokens in enumerate(split_tokens)]
 
-                new_cond_mask_tokens = torch.cat(new_tokens, dim=0)  
+                new_cond_mask_tokens = torch.cat(new_tokens, dim=0)
                 new_cu_seqlens = cu_seqlens + torch.arange(batch_size + 1, device=cu_seqlens.device)  
                 new_max_seqlen = max_seqlen + 1
 
-                output = self.mapper.token_modulator(x=new_cond_mask_tokens, mixer_kwargs={'cu_seqlens': new_cu_seqlens.to(torch.int32), 'max_seqlen': new_max_seqlen})
+                if torch.isnan(new_cond_mask_tokens).any(): breakpoint()
+
+                output = self.mapper.token_predictor.token_modulator(x=new_cond_mask_tokens, mixer_kwargs={'cu_seqlens': new_cu_seqlens.to(torch.int32), 'max_seqlen': new_max_seqlen})
 
                 split_tokens = torch.split(output, (seq_lengths + 1).tolist(), dim=0)
                 new_tokens = [tokens[:-1] for i, tokens in enumerate(split_tokens)]
                 cond.mask_tokens = torch.cat(new_tokens, dim=0)
 
+        if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt or self.cfg.model.modulate_src_feature_map:
             cond.src_mask_tokens = cond.mask_tokens.clone()
+            cond.loss_src_mask_tokens = cond.mask_tokens.clone()
+            cond.loss_tgt_mask_tokens = cond.tgt_mask_tokens.clone()
         
         if self.cfg.model.layer_specialization and self.cfg.model.num_conditioning_pairs != self.cfg.model.num_layer_queries: # Break e.g., 1024 -> 16 x 64
             def layer_specialization(_mask_tokens, layers):
@@ -1083,7 +1197,7 @@ class BaseMapper(Trainable):
             if cond.mask_tokens is not None: cond.mask_tokens = layer_specialization(cond.mask_tokens, self.cfg.model.num_conditioning_pairs)
             if cond.mask_head_tokens is not None: cond.mask_head_tokens = layer_specialization(cond.mask_head_tokens, self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries)
 
-        if self.cfg.model.encode_src_twice:
+        if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt:
             cond.tgt_mask_tokens = layer_specialization(cond.tgt_mask_tokens, self.cfg.model.num_conditioning_pairs)
             cond.src_mask_tokens = cond.mask_tokens.clone()
 
@@ -1272,6 +1386,7 @@ class BaseMapper(Trainable):
 
         if self.training: self.dropout_cfg(cond)
 
+        pred_data = None
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             pred_data = TokenPredData()
 
@@ -1288,8 +1403,9 @@ class BaseMapper(Trainable):
             pred_data = self.token_mapper(batch=batch, cond=cond, pred_data=pred_data)
 
         encoder_hidden_states = cond.encoder_hidden_states
-
-        if self.cfg.model.unet:
+        
+        model_pred, target = None, None
+        if self.cfg.model.unet and self.cfg.model.disable_unet_during_training is False:
             latents = self.vae.encode(batch.tgt_pixel_values.to(dtype=self.dtype)).latent_dist.sample() # Convert images to latent space
             latents = latents * self.vae.config.scaling_factor
 
@@ -1341,8 +1457,19 @@ class BaseMapper(Trainable):
             else:
                 raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
         
+        return self.compute_losses(batch, cond, model_pred, target, pred_data)
+
+    def compute_losses(
+            self,
+            batch: InputData,
+            cond: ConditioningData,
+            model_pred: Optional[torch.FloatTensor] = None,
+            target: Optional[torch.FloatTensor] = None,
+            pred_data: Optional[TokenPredData] = None,
+        ):
+        
         losses = dict()
-        if self.cfg.model.unet:
+        if self.cfg.model.unet and model_pred is not None and target is not None:
             if batch.tgt_pad_mask is not None and self.cfg.model.use_pad_mask_loss:
                 loss_mask = rearrange("b h w -> b () h w ", ~batch.tgt_pad_mask)
                 loss_mask = F.interpolate(
@@ -1370,9 +1497,12 @@ class BaseMapper(Trainable):
         if self.cfg.model.token_rot_pred_loss:
             losses.update(token_rot_loss(cfg=self.cfg, pred_data=pred_data))
 
-        if self.cfg.model.src_tgt_consistency_loss_weight is not None:
+        if self.cfg.model.src_tgt_consistency_loss_weight is not None or self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt:
             losses.update(src_tgt_token_consistency_loss(cfg=self.cfg, batch=batch, cond=cond))
 
+        if self.cfg.model.src_tgt_feature_map_consistency_loss_weight is not None:
+            losses.update(src_tgt_feature_map_consistency_loss(cfg=self.cfg, batch=batch, cond=cond))
+
         losses["metric_num_mask_tokens"] = cond.mask_tokens.shape[0]
-            
+
         return losses
