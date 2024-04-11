@@ -100,8 +100,8 @@ class ImagefolderDataset(AbstractDataset, Dataset):
         dummy_mask: bool = False,
         merge_masks: bool = False,
         # TODO: All these params are not actually used but needed because of a quick with hydra_zen
-        num_objects=None,
-        resolution=None,
+        num_objects=-1,
+        resolution=-1,
         custom_split=None, # TODO: Needed for hydra
         path=None, # TODO: Needed for hydra
         num_frames=None, # TODO: Needed for hydra

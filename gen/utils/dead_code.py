@@ -956,3 +956,7 @@ import antigravity
 #         composited_image = get_composited_mask(batch, b, j)
 #         all_masks.append(composited_image.write_text(f"token_{j}").resize(self.cfg.model.decoder_resolution, self.cfg.model.decoder_resolution).np)
 #     image_batch_tokens[b] = {"mask_tokens": orig_cond.mask_tokens[orig_cond.mask_batch_idx == b], "mask_rgb": np.stack(all_masks), "orig_image": orig_image.np}
+
+            # _output = self.mapper.inject_positional_information_film(cond.mask_token_pos_emb)
+            # scale, shift = einops.rearrange(_output, "b (n a) -> a b n", a=2)
+            # cond.mask_tokens = cond.mask_tokens * (1 - scale) + shift

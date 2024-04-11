@@ -1,5 +1,4 @@
-from pickle import FALSE
-import autoroot
+
 
 import io
 import os
@@ -21,9 +20,8 @@ from gen.configs.utils import inherit_parent_args
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 
-from gen.datasets.run_dataloader import MockTokenizer
-from gen.utils.data_defs import visualize_input_data
-from gen.utils.decoupled_utils import breakpoint_on_error, load_tensor_dict, save_tensor_dict
+from gen.utils.data_defs import one_hot_to_integer, visualize_input_data
+from gen.utils.decoupled_utils import load_tensor_dict, save_tensor_dict
 from gen.utils.tokenization_utils import get_tokens
 
 torchvision.disable_beta_transforms_warning()
@@ -34,69 +32,23 @@ class MoviDataset(AbstractDataset, Dataset):
         self,
         *,
         tokenizer: Optional[Any] = None,
-        path: Optional[Path] = MOVI_DATASET_PATH,
-        resolution: Optional[int] = 512,
-        dataset: Optional[str] = "movi_e",
-        num_frames: Optional[int] = 24,
-        num_objects: Optional[int] = 23, # We need to return a consistent segmentation mask with this many channels + 1 (for the background)
+        path: Path = MOVI_DATASET_PATH,
+        resolution: int = 512,
+        dataset: str = "movi_e",
+        num_frames: int = 24,
+        num_objects: int = 23, # We need to return a consistent segmentation mask with this many channels + 1 (for the background)
         augmentation: Optional[Augmentation] = None,
         custom_split: Optional[str] = None, # Specifies train or validation
         subset: Optional[tuple[str]] = None, # Specifies an optional subset of scenes to use
         fake_return_n: Optional[int] = None, # Fake that we have n times more elements. Useful for debugging on small datasets.
-        use_single_mask: Optional[bool] = False, # Force using a single mask with all 1s
-        num_cameras: Optional[int] = 1,
-        multi_camera_format: Optional[bool] = False, # The default format that supports multiple cameras and does not require an intermediate TFDS conversion
-        cache_in_memory: Optional[bool] = False, # Cache the entire dataset from file to memory in a compressed format
-        cache_instances_in_memory: Optional[bool] = False, # Cache each intermediate result after processing in memory in a compressed format
+        use_single_mask: bool = False, # Force using a single mask with all 1s
+        num_cameras: int = 1,
+        multi_camera_format: bool = False, # The default format that supports multiple cameras and does not require an intermediate TFDS conversion
+        cache_in_memory: bool = False, # Cache the entire dataset from file to memory in a compressed format
+        cache_instances_in_memory: bool = False, # Cache each intermediate result after processing in memory in a compressed format
         num_subset: Optional[int] = None,
         return_multiple_frames: Optional[int] = None,
-        object_ignore_threshold: Optional[float] = 0.1,
-        return_encoder_normalized_tgt: bool = False, # TODO: Needed for hydra
-
-        # TODO: All these params are not actually used but needed because of a quick with hydra_zen
-        root: Path = None, # TODO: Needed for hydra
-        image_pairs_per_scene: int = None, # TODO: Needed for hydra
-        custom_data_root = None, # TODO: Needed for hydra
-        distance_threshold: tuple[float] = None, # TODO: Needed for hydra
-        depth_map_type: str = None, # TODO: Needed for hydra
-        depth_map: bool = None, # TODO: Needed for hydra
-        scenes_slice: Optional[tuple] = None, # TODO: Needed for hydra
-        frames_slice: Optional[tuple] = None, # TODO: Needed for hydra
-        scenes: Optional[list[str]] = None, # TODO: Needed for hydra
-        top_n_masks_only: int = 34, # TODO: Needed for hydra
-        sync_dataset_to_scratch: bool = None, # TODO: Needed for hydra
-        return_raw_dataset_image: bool = None, # TODO: Needed for hydra
-        num_overlapping_masks: int = 6, # TODO: Needed for hydra
-        single_scene_debug: Optional[str] = None,
-        use_segmentation: bool = True, # TODO: Needed for hydra
-        scratch_only: bool = None, # TODO: Needed for hydra
-        src_eq_tgt: bool = None, # TODO: Needed for hydra
-        image_files: Optional[list] = None, # TODO: Needed for hydra
-        no_filtering: bool = None, # TODO: Needed for hydra
-        dummy_mask: bool = None, # TODO: Needed for hydra
-        merge_masks: bool = None, # TODO: Needed for hydra
-        return_only_instance_seg: bool = None, # TODO: Needed for hydra
-        allow_instance_seg: bool = None, # TODO: Needed for hydra
-        use_colmap_poses: bool = None, # TODO: Needed for hydra
-        only_preprocess_seg: bool = None, # TODO: Needed for hydra
-        use_new_seg: bool = None, # TODO: Needed for hydra
-        use_preprocessed_masks=None, # TODO: Needed for hydra
-        preprocessed_mask_type=None, # TODO: Needed for hydra
-        erode_dialate_preprocessed_masks=None, # TODO: Needed for hydra
-        camera_trajectory_window=None, # TODO: Needed for hydra
-        return_different_views=None, # TODO: Needed for hydra
-        bbox_area_threshold=None, # TODO: Needed for hydra
-        bbox_overlap_threshold=None, # TODO: Needed for hydra
-        semantic_only=None, # TODO: Needed for hydra
-        ignore_stuff_in_offset=None, # TODO: Needed for hydra
-        small_instance_area=None, # TODO: Needed for hydra
-        small_instance_weight=None, # TODO: Needed for hydra
-        enable_orig_coco_augmentation=None, # TODO: Needed for hydra
-        enable_orig_coco_processing=None, # TODO: Needed for hydra
-        single_return=None, # TODO: Needed for hydra
-        merge_with_background=None, # TODO: Needed for hydra
-        add_background=None,
-        repeat_n=None,
+        object_ignore_threshold: float = 0.1,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -112,7 +64,6 @@ class MoviDataset(AbstractDataset, Dataset):
         self.cache_instances_in_memory = cache_instances_in_memory
         self.return_multiple_frames = return_multiple_frames
         self.object_ignore_threshold = object_ignore_threshold
-        self.return_encoder_normalized_tgt = return_encoder_normalized_tgt
 
         if num_cameras > 1: assert multi_camera_format
 
@@ -147,6 +98,10 @@ class MoviDataset(AbstractDataset, Dataset):
         return self
 
     def collate_fn(self, batch):
+        if self.return_multiple_frames:
+            # When we return multiple frames, we return a list [which is batched, resulting in a list of lists].
+            # For simplicity, we will then return (b frames) ... for all elements
+            batch = list(chain.from_iterable(batch))
         batch = torch.utils.data.default_collate(batch)
 
         return self.process_batch(batch)
@@ -204,12 +159,7 @@ class MoviDataset(AbstractDataset, Dataset):
                 frame_data = self.fetch_data((file_idx, true_frame_idx // self.num_frames, true_frame_idx % self.num_frames), path=path, data=data, index=index)
                 combined_frame_data.append(frame_data)
 
-            ret = combined_frame_data[0]
-            for k, v in combined_frame_data[1].items():
-                if 'tgt' in k:
-                    ret[k] = v
-
-            return ret
+            return combined_frame_data
 
         return self.fetch_data((file_idx, camera_idx, frame_idx), path=path, data=data, index=index)
 
@@ -260,12 +210,6 @@ class MoviDataset(AbstractDataset, Dataset):
             object_quaternions = camera_quaternion.inv() * object_quaternions
             object_quaternions = object_quaternions.as_quat()
             object_quaternions[~valid] = 0
-
-            camera_translation = data["camera_positions"][camera_idx, frame_idx]
-
-            pose = np.zeros((4, 4))
-            pose[:3, :3] = camera_quaternion.as_matrix()
-            pose[:3, 3] = camera_translation
             
             ret.update({
                 "quaternions": object_quaternions,
@@ -275,8 +219,6 @@ class MoviDataset(AbstractDataset, Dataset):
                 "valid": valid,
                 "categories": categories,
                 "asset_id": [str(x) for x in asset_id],
-                "src_pose": torch.from_numpy(pose).float(),
-                "tgt_pose": torch.from_numpy(pose).float(),
             })
         else:
             assert self.num_cameras == 1 and camera_idx == 0
@@ -310,57 +252,31 @@ class MoviDataset(AbstractDataset, Dataset):
         src_data, tgt_data = self.augmentation(
             src_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
             tgt_data=Data(image=torch.from_numpy(rgb[None]).float(), segmentation=torch.from_numpy(instance[None].squeeze(-1)).float()),
-            return_encoder_normalized_tgt=self.return_encoder_normalized_tgt
         )
 
-        if self.return_encoder_normalized_tgt:
-            tgt_data, tgt_data_src_transform = tgt_data
+        # We have -1 as invalid so we simply add 1 to all the labels to make it start from 0 and then later remove the 1st channel
+        src_data.image = src_data.image.squeeze(0)
+        src_data.segmentation = torch.nn.functional.one_hot(src_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
+        tgt_data.image = tgt_data.image.squeeze(0)
+        tgt_data.segmentation = torch.nn.functional.one_hot(tgt_data.segmentation.squeeze(0).long() + 1, num_classes=self.num_classes + 2)[..., 1:]
 
-        def _process(_data):
-            _data.segmentation = _data.segmentation.squeeze(0)
-            _data.segmentation[_data.segmentation == -1] = 255
-            return _data
-        
-        src_data, tgt_data = _process(src_data), _process(tgt_data)
-
-        if self.return_encoder_normalized_tgt:
-            tgt_data_src_transform = _process(tgt_data_src_transform)
-            ret.update({
-                "tgt_enc_norm_pixel_values": tgt_data_src_transform.image.squeeze(0),
-                "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8)[..., None].squeeze(0),
-                "tgt_enc_norm_valid": torch.full((255,), True, dtype=torch.bool),
-            })
-        
         if self.use_single_mask:
-            raise NotImplementedError("Single mask not implemented yet")
-                    
+            src_data.segmentation = torch.ones_like(src_data.segmentation)[..., [0]]
+            tgt_data.segmentation = torch.ones_like(tgt_data.segmentation)[..., [0]]
+
+        ret['valid'] &= (torch.sum(src_data.segmentation[..., 1:], dim=[0, 1]) > (src_data.segmentation.shape[0] * self.object_ignore_threshold)**2).numpy()
         ret.update({
-            "tgt_pixel_values": tgt_data.image.squeeze(0),
-            "tgt_segmentation": tgt_data.segmentation.to(torch.uint8)[..., None].squeeze(0),
-            "src_pixel_values": src_data.image.squeeze(0),
-            "src_segmentation": src_data.segmentation.to(torch.uint8)[..., None].squeeze(0),
-            "src_valid": torch.full((255,), True, dtype=torch.bool),
-            "tgt_valid": torch.full((255,), True, dtype=torch.bool),
-            "valid": torch.full((254,), True, dtype=torch.bool),
+            "tgt_pixel_values": tgt_data.image,
+            "tgt_segmentation": one_hot_to_integer(tgt_data.segmentation),
+            "tgt_grid": tgt_data.grid,
+            "src_pixel_values": src_data.image,
+            "src_segmentation": one_hot_to_integer(src_data.segmentation),
+            "src_grid": src_data.grid,
             "input_ids": get_tokens(self.tokenizer),
         })
 
         if src_data.grid is not None: ret["src_grid"] = src_data.grid.squeeze(0)
         if tgt_data.grid is not None: ret["tgt_grid"] = tgt_data.grid.squeeze(0)
-
-        ret.update({
-             "has_global_instance_ids": torch.tensor(True),
-             "metadata": {
-                "dataset": "kubrics",
-                "name": str(combined_idx),
-                "scene_id": str(file_idx),
-                "camera_frame": str(frame_idx),
-                "index": index,
-                "camera_trajectory": "0", # Dummy value
-                "frame_idxs": (frame_idx, frame_idx),
-                "split": self.split.name.lower(),
-            },
-        })
 
         # Required for memory pinning
         ret = {k: torch.from_numpy(v) if isinstance(v, np.ndarray) else v for k, v in ret.items()}
@@ -378,46 +294,50 @@ class MoviDataset(AbstractDataset, Dataset):
 
 
 if __name__ == "__main__":
+    from transformers import AutoTokenizer
     from gen.datasets.utils import get_stable_diffusion_transforms
     from gen.models.encoders.encoder import ViTFeatureExtractor
-    with breakpoint_on_error():
-        dataset = MoviDataset(
-            cfg=None,
-            split=Split.TRAIN,
-            num_workers=0,
-            batch_size=128,
-            shuffle=True,
-            subset_size=None,
-            dataset="movi_e",
-            tokenizer=MockTokenizer(),
-            path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
-            num_objects=23,
-            num_frames=24,
-            num_cameras=1,
-            augmentation=Augmentation(
-                initial_resolution=256,
-                enable_rand_augment=False,
-                enable_random_resize_crop=False,
-                enable_horizontal_flip=False,
-                different_src_tgt_augmentation=False,
-                src_random_scale_ratio=None,
-                tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
-                src_transforms=get_stable_diffusion_transforms(resolution=256),
-                tgt_transforms=get_stable_diffusion_transforms(resolution=256)
-            ),
-            multi_camera_format=True,
-            cache_in_memory=True,
-            cache_instances_in_memory=False,
-            num_subset=None,
-            return_tensorclass=True,
-            return_multiple_frames=2,
-        )
-        import time
+
+    tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+    dataset = MoviDataset(
+        cfg=None,
+        split=Split.TRAIN,
+        num_workers=0,
+        batch_size=10,
+        shuffle=True,
+        subset_size=None,
+        dataset="movi_e",
+        tokenizer=tokenizer,
+        path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
+        num_objects=23,
+        num_frames=24,
+        num_cameras=1,
+        augmentation=Augmentation(
+            initial_resolution=256,
+            enable_rand_augment=False,
+            enable_random_resize_crop=True,
+            enable_horizontal_flip=True,
+            different_src_tgt_augmentation=True,
+            src_random_scale_ratio=((0.9, 0.9), (0.9, 1.1)),
+            tgt_random_scale_ratio=((0.5, 0.5), (0.8, 1.2)),
+            src_transforms=ViTFeatureExtractor(model_name="vit_small_patch16_224").transform,
+            tgt_transforms=get_stable_diffusion_transforms(resolution=512)
+        ),
+        multi_camera_format=True,
+        cache_in_memory=True,
+        cache_instances_in_memory=False,
+        num_subset=None,
+        return_tensorclass=True,
+    )
+    import time
+    start_time = time.time()
+    dataloader = dataset.get_dataloader()
+    for step, batch in enumerate(dataloader):
+        print(f'Time taken: {time.time() - start_time}')
+        visualize_input_data(batch, name=f'movi_{step}')
         start_time = time.time()
-        dataloader = dataset.get_dataloader()
-        for step, batch in enumerate(dataloader):
-            print(f'Time taken: {time.time() - start_time}')
-            # visualize_input_data(batch, name=f'movi_{step}')
-            start_time = time.time()
-            # if step > 3:
-            #     break
+
+        # from ipdb import set_trace; set_trace()
+
+        if step > 3:
+            break

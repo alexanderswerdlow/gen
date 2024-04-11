@@ -95,10 +95,10 @@ class ObjaverseData(AbstractDataset, Dataset):
             augmentation: Optional[Augmentation] = None,
             tokenizer=None,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
-            resolution=None,
+            resolution=-1,
             custom_split=None, # TODO: Needed for hydra
             path=None, # TODO: Needed for hydra
-            num_objects=None, # TODO: Needed for hydra
+            num_objects=-1, # TODO: Needed for hydra
             num_frames=None, # TODO: Needed for hydra
             num_cameras=None, # TODO: Needed for hydra
             multi_camera_format=None, # TODO: Needed for hydra

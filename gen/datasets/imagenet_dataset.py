@@ -161,7 +161,7 @@ class ImageNetCustomDataset(AbstractDataset):
         legacy_transforms: bool = False,
         augmentation: Optional[Augmentation] = None,
         custom_split=None,
-        num_objects=None,
+        num_objects=-1,
         subset=None,
         **kwargs,
     ):

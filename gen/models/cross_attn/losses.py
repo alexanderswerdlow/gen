@@ -84,8 +84,8 @@ def evenly_weighted_mask_loss(
     target: torch.Tensor,
 ):
 
-    pred = rearrange(pred, "b c h w -> b c (h w)")
-    target = rearrange(target, "b c h w -> b c (h w)")
+    pred = rearrange("b c h w -> b c (h w)", pred)
+    target = rearrange("b c h w -> b c (h w)", target)
 
     losses = []
 
@@ -97,8 +97,8 @@ def evenly_weighted_mask_loss(
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
         object_masks = get_one_hot_channels(batch.tgt_segmentation[b], mask_idxs_for_batch)
 
-        gt_masks = F.interpolate(rearrange(object_masks, "h w c -> c () h w").float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim)).squeeze(1)
-        gt_masks = rearrange(gt_masks, "c h w -> c (h w)") > 0.5
+        gt_masks = F.interpolate(rearrange("h w c -> c () h w", object_masks).float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim)).squeeze(1)
+        gt_masks = rearrange("c h w -> c (h w)", gt_masks) > 0.5
 
         batch_losses = []
         for i in range(object_masks.shape[-1]):

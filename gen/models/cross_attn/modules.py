@@ -215,6 +215,49 @@ class FilmMlpv2(nn.Module):
         y = self.fc3(y)
         return y
     
+
+class FilmMlpv3(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        cond_features,
+        hidden_features=None,
+        out_features=None,
+        activation=F.gelu,
+        device=None,
+        dtype=None,
+    ):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        out_features = out_features if out_features is not None else in_features
+        hidden_features = hidden_features if hidden_features is not None else in_features * 4
+
+        self.activation = activation
+        self.fc1 = nn.Linear(in_features, hidden_features, **factory_kwargs)
+        self.norm1 = nn.LayerNorm(hidden_features, **factory_kwargs)
+        self.film1 = nn.Linear(cond_features, 2 * hidden_features, **factory_kwargs)
+
+        self.fc2 = nn.Linear(hidden_features, hidden_features, **factory_kwargs)
+        self.norm2 = nn.LayerNorm(hidden_features, **factory_kwargs)
+        self.film2 = nn.Linear(cond_features, 2 * hidden_features, **factory_kwargs)
+
+        self.fc3 = nn.Linear(hidden_features, out_features, **factory_kwargs)
+
+        nn.init.constant_(self.film1.weight, 0)
+        nn.init.constant_(self.film1.bias, 0)
+        nn.init.constant_(self.film2.weight, 0)
+        nn.init.constant_(self.film2.bias, 0)
+
+    def forward(self, x, cond):
+        y = self.activation(self.norm1(self.fc1(x)))
+        scale, shift = einops.rearrange(self.film1(cond), "b (n a) -> a b n", a=2)
+        y = y * (1 - scale) + shift
+        y = self.activation(self.norm2(self.fc2(y)))
+        scale, shift = einops.rearrange(self.film2(cond), "b (n a) -> a b n", a=2)
+        y = y * (1 - scale) + shift
+        y = self.fc3(y)
+        return y
+    
    
 class TokenMapper(nn.Module):
     def __init__(
@@ -315,6 +358,7 @@ class TokenPredictor(nn.Module):
                 self.token_modulator = nn.TransformerEncoder(encoder_layer, num_layers=6)
                 self.camera_position_embedding = nn.Parameter(torch.randn(self.token_modulator_input_dim) * 0.02)
             else:
+                self.token_modulator_input_dim = self.cfg.model.custom_token_modulator_input_dim if self.cfg.model.custom_token_modulator_input_dim is not None else self.token_modulator_input_dim
                 self.camera_position_embedding = nn.Parameter(torch.randn(self.token_modulator_input_dim) * 0.02)
                 self.token_modulator = hydra.utils.instantiate(
                     self.cfg.model.token_modulator,
@@ -364,12 +408,19 @@ class FeatureMapper(nn.Module):
 
         if self.cfg.model.add_learned_pos_emb_to_feature_map:
             self.feature_map_pos_emb = nn.Parameter(torch.randn(self.cfg.model.encoder_latent_dim**2, self.cfg.model.encoder_dim))
+
         # TODO: Double check this is working
         self.apply(_init_weights)
 
         if self.cfg.model.modulate_src_tokens_with_tgt_pose and self.cfg.model.modulate_src_tokens_with_film:
             nn.init.constant_(self.token_predictor.modulator.weight, 0)
             nn.init.constant_(self.token_predictor.modulator.bias, 0)
+
+        if self.cfg.model.inject_token_positional_information:
+            self.inject_positional_information_film = FilmMlpv3(custom_output_dim, custom_output_dim)
+
+        if self.cfg.model.tgt_positional_information_from_lang:
+            pass
 
 class CrossAttn(nn.Module):
     def __init__(self, cfg: BaseConfig, input_dim: int, cross_attn_dim: int, output_dim: int):

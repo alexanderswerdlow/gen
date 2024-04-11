@@ -152,9 +152,10 @@ class CocoPanoptic(AbstractDataset, Dataset):
             num_overlapping_masks: int = 1,
             merge_with_background: bool = False,
             scratch_only: bool = True,
+            return_encoder_normalized_tgt: bool = False,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
-            num_objects=None,
-            resolution=None,
+            num_objects=-1,
+            resolution=-1,
             custom_split=None, # TODO: Needed for hydra
             path=None, # TODO: Needed for hydra
             num_frames=None, # TODO: Needed for hydra
@@ -232,6 +233,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
         self.erode_dialate_preprocessed_masks = erode_dialate_preprocessed_masks
         self.num_overlapping_masks = num_overlapping_masks
         self.merge_with_background = merge_with_background
+        self.return_encoder_normalized_tgt = return_encoder_normalized_tgt
 
         # Get image and annotation list.
         if 'test' in self.coco_split:
@@ -461,8 +463,12 @@ class CocoPanoptic(AbstractDataset, Dataset):
         src_data, tgt_data = self.augmentation(
             src_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
             tgt_data=Data(image=rgb[None].float(), segmentation=instance_with_pad_mask[None].float()),
-            use_keypoints=False
+            use_keypoints=False,
+            return_encoder_normalized_tgt=self.return_encoder_normalized_tgt,
         )
+
+        if self.return_encoder_normalized_tgt:
+            tgt_data, tgt_data_src_transform = tgt_data
 
         def process_data(data_: Data):
             data_.image = data_.image.squeeze(0)
@@ -474,6 +480,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
 
         src_data = process_data(src_data)
         tgt_data = process_data(tgt_data)
+        if self.return_encoder_normalized_tgt:
+            tgt_data_src_transform = process_data(tgt_data_src_transform)
 
         pixels = src_data.segmentation.squeeze(0).long().contiguous().view(-1)
         src_bincount = torch.bincount(pixels[(pixels < 255) & (pixels >= 0)], minlength=255)
@@ -498,11 +506,17 @@ class CocoPanoptic(AbstractDataset, Dataset):
         src_pad_mask = (src_data.segmentation < 255).any(dim=-1)
         tgt_pad_mask = (tgt_data.segmentation < 255).any(dim=-1)
 
+        ret = {}
+
         # We convert to uint8 to save memory.
         src_data.segmentation = src_data.segmentation.to(torch.uint8)
         tgt_data.segmentation = tgt_data.segmentation.to(torch.uint8)
-
-        ret = {}
+        
+        if self.return_encoder_normalized_tgt:
+            ret.update({
+                "tgt_enc_norm_pixel_values": tgt_data_src_transform.image,
+                "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8),
+            })
 
         if self.use_preprocessed_masks is False:
             categories = torch.full((valid.shape), fill_value=-1, dtype=torch.long)

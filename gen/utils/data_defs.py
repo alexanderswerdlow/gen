@@ -177,8 +177,8 @@ def visualize_input_data(
         batch.src_segmentation[batch.src_segmentation < 0] = 1
     
     if remove_invalid and batch.tgt_segmentation.shape[-1] == 1:
-        batch.src_segmentation = replace_invalid(batch.src_segmentation, batch.src_valid)
-        batch.tgt_segmentation = replace_invalid(batch.tgt_segmentation, batch.tgt_valid) if batch.tgt_valid is not None else batch.tgt_segmentation
+        batch.src_segmentation = replace_invalid(batch.src_segmentation, batch.src_valid if batch.src_valid is not None else batch.src_segmentation.nonzero())
+        batch.tgt_segmentation = replace_invalid(batch.tgt_segmentation, batch.tgt_valid if batch.tgt_valid is not None else batch.tgt_segmentation.nonzero())
 
     if cfg is not None:
         tgt_rgb = undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, batch.tgt_pixel_values)

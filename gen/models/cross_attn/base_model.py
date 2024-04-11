@@ -82,6 +82,10 @@ class ConditioningData:
     tgt_mask_instance_idx: Optional[Integer[Tensor, "n"]] = None
     tgt_mask_dropout: Optional[Bool[Tensor, "n"]] = None
 
+    mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
+    src_mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
+    tgt_mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
+
     loss_src_mask_tokens: Optional[Float[Tensor, "n d"]] = None # We duplicate for loss calculation
     loss_tgt_mask_tokens: Optional[Float[Tensor, "n d"]] = None
 
@@ -776,7 +780,7 @@ class BaseMapper(Trainable):
     def get_pose_embedding(self, batch: InputData, src_pose: FloatTensor, tgt_pose: FloatTensor, hidden_dim: int):
         if self.cfg.model.use_euler_camera_emb:
             relative_rot = torch.bmm(tgt_pose[:, :3, :3].mT, src_pose[:, :3, :3])
-            rot = Rotation.from_matrix(relative_rot.cpu().numpy())
+            rot = Rotation.from_matrix(relative_rot.float().cpu().numpy())
             relative_rot = torch.from_numpy(rot.as_euler("xyz", degrees=False)).to(src_pose)
             relative_trans = torch.bmm(tgt_pose[:, :3, :3].mT, (src_pose[:, :3, 3] - tgt_pose[:, :3, 3])[:, :, None]).squeeze(-1)
             relative_pose = torch.cat((relative_rot, relative_trans), dim=1)
@@ -1034,6 +1038,13 @@ class BaseMapper(Trainable):
         flat_mask = einops.repeat(feature_map_masks, "masks hw -> (masks layers n hw)", layers=num_queries_per_mask, n=num_feature_maps) # Repeat mask over layers
         k_features = flat_features[flat_mask]
 
+        if self.cfg.model.inject_token_positional_information:
+            pos_emb = positionalencoding2d(self.cfg.model.custom_cross_attn_output_dim, latent_dim, latent_dim, device=self.device, dtype=self.dtype)
+            pos_emb = einops.repeat(pos_emb, "d h w -> b (h w) d", b=batch.bs)
+            feature_maps__ = torch.stack([pos_emb[batch_idx] for batch_idx, mask in zip(mask_batch_idx, feature_map_masks)])
+            masked_feature_maps = feature_maps__ * feature_map_masks.unsqueeze(-1)
+            cond.mask_token_pos_emb = masked_feature_maps.sum(dim=1) / feature_map_masks.sum(dim=1).unsqueeze(-1)
+
         # The actual query is obtained from the mapper class (a learnable tokens)        
         cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(device)
         max_seqlen_q = 1  # We are doing attention pooling so we have one query per mask
@@ -1128,16 +1139,22 @@ class BaseMapper(Trainable):
            cond.tgt_mask_tokens = cond.mask_tokens[tgt_token_mask]
            cond.tgt_mask_batch_idx = cond.mask_batch_idx[tgt_token_mask] - batch.bs
            cond.tgt_mask_instance_idx = cond.mask_instance_idx[tgt_token_mask]
+           if cond.mask_token_pos_emb is not None: cond.tgt_mask_token_pos_emb = cond.mask_token_pos_emb[tgt_token_mask]
            cond.tgt_mask_dropout = cond.mask_dropout[torch.arange(cond.mask_dropout.shape[0], device=self.device) >= batch.bs]
 
            cond.mask_tokens = cond.mask_tokens[token_mask]
            cond.mask_batch_idx = cond.mask_batch_idx[token_mask]
            cond.mask_instance_idx = cond.mask_instance_idx[token_mask]
+           if cond.mask_token_pos_emb is not None: cond.mask_token_pos_emb = cond.mask_token_pos_emb[token_mask]
            cond.mask_dropout = cond.mask_dropout[torch.arange(cond.mask_dropout.shape[0], device=self.device) < batch.bs]
-
+           
            assert cond.mask_batch_idx.max().item() <= batch.bs - 1
 
         if self.cfg.model.modulate_src_tokens_with_tgt_pose:
+            orig_dim = cond.mask_tokens.shape[1]
+            if self.cfg.model.custom_cross_attn_output_dim is not None and self.cfg.model.custom_token_modulator_input_dim is not None and self.cfg.model.custom_cross_attn_output_dim != self.cfg.model.custom_token_modulator_input_dim:
+                cond.mask_tokens = torch.cat((cond.mask_tokens, cond.mask_tokens.new_zeros((cond.mask_tokens.shape[0], self.cfg.model.custom_token_modulator_input_dim - cond.mask_tokens.shape[1]))), dim=-1)
+
             hidden_dim = cond.mask_tokens.shape[1]
             register_tokens = self.get_pose_embedding(batch, batch.src_pose, batch.tgt_pose, hidden_dim)
 
@@ -1181,12 +1198,15 @@ class BaseMapper(Trainable):
 
                 split_tokens = torch.split(output, (seq_lengths + 1).tolist(), dim=0)
                 new_tokens = [tokens[:-1] for i, tokens in enumerate(split_tokens)]
-                cond.mask_tokens = torch.cat(new_tokens, dim=0)
+                cond.mask_tokens = torch.cat(new_tokens, dim=0)[:, :orig_dim]
 
         if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt or self.cfg.model.modulate_src_feature_map:
             cond.src_mask_tokens = cond.mask_tokens.clone()
             cond.loss_src_mask_tokens = cond.mask_tokens.clone()
             cond.loss_tgt_mask_tokens = cond.tgt_mask_tokens.clone()
+
+        if self.cfg.model.inject_token_positional_information:
+            cond.mask_tokens = self.mapper.inject_positional_information_film(cond.mask_tokens, cond.mask_token_pos_emb)
         
         if self.cfg.model.layer_specialization and self.cfg.model.num_conditioning_pairs != self.cfg.model.num_layer_queries: # Break e.g., 1024 -> 16 x 64
             def layer_specialization(_mask_tokens, layers):
@@ -1197,7 +1217,7 @@ class BaseMapper(Trainable):
             if cond.mask_tokens is not None: cond.mask_tokens = layer_specialization(cond.mask_tokens, self.cfg.model.num_conditioning_pairs)
             if cond.mask_head_tokens is not None: cond.mask_head_tokens = layer_specialization(cond.mask_head_tokens, self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries)
 
-        if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt:
+        if (self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt) and self.cfg.model.layer_specialization:
             cond.tgt_mask_tokens = layer_specialization(cond.tgt_mask_tokens, self.cfg.model.num_conditioning_pairs)
             cond.src_mask_tokens = cond.mask_tokens.clone()
 

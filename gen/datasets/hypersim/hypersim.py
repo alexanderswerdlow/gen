@@ -53,8 +53,8 @@ class Hypersim(AbstractDataset, Dataset):
             repeat_n: int = 1,
             scratch_only: bool = True,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
-            num_objects=None,
-            resolution=None,
+            num_objects=-1,
+            resolution=-1,
             custom_split=None, # TODO: Needed for hydra
             path=None, # TODO: Needed for hydra
             num_frames=None, # TODO: Needed for hydra

@@ -172,6 +172,10 @@ class ModelConfig:
     add_learned_pos_emb_to_feature_map: bool = False
     merge_feature_maps: bool = False
     use_euler_camera_emb: bool = False
+    custom_token_modulator_input_dim: Optional[int] = None
+
+    inject_token_positional_information: bool = False
+    tgt_positional_information_from_lang: bool = False
     
 
 @dataclass

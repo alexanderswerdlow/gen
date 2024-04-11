@@ -16,7 +16,7 @@ class ClipFeatureExtractor(FeatureExtractorModel):
         self,
         model_name: str = "ViT-L-14",
         weights: str = "datacomp_xl_s13b_b90k",
-        return_nodes={
+        return_nodes: Optional[dict] = {
             "transformer.resblocks.0": "stage1",
             "transformer.resblocks.5": "stage6",
             "transformer.resblocks.11": "stage12",

@@ -197,8 +197,8 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         # TODO: All these params are not actually used but needed because of a quick with hydra_zen
         only_preprocess_seg: bool = False,
         use_new_seg: bool = False,
-        num_objects=None,
-        resolution=None,
+        num_objects=-1,
+        resolution=-1,
         custom_split=None, # TODO: Needed for hydra
         path=None, # TODO: Needed for hydra
         num_frames=None, # TODO: Needed for hydra
