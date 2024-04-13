@@ -179,16 +179,17 @@ class BaseTrainer(Trainer):
     @torch.no_grad()
     def validate(self, state: TrainingState):
         # TODO: Cleanup all the validation code once we figure out the possible memory leak.
-        log_debug("Starting Validate", main_process_only=False)
+        log_info("Starting Validation", main_process_only=False)
         validation_start_time = time()
 
         self.model.eval()
         unwrap(self.model).set_inference_mode(init_pipeline=self.cfg.trainer.init_pipeline_inference)
 
-        log_debug(f"Running validation on val dataloder", main_process_only=False)
+        log_info(f"Running validation on val dataloder", main_process_only=False)
         if self.cfg.trainer.validate_validation_dataset:
             self.validate_validation_dataloader(state)
 
+        log_info(f"Running validation on train dataloder", main_process_only=False)
         if self.cfg.trainer.validate_training_dataset:
             self.validate_train_dataloader(state)
         

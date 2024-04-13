@@ -70,6 +70,7 @@ class Augmentation:
         enable_random_resize_crop: bool = True,
         enable_horizontal_flip: bool = True,
         enable_rotate: bool = False,
+        enable_zoom_crop: bool = False,
         reorder_segmentation: bool = False,
         src_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = None,
         tgt_random_scale_ratio: Optional[tuple[tuple[float, float], tuple[float, float]]] = None,
@@ -78,6 +79,7 @@ class Augmentation:
         tgt_resolution: Optional[int] = None, # By default, we keep initial_resolution and let tgt_transforms resize further if enabled
         src_transforms: Optional[Callable] = None,
         tgt_transforms: Optional[Callable] = None,
+        rotation_range: Optional[int] = 60,
     ):
         self.src_resolution = src_resolution
         self.src_transforms = src_transforms
@@ -90,6 +92,8 @@ class Augmentation:
         self.center_crop = center_crop
         self.enable_rotate = enable_rotate
         self.reorder_segmentation = reorder_segmentation
+        self.rotation_range = rotation_range
+        self.enable_zoom_crop = enable_zoom_crop
 
         if self.return_grid: assert self.enable_square_crop, "Grids only seem to work on square images for now."
 
@@ -101,7 +105,7 @@ class Augmentation:
         main_transforms = []
 
         if enable_rotate:
-            main_transforms.append(K.RandomRotation(degrees=(-60, 60), p=0.5))
+            main_transforms.append(K.RandomRotation(degrees=(-self.rotation_range, self.rotation_range), p=0.5))
 
         if enable_random_resize_crop:
             resize_resolution = self.tgt_resolution if different_src_tgt_augmentation and tgt_resolution is not None else self.initial_resolution
@@ -114,6 +118,9 @@ class Augmentation:
         if enable_rand_augment:
             assert enable_random_resize_crop
             main_transforms.append(RandAugment(n=2, m=10, policy=randaug_policy))
+
+        if enable_zoom_crop:
+            main_transforms.append(K.CenterCrop(size=(self.initial_resolution, self.initial_resolution), resample=self.kornia_resize_mode, p=1.0))
 
         # When we augment source/target differently, we want the target to be more augmented [e.g., a smaller crop]
         if different_src_tgt_augmentation:

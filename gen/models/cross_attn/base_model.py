@@ -1,4 +1,3 @@
-from ast import Pass
 from contextlib import nullcontext
 import dataclasses
 import gc
@@ -33,7 +32,7 @@ from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
 from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale, shift_scale_uncond_hidden_states)
 from gen.models.cross_attn.eschernet import get_relative_pose
-from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, evenly_weighted_mask_loss, get_gt_rot, src_tgt_feature_map_consistency_loss, src_tgt_token_consistency_loss,
+from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, cosine_similarity_loss, evenly_weighted_mask_loss, get_gt_rot, src_tgt_feature_map_consistency_loss, src_tgt_token_consistency_loss, tgt_positional_information_loss,
                                           token_cls_loss, token_rot_loss)
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel
@@ -42,6 +41,7 @@ from gen.utils.data_defs import InputData, get_dropout_grid, get_one_hot_channel
 from gen.utils.decoupled_utils import get_modules, to_numpy
 from gen.utils.diffusers_utils import load_stable_diffusion_model
 from gen.utils.logging_utils import log_debug, log_error, log_info, log_warn
+from gen.utils.misc_utils import compute_centroids
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
 from gen.utils.visualization_utils import get_dino_pca, viz_feats
@@ -85,9 +85,10 @@ class ConditioningData:
     mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
     src_mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
     tgt_mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
+    gt_src_mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
 
-    loss_src_mask_tokens: Optional[Float[Tensor, "n d"]] = None # We duplicate for loss calculation
-    loss_tgt_mask_tokens: Optional[Float[Tensor, "n d"]] = None
+    src_mask_tokens_before_specialization: Optional[Float[Tensor, "n d"]] = None # We duplicate for loss calculation
+    tgt_mask_tokens_before_specialization: Optional[Float[Tensor, "n d"]] = None
 
     src_feature_map: Optional[Float[Tensor, "b d h w"]] = None
     encoder_input_pixel_values: Optional[Float[Tensor, "b c h w"]] = None
@@ -97,6 +98,9 @@ class ConditioningData:
 
     src_warped_feature_map: Optional[Float[Tensor, "b d h w"]] = None
     tgt_warped_feature_map: Optional[Float[Tensor, "b d h w"]] = None
+
+    mask_token_centroids: Optional[Float[Tensor, "n 2"]] = None
+    tgt_mask_token_centroids: Optional[Float[Tensor, "n 2"]] = None
 
     # These are passed to the U-Net or pipeline
     encoder_hidden_states: Optional[Float[Tensor, "b d"]] = None
@@ -229,6 +233,12 @@ class BaseMapper(Trainable):
             self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
                 tokenizer_encoder_name, subfolder="text_encoder", revision=self.cfg.model.revision
             )
+
+        if self.cfg.model.tgt_positional_information_from_lang:
+            from transformers import T5Tokenizer, T5ForConditionalGeneration
+            from transformers import T5EncoderModel
+            self.tokenizer = T5Tokenizer.from_pretrained("google-t5/t5-small") 
+            self.text_encoder = T5EncoderModel.from_pretrained("google-t5/t5-small")
         
 
         unet_kwargs = dict()
@@ -444,7 +454,7 @@ class BaseMapper(Trainable):
                     m.fuser.to(dtype=torch.float32)
                 m.fuser.train()
 
-        if md.add_text_tokens:
+        if md.add_text_tokens or md.tgt_positional_information_from_lang:
             if md.freeze_text_encoder:
                 if set_grad:
                     other.text_encoder.to(device=_device, dtype=_dtype)
@@ -753,7 +763,8 @@ class BaseMapper(Trainable):
     @cached_property
     def placeholder_token_id(self):
         placeholder_token_id = self.tokenizer(self.cfg.model.placeholder_token, add_special_tokens=False).input_ids
-        assert len(placeholder_token_id) == 1 and placeholder_token_id[0] != self.tokenizer.eos_token_id
+        if self.cfg.model.tgt_positional_information_from_lang is False:
+            assert len(placeholder_token_id) == 1 and placeholder_token_id[0] != self.tokenizer.eos_token_id
         return placeholder_token_id[0]
 
     @cached_property
@@ -816,7 +827,7 @@ class BaseMapper(Trainable):
             clip_feature_map['final_norm'] = clip_feature_map['final_norm'][:, 1:, :]
 
             orig_bs = batch.bs // 2
-            assert self.cfg.model.encode_tgt
+            assert self.cfg.model.encode_tgt_enc_norm
 
             _orig_feature_maps = torch.stack((clip_feature_map['blocks.5'], clip_feature_map['norm']), dim=0)[:, :, 5:, :]
             _warped_feature_maps = torch.stack((clip_feature_map['mid_blocks'], clip_feature_map['final_norm']), dim=0)[:, :, 5:, :]
@@ -835,6 +846,11 @@ class BaseMapper(Trainable):
         else:
             with torch.no_grad() if self.cfg.model.freeze_clip and self.cfg.model.unfreeze_last_n_clip_layers is None else nullcontext():
                 clip_feature_map = self.clip.forward_model(clip_input)  # b (h w) d
+
+                if self.cfg.model.norm_vit_features:
+                    for k in clip_feature_map.keys():
+                        if "blocks" in k:
+                            clip_feature_map[k] = self.clip.base_model.norm(clip_feature_map[k])
 
         if self.cfg.model.debug_feature_maps and batch.attach_debug_info:
             from image_utils import Im
@@ -1039,11 +1055,19 @@ class BaseMapper(Trainable):
         k_features = flat_features[flat_mask]
 
         if self.cfg.model.inject_token_positional_information:
-            pos_emb = positionalencoding2d(self.cfg.model.custom_cross_attn_output_dim, latent_dim, latent_dim, device=self.device, dtype=self.dtype)
-            pos_emb = einops.repeat(pos_emb, "d h w -> b (h w) d", b=batch.bs)
-            feature_maps__ = torch.stack([pos_emb[batch_idx] for batch_idx, mask in zip(mask_batch_idx, feature_map_masks)])
-            masked_feature_maps = feature_maps__ * feature_map_masks.unsqueeze(-1)
-            cond.mask_token_pos_emb = masked_feature_maps.sum(dim=1) / feature_map_masks.sum(dim=1).unsqueeze(-1)
+            # pos_emb = positionalencoding2d(self.cfg.model.pos_emb_dim - 4, latent_dim, latent_dim, device=self.device, dtype=self.dtype)
+            # pos_emb = einops.repeat(pos_emb, "d h w -> b (h w) d", b=batch.bs)
+            # feature_maps__ = torch.stack([pos_emb[batch_idx] for batch_idx, mask in zip(mask_batch_idx, feature_map_masks)])
+            # masked_feature_maps = feature_maps__.to(self.dtype) * feature_map_masks.to(self.dtype).unsqueeze(-1)
+            # mean_pooled_pos_enc = masked_feature_maps.sum(dim=1) / feature_map_masks.sum(dim=1).unsqueeze(-1)
+            # centroids_ = compute_centroids(einops.rearrange(feature_map_masks, 'b (h w) -> b h w', h=latent_dim)) 
+            # cond.mask_token_pos_emb = torch.cat((mean_pooled_pos_enc, centroids_), dim=-1)
+            # cond.mask_token_pos_emb = torch.cat((cond.mask_token_pos_emb, cond.mask_token_pos_emb.new_zeros((cond.mask_token_pos_emb.shape[0], self.cfg.model.pos_emb_dim - cond.mask_token_pos_emb.shape[1]))), dim=-1)
+            pos_emb = positionalencoding2d(self.cfg.model.pos_emb_dim, latent_dim, latent_dim, device=self.device, dtype=self.dtype)
+            centroids_ = compute_centroids(einops.rearrange(feature_map_masks, 'b (h w) -> b h w', h=latent_dim))
+            centroids_ = torch.clamp(torch.round(centroids_).to(torch.int64), 0, latent_dim - 1)
+            cond.mask_token_centroids = centroids_
+            cond.mask_token_pos_emb = einops.rearrange(pos_emb[:, centroids_[:, 0], centroids_[:, 1]], "d tokens -> tokens d")
 
         # The actual query is obtained from the mapper class (a learnable tokens)        
         cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(device)
@@ -1097,7 +1121,7 @@ class BaseMapper(Trainable):
                 unique_idxs.append(allowed_idxs)
             batch.shared_src_tgt_instance_idxs = torch.stack(unique_idxs, dim=0)
 
-        if self.cfg.model.encode_tgt or batch.force_forward_encoder_normalized_tgt:
+        if self.cfg.model.encode_tgt_enc_norm or batch.force_forward_encoder_normalized_tgt:
             assert self.cfg.model.encode_src_twice is False or batch.force_forward_encoder_normalized_tgt
             input_batch = self.get_input_for_batched_src_tgt(batch)
         elif self.cfg.model.encode_src_twice:
@@ -1131,7 +1155,7 @@ class BaseMapper(Trainable):
             if cond.mask_head_tokens is not None:
                 cond.mask_head_tokens = einops.rearrange(cond.mask_head_tokens, "(tokens layers) d -> tokens (layers d)", tokens=cond.mask_batch_idx.shape[0])
 
-        if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt:
+        if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm:
            cond.attn_dict = None
            token_mask = cond.mask_batch_idx < batch.bs
            tgt_token_mask = cond.mask_batch_idx >= batch.bs
@@ -1139,13 +1163,20 @@ class BaseMapper(Trainable):
            cond.tgt_mask_tokens = cond.mask_tokens[tgt_token_mask]
            cond.tgt_mask_batch_idx = cond.mask_batch_idx[tgt_token_mask] - batch.bs
            cond.tgt_mask_instance_idx = cond.mask_instance_idx[tgt_token_mask]
-           if cond.mask_token_pos_emb is not None: cond.tgt_mask_token_pos_emb = cond.mask_token_pos_emb[tgt_token_mask]
+           if cond.mask_token_pos_emb is not None:
+               cond.tgt_mask_token_pos_emb = cond.mask_token_pos_emb[tgt_token_mask]
+           if cond.mask_token_centroids is not None:
+               cond.tgt_mask_token_centroids = cond.mask_token_centroids[tgt_token_mask]
            cond.tgt_mask_dropout = cond.mask_dropout[torch.arange(cond.mask_dropout.shape[0], device=self.device) >= batch.bs]
 
            cond.mask_tokens = cond.mask_tokens[token_mask]
            cond.mask_batch_idx = cond.mask_batch_idx[token_mask]
            cond.mask_instance_idx = cond.mask_instance_idx[token_mask]
-           if cond.mask_token_pos_emb is not None: cond.mask_token_pos_emb = cond.mask_token_pos_emb[token_mask]
+           if cond.mask_token_pos_emb is not None:
+               cond.mask_token_pos_emb = cond.mask_token_pos_emb[token_mask]
+               cond.gt_src_mask_token_pos_emb = cond.mask_token_pos_emb.clone()
+           if cond.mask_token_centroids is not None:
+               cond.mask_token_centroids = cond.mask_token_centroids[token_mask]
            cond.mask_dropout = cond.mask_dropout[torch.arange(cond.mask_dropout.shape[0], device=self.device) < batch.bs]
            
            assert cond.mask_batch_idx.max().item() <= batch.bs - 1
@@ -1200,13 +1231,45 @@ class BaseMapper(Trainable):
                 new_tokens = [tokens[:-1] for i, tokens in enumerate(split_tokens)]
                 cond.mask_tokens = torch.cat(new_tokens, dim=0)[:, :orig_dim]
 
-        if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt or self.cfg.model.modulate_src_feature_map:
+        if self.cfg.model.tgt_positional_information_from_lang:
+            self_attn_dim = self.cfg.model.positional_information_pred_dim
+            with torch.no_grad():
+                text_encoding = self.text_encoder(input_ids=batch.input_ids).last_hidden_state
+                text_encoding = F.pad(text_encoding, (0, self_attn_dim - text_encoding.shape[-1]), "constant", 0)
+
+            num_text_tokens = text_encoding.shape[-2]
+            batch_size = cond.mask_batch_idx.max().item() + 1
+
+            seq_lengths = torch.bincount(cond.mask_batch_idx)
+            cu_seqlens = torch.cumsum(seq_lengths + num_text_tokens, dim=0)
+            cu_seqlens = torch.cat([torch.zeros(1, dtype=cu_seqlens.dtype, device=cu_seqlens.device), cu_seqlens])
+
+            max_seqlen = seq_lengths.max().item() + num_text_tokens
+            input_tokens = torch.cat((cond.mask_tokens, cond.mask_token_pos_emb), dim=-1)
+            split_tokens = torch.split(input_tokens, seq_lengths.tolist())  
+            new_tokens = [torch.cat([tokens, text_encoding[i]], dim=0) for i, tokens in enumerate(split_tokens)]
+            new_cond_mask_tokens = torch.cat(new_tokens, dim=0)
+
+            output = self.mapper.predict_positional_information(x=new_cond_mask_tokens, mixer_kwargs={'cu_seqlens': cu_seqlens.to(torch.int32), 'max_seqlen': max_seqlen})
+
+            split_tokens = torch.split(output, (seq_lengths + num_text_tokens).tolist(), dim=0)
+            new_tokens = [tokens[:-num_text_tokens] for i, tokens in enumerate(split_tokens)]
+            new_tokens = self.mapper.positional_information_mlp(torch.cat(new_tokens, dim=0))
+
+            if torch.isnan(new_tokens).any(): breakpoint()
+
+            cond.mask_token_pos_emb = new_tokens
+            cond.src_mask_token_pos_emb = cond.mask_token_pos_emb.clone()
+            
+        if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm or self.cfg.model.modulate_src_feature_map:
             cond.src_mask_tokens = cond.mask_tokens.clone()
-            cond.loss_src_mask_tokens = cond.mask_tokens.clone()
-            cond.loss_tgt_mask_tokens = cond.tgt_mask_tokens.clone()
+            cond.src_mask_tokens_before_specialization = cond.mask_tokens.clone()
+            cond.tgt_mask_tokens_before_specialization = cond.tgt_mask_tokens.clone()
 
         if self.cfg.model.inject_token_positional_information:
             cond.mask_tokens = self.mapper.inject_positional_information_film(cond.mask_tokens, cond.mask_token_pos_emb)
+            cond.src_mask_tokens = cond.mask_tokens.clone()
+            cond.tgt_mask_tokens = self.mapper.inject_positional_information_film(cond.tgt_mask_tokens, cond.tgt_mask_token_pos_emb)
         
         if self.cfg.model.layer_specialization and self.cfg.model.num_conditioning_pairs != self.cfg.model.num_layer_queries: # Break e.g., 1024 -> 16 x 64
             def layer_specialization(_mask_tokens, layers):
@@ -1217,7 +1280,7 @@ class BaseMapper(Trainable):
             if cond.mask_tokens is not None: cond.mask_tokens = layer_specialization(cond.mask_tokens, self.cfg.model.num_conditioning_pairs)
             if cond.mask_head_tokens is not None: cond.mask_head_tokens = layer_specialization(cond.mask_head_tokens, self.cfg.model.num_conditioning_pairs // self.cfg.model.num_layer_queries)
 
-        if (self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt) and self.cfg.model.layer_specialization:
+        if (self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm) and self.cfg.model.layer_specialization:
             cond.tgt_mask_tokens = layer_specialization(cond.tgt_mask_tokens, self.cfg.model.num_conditioning_pairs)
             cond.src_mask_tokens = cond.mask_tokens.clone()
 
@@ -1384,7 +1447,7 @@ class BaseMapper(Trainable):
     def inverted_cosine(self, timesteps):
         return torch.arccos(torch.sqrt(timesteps))
 
-    def forward(self, batch: InputData):
+    def forward(self, batch: InputData, state: TrainingState):
         assert batch.formatted_input_ids is None
 
         if self.cfg.model.predict_rotation_from_n_frames:
@@ -1477,7 +1540,7 @@ class BaseMapper(Trainable):
             else:
                 raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
         
-        return self.compute_losses(batch, cond, model_pred, target, pred_data)
+        return self.compute_losses(batch, cond, model_pred, target, pred_data, state)
 
     def compute_losses(
             self,
@@ -1486,6 +1549,7 @@ class BaseMapper(Trainable):
             model_pred: Optional[torch.FloatTensor] = None,
             target: Optional[torch.FloatTensor] = None,
             pred_data: Optional[TokenPredData] = None,
+            state: Optional[TrainingState] = None,
         ):
         
         losses = dict()
@@ -1503,10 +1567,14 @@ class BaseMapper(Trainable):
                 loss_mask = break_a_scene_masked_loss(cfg=self.cfg, batch=batch, cond=cond)
                 model_pred, target = model_pred * loss_mask, target * loss_mask
 
+            mse_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+            
+            losses.update({"metric_diffusion_mse": mse_loss})
+
             if self.cfg.model.weighted_object_loss:
                 losses["diffusion_loss"] = evenly_weighted_mask_loss(cfg=self.cfg, batch=batch, cond=cond, pred=model_pred.float(), target=target.float())
             else:
-                losses["diffusion_loss"] = F.mse_loss(model_pred.float(), target.float(), reduction="mean") * self.cfg.model.diffusion_loss_weight
+                losses["diffusion_loss"] = mse_loss * self.cfg.model.diffusion_loss_weight
 
             if self.cfg.model.break_a_scene_cross_attn_loss:
                 losses["cross_attn_loss"] = break_a_scene_cross_attn_loss(cfg=self.cfg, batch=batch, controller=self.controller, cond=cond)
@@ -1517,11 +1585,17 @@ class BaseMapper(Trainable):
         if self.cfg.model.token_rot_pred_loss:
             losses.update(token_rot_loss(cfg=self.cfg, pred_data=pred_data))
 
-        if self.cfg.model.src_tgt_consistency_loss_weight is not None or self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt:
-            losses.update(src_tgt_token_consistency_loss(cfg=self.cfg, batch=batch, cond=cond))
+        if self.cfg.model.src_tgt_consistency_loss_weight is not None or self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm:
+            losses.update(src_tgt_token_consistency_loss(cfg=self.cfg, batch=batch, cond=cond, state=state))
 
         if self.cfg.model.src_tgt_feature_map_consistency_loss_weight is not None:
             losses.update(src_tgt_feature_map_consistency_loss(cfg=self.cfg, batch=batch, cond=cond))
+
+        if self.cfg.model.tgt_positional_information_from_lang:
+            losses.update(tgt_positional_information_loss(cfg=self.cfg, batch=batch, cond=cond, state=state))
+
+        if self.cfg.model.cosine_similarity_loss:
+            losses.update(cosine_similarity_loss(cfg=self.cfg, batch=batch, cond=cond, state=state))
 
         losses["metric_num_mask_tokens"] = cond.mask_tokens.shape[0]
 

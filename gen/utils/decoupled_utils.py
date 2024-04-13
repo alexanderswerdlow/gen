@@ -1,8 +1,10 @@
 """
 A collection of assorted utilities for deep learning with no required dependencies aside from PyTorch, NumPy and the Python stdlib.
+
+TODO: Validate required Python version.
 """
 import contextlib
-from datetime import datetime
+import functools
 import glob
 import hashlib
 import importlib
@@ -11,14 +13,15 @@ import os
 import pickle
 import subprocess
 import sys
+import time
+import traceback
 from collections import defaultdict
+from datetime import datetime
 from functools import partial, wraps
 from importlib import import_module
 from importlib.util import find_spec
 from io import BytesIO
 from pathlib import Path
-import time
-import traceback
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -301,24 +304,24 @@ def tensorboard_trace_handler(dir_name: str, record_memory: bool = False, worker
     return handler_fn
 
 def save_memory_profile(profile_dir):
-    if is_main_process():
-        import wandb
-        print(f"Saving memory profile to {profile_dir}")
-        os.makedirs(profile_dir, exist_ok=True)
-        torch.cuda.memory._dump_snapshot(f"{profile_dir}/memory_snapshot.pickle")
-        os.system(
-            f"python -m torch.cuda._memory_viz trace_plot {profile_dir}/memory_snapshot.pickle -o {profile_dir}/memory_snapshot.html"
-        )
-        torch.cuda.memory._save_segment_usage(f"{profile_dir}/segment.svg")
-        torch.cuda.memory._save_memory_usage(f"{profile_dir}/memory.svg") 
-        torch.cuda.memory._record_memory_history(enabled=None)
+    import wandb
+    rank_postfix = f"_rank_{get_rank()}" if use_dist() else ""
+    print(f"Saving memory profile to {profile_dir}")
+    os.makedirs(profile_dir, exist_ok=True)
+    torch.cuda.memory._dump_snapshot(f"{profile_dir}/memory_snapshot{rank_postfix}.pickle")
+    os.system(
+        f"python -m torch.cuda._memory_viz trace_plot {profile_dir}/memory_snapshot{rank_postfix}.pickle -o {profile_dir}/memory_snapshot{rank_postfix}.html"
+    )
+    torch.cuda.memory._save_segment_usage(f"{profile_dir}/segment{rank_postfix}.svg")
+    torch.cuda.memory._save_memory_usage(f"{profile_dir}/memory{rank_postfix}.svg") 
+    torch.cuda.memory._record_memory_history(enabled=None)
 
-        log_func(f"Saved memory snapshot at: {profile_dir}/memory_snapshot.pickle")
-        log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {profile_dir.resolve()} 6008")
+    log_func(f"Saved memory snapshot at: {profile_dir}/memory_snapshot{rank_postfix}.pickle")
+    log_func(f"Run the following to view the snapshot:\npython -m http.server --directory {profile_dir.resolve()} 6008")
 
-        if wandb.run is not None:
-            wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_snapshot.html")})
-            wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_timeline.html")})
+    if is_main_process() and wandb.run is not None:
+        wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_snapshot{rank_postfix}.html")})
+        wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_timeline{rank_postfix}.html")})
 
 class Profiler:
     def __init__(self, output_dir, warmup_steps: int = 5, active_steps: int = 3, record_memory: bool = False):
@@ -415,6 +418,7 @@ def set_global_exists():
 
 def set_global_breakpoint():
     import builtins
+
     import ipdb
 
     builtins.breakpoint = _breakpoint
@@ -612,3 +616,14 @@ def to_numpy(arr: Tensor | np.ndarray):
         return torch_to_numpy(arr)
     else:
         return arr
+
+def try_except(f):
+    @functools.wraps(f)
+    def inner(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except Exception:
+            log_func(f"Exception caught: {sys.exc_info()[0]}")
+            log_func(traceback.format_exc())
+
+    return inner

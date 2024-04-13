@@ -53,3 +53,5 @@ if SCRATCH_HYPERSIM_PATH.exists():
 
 SCANNETPP_DATASET_PATH =  Path(os.getenv("SCANNETPP_DATASET_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/data"))
 SCANNETPP_CUSTOM_DATA_PATH = Path(os.getenv("SCANNETPP_CUSTOM_DATA_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/language_grounding/SCANNET_PLUS_PLUS/custom"))
+
+CALVIN_V0_DATASET_PATH = Path(os.getenv("CALVIN_V0_DATASET_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/aswerdlo/datasets/calvin/rgbseg_ABC_D"))

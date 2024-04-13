@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
     from gen.utils.trainer_utils import TrainingState
 
-
 @tensorclass
 class InputData:
     tgt_pixel_values: Float[Tensor, "b c h w"]
@@ -62,6 +61,7 @@ class InputData:
     treat_as_train_batch: bool = False
     force_forward_encoder_normalized_tgt: bool = False
     force_encode_all_masks: Optional[Bool[Tensor, "b"]] = None
+    force_use_tgt_pos_emb: bool = False
     shared_src_tgt_instance_idxs: Optional[Integer[Tensor, "b max_instances"]] = None
     
 
@@ -215,7 +215,7 @@ def visualize_input_data(
 
         src_ = Im.concat_vertical(
             Im(src_rgb[b]), 
-            Im(onehot_to_color(src_one_hot.squeeze(0), override_colors=override_colors)),
+            Im(onehot_to_color(src_one_hot.squeeze(0), override_colors=override_colors, ignore_empty=remove_invalid)),
         )
 
         if batch.src_grid is not None:
@@ -225,7 +225,7 @@ def visualize_input_data(
             
         tgt_ = Im.concat_vertical(
             Im(tgt_rgb[b]), 
-            Im(onehot_to_color(tgt_one_hot.squeeze(0), override_colors=override_colors)),
+            Im(onehot_to_color(tgt_one_hot.squeeze(0), override_colors=override_colors, ignore_empty=remove_invalid)),
         )
         if batch.tgt_grid is not None:
             tgt_ = Im.concat_vertical(
@@ -236,7 +236,7 @@ def visualize_input_data(
         if show_overlapping_masks:
             masks = rearrange(tgt_one_hot, "h w c -> c h w")
             initial_num_classes = masks.sum(axis=0).max() + 1
-            initial_image = integer_to_color(masks.sum(axis=0), colormap='hot', num_classes=initial_num_classes, ignore_empty=False)
+            initial_image = integer_to_color(masks.sum(axis=0), colormap='hot', num_classes=initial_num_classes, ignore_empty=remove_invalid)
             first_hist = hist(np.sum(masks.cpu().numpy(), axis=0).reshape(-1), save=False)
             first_masks = Im(masks.unsqueeze(-1)).scale(0.5).grid(pad_value=0.5).write_text(f"{batch.tgt_segmentation[b].min().item()}-{batch.tgt_segmentation[b][batch.tgt_segmentation[b] != 255].max().item()}, uniq: {len(torch.unique(batch.tgt_segmentation[b]))}", size=0.2).torch.cpu()
             output_img = Im.concat_horizontal(output_img, Im.concat_vertical(first_masks, initial_image, fill=(128, 128, 128)), spacing=40, fill=(128, 128, 128))

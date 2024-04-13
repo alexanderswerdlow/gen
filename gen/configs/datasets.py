@@ -9,6 +9,7 @@ from gen import (IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM
 from gen.configs.utils import auto_store, mode_store, store_child_config
 from gen.datasets.abstract_dataset import AbstractDataset
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
+from gen.datasets.calvin.calvin import CalvinDataset
 from gen.datasets.coco.coco_panoptic import CocoPanoptic
 from gen.datasets.controlnet_dataset import ControlnetDataset
 from gen.datasets.hypersim.hypersim import Hypersim
@@ -172,6 +173,18 @@ auto_store(DatasetConfig,
         augmentation=augmentation,
     ), 
     name="imagefolder"
+)
+
+auto_store(DatasetConfig, 
+    train=get_dataset(
+        CalvinDataset,
+        augmentation=augmentation,
+    ), 
+    val=get_dataset(
+        CalvinDataset,
+        augmentation=augmentation,
+    ), 
+    name="calvin"
 )
 
 store_child_config(DatasetConfig, "dataset", "coco_panoptic", "coco_panoptic_test")
@@ -646,7 +659,7 @@ def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
         name="imagefolder",
         model=dict(
-            encode_tgt=True,
+            encode_tgt_enc_norm=True,
         ),
         dataset=dict(
             train=builds(

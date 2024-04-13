@@ -13,6 +13,7 @@ from gen.configs.datasets import get_datasets
 from gen.configs.old_configs import get_deprecated_experiments
 from gen.configs.utils import mode_store
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
+from gen.datasets.calvin.calvin import CalvinDataset
 from gen.datasets.coco.coco_panoptic import CocoPanoptic
 from gen.datasets.hypersim.hypersim import Hypersim
 from gen.datasets.kubrics.movi_dataset import MoviDataset
@@ -737,7 +738,7 @@ def get_experiments():
         model=dict(
             eschernet=True,
             modulate_src_tokens_with_tgt_pose=True,
-            encode_tgt=True,
+            encode_tgt_enc_norm=True,
             src_tgt_consistency_loss_weight=0.1,
         ),
         dataset=dict(
@@ -832,7 +833,7 @@ def get_experiments():
     mode_store(
         name="disable_debug_scannet",
         model=dict(
-            encode_tgt=False,
+            encode_tgt_enc_norm=False,
             modulate_src_tokens_with_tgt_pose=False,
             segmentation_map_size=16,
             eschernet=False,
@@ -972,7 +973,7 @@ def get_experiments():
             )
         ),
         model=dict(
-            encode_tgt=False,
+            encode_tgt_enc_norm=False,
             modulate_src_tokens_with_tgt_pose=True,
         ),
     )
@@ -1217,7 +1218,7 @@ def get_experiments():
             break_a_scene_masked_loss=False,
 
             encode_src_twice=False,
-            encode_tgt=False,
+            encode_tgt_enc_norm=False,
             src_tgt_consistency_loss_weight=None,
             
             only_encode_shared_tokens=True,
@@ -1298,7 +1299,7 @@ def get_experiments():
         model=dict(
             only_encode_shared_tokens=True,
             training_mask_dropout=None,
-            encode_tgt=True,
+            encode_tgt_enc_norm=True,
             src_tgt_consistency_loss_weight=1.0,
             modulate_src_tokens_with_film=True,
             modulate_src_tokens_with_mlp=False,
@@ -1506,20 +1507,21 @@ def get_experiments():
         return builds(
             Augmentation,
             reorder_segmentation=False,
-            different_src_tgt_augmentation=False,
-            enable_square_crop=True,
-            center_crop=False,
-            enable_random_resize_crop=True, 
-            enable_horizontal_flip=True,
-            enable_rand_augment=False,
-            enable_rotate=False,
-            src_random_scale_ratio=None,
-            tgt_random_scale_ratio=((0.7, 1.0), (0.9, 1.1)),
+            different_src_tgt_augmentation="${dataset.train.augmentation.different_src_tgt_augmentation}",
+            enable_square_crop="${dataset.train.augmentation.enable_square_crop}",
+            center_crop="${dataset.train.augmentation.center_crop}",
+            enable_random_resize_crop="${dataset.train.augmentation.enable_random_resize_crop}", 
+            enable_horizontal_flip="${dataset.train.augmentation.enable_horizontal_flip}",
+            enable_rand_augment="${dataset.train.augmentation.enable_rand_augment}",
+            enable_rotate="${dataset.train.augmentation.enable_rotate}",
+            src_random_scale_ratio="${dataset.train.augmentation.src_random_scale_ratio}",
+            tgt_random_scale_ratio="${dataset.train.augmentation.tgt_random_scale_ratio}",
             initial_resolution=512,
             src_resolution=None,
             tgt_resolution=None,
             src_transforms="${get_src_transform:model}",
             tgt_transforms="${get_tgt_transform:model}",
+            rotation_range="${dataset.train.augmentation.rotation_range}",
             populate_full_signature=True,
         )
     
@@ -1556,10 +1558,8 @@ def get_experiments():
                 return_nodes={
                     "blocks.0": "blocks.0",
                     "blocks.11": "blocks.11",
+                    "blocks.17": "blocks.17",
                     "blocks.23": "blocks.23",
-                    "blocks.5": "blocks.5",
-                    "blocks.11": "blocks.11",
-                    "blocks.19": "blocks.19",
                 },
             ),
             encoder_dim=4096,
@@ -1568,9 +1568,7 @@ def get_experiments():
             encoder_resolution=518,
             encoder_latent_dim=37,
 
-            layer_specialization=True,
-            num_conditioning_pairs=8,
-            num_layer_queries=1,
+ 
             custom_conditioning_map=False,
             unet=True,
             gated_cross_attn=False,
@@ -1595,14 +1593,13 @@ def get_experiments():
             lr_finetune_version=2,
             finetune_unet_with_different_lrs=False,
             unfreeze_last_n_clip_layers=None,
-            custom_cross_attn_output_dim=4096,
             cross_attn_dim=2048,
             use_sd_15_tokenizer_encoder=True,
             masked_self_attention=False,
             add_text_tokens=False,
             eschernet=False,
             modulate_src_tokens_with_tgt_pose=False,
-            encode_tgt=False,
+            encode_tgt_enc_norm=False,
             segmentation_map_size=255,
     
             revision="v2.0",
@@ -1620,6 +1617,15 @@ def get_experiments():
             add_pos_emb=False,
             add_learned_pos_emb_to_feature_map=False,
             merge_feature_maps=True,
+            num_layer_queries=1,
+
+            # custom_cross_attn_output_dim=4096,
+            # layer_specialization=True,
+            # num_conditioning_pairs=8,
+            
+            custom_cross_attn_output_dim=768,
+            layer_specialization=False,
+            num_conditioning_pairs=1,
         ),
         dataset=dict(
             reset_val_dataset_every_epoch=True,
@@ -1636,8 +1642,27 @@ def get_experiments():
                 num_overlapping_masks=1,
                 preprocessed_mask_type="custom_postprocessed",
                 return_encoder_normalized_tgt=False,
-                augmentation=get_train_aug(),
-                allowed_keys=("tgt_pixel_values", "src_pixel_values", "tgt_mask", "src_mask", "src_segmentation", "tgt_segmentation", "input_ids", "metadata", "valid", "src_valid", "has_global_instance_ids", "tgt_enc_norm_pixel_values", "tgt_enc_norm_segmentation"),
+                augmentation=builds(
+                    Augmentation,
+                    reorder_segmentation=False,
+                    different_src_tgt_augmentation=False,
+                    enable_square_crop=True,
+                    center_crop=False,
+                    enable_random_resize_crop=True, 
+                    enable_horizontal_flip=True,
+                    enable_rand_augment=False,
+                    enable_rotate=False,
+                    src_random_scale_ratio=None,
+                    tgt_random_scale_ratio=((0.7, 1.0), (0.9, 1.1)),
+                    initial_resolution=512,
+                    src_resolution=None,
+                    tgt_resolution=None,
+                    src_transforms="${get_src_transform:model}",
+                    tgt_transforms="${get_tgt_transform:model}",
+                    rotation_range=0,
+                    populate_full_signature=True,
+                ),
+                allowed_keys=("tgt_pixel_values", "src_pixel_values", "tgt_mask", "src_mask", "src_segmentation", "tgt_segmentation", "input_ids", "metadata", "valid", "src_valid", "has_global_instance_ids", "tgt_enc_norm_pixel_values", "tgt_enc_norm_segmentation", "tgt_enc_norm_valid"),
             ),
             val=builds(
                 CocoPanoptic,
@@ -1652,7 +1677,7 @@ def get_experiments():
                 preprocessed_mask_type="custom_postprocessed",
                 return_encoder_normalized_tgt=False,
                 augmentation=get_val_aug(),
-                allowed_keys=("tgt_pixel_values", "src_pixel_values", "tgt_mask", "src_mask", "src_segmentation", "tgt_segmentation", "input_ids", "metadata", "valid", "src_valid", "has_global_instance_ids", "tgt_enc_norm_pixel_values", "tgt_enc_norm_segmentation"),
+                allowed_keys=("tgt_pixel_values", "src_pixel_values", "tgt_mask", "src_mask", "src_segmentation", "tgt_segmentation", "input_ids", "metadata", "valid", "src_valid", "has_global_instance_ids", "tgt_enc_norm_pixel_values", "tgt_enc_norm_segmentation", "tgt_enc_norm_valid"),
             ),
             additional_train=(
                 builds(
@@ -1690,12 +1715,21 @@ def get_experiments():
                     num_objects=23,
                     num_frames=24,
                     num_cameras=1,
+                    fake_return_n=50,
                     multi_camera_format=True,
                     cache_in_memory=True,
                     cache_instances_in_memory=False,
                     num_subset=None,
                     return_tensorclass=True,
                     return_multiple_frames=None,
+                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
+                    augmentation=get_train_aug(),
+                ),
+                builds(
+                    CalvinDataset,
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    src_eq_tgt=True,
                     return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
                     augmentation=get_train_aug(),
                 ),
@@ -1736,12 +1770,21 @@ def get_experiments():
                     num_objects=23,
                     num_frames=24,
                     num_cameras=1,
+                    fake_return_n=50,
                     multi_camera_format=True,
                     cache_in_memory=True,
                     cache_instances_in_memory=False,
                     num_subset=None,
                     return_tensorclass=True,
                     return_multiple_frames=None,
+                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
+                    augmentation=get_val_aug(),
+                ),
+                builds(
+                    CalvinDataset,
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    src_eq_tgt=True,
                     return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
                     augmentation=get_val_aug(),
                 ),
@@ -1768,7 +1811,7 @@ def get_experiments():
             guidance_scale=7.0,
             infer_new_prompts=False,
             vary_cfg_plot=True,
-            visualize_attention_map=True,
+            visualize_attention_map=False,
             num_single_token_gen=4,
             num_masks_to_remove=4,
         ),
@@ -1786,8 +1829,9 @@ def get_experiments():
             enable_horizontal_flip=True,
             enable_rand_augment=False,
             enable_rotate=True,
-            src_random_scale_ratio=((0.7, 1.0), (0.9, 1.1)),
-            tgt_random_scale_ratio=((0.7, 1.0), (0.9, 1.1)),
+            rotation_range=5,
+            src_random_scale_ratio=((0.6, 1.0), (0.9, 1.1)),
+            tgt_random_scale_ratio=((0.6, 1.0), (0.9, 1.1)),
             src_transforms="${get_src_transform:model}",
             tgt_transforms="${get_tgt_transform:model}",
         )
@@ -1795,13 +1839,12 @@ def get_experiments():
     mode_store(
         name="single_image_pretraining_v2",
         model=dict(
-            encode_src_twice=True,
+            encode_src_twice=False,
+            encode_tgt_enc_norm=True,
             only_encode_shared_tokens=True,
-            custom_cross_attn_output_dim=768,
-            cross_attn_dim=2048,
-            num_conditioning_pairs=1,
-            layer_specialization=False,
             inject_token_positional_information=True,
+            src_tgt_consistency_loss_weight=1.0,
+            src_tgt_start_loss_step=4000,
         ),
         inference=dict(
             visualize_attention_map=False,
@@ -1810,7 +1853,34 @@ def get_experiments():
             train=dict(return_encoder_normalized_tgt=True, augmentation=get_large_train_aug()),
             val=dict(return_encoder_normalized_tgt=True, augmentation=get_val_aug()),
         ),
+        trainer=dict(
+            checkpointing_steps=1000,
+        ),
         hydra_defaults=["single_image_pretraining"]
+    )
+
+    mode_store(
+        name="single_image_pretraining_v3",
+        model=dict(
+            tgt_positional_information_from_lang=True,
+            token_modulator=dict(final_norm=True, num_heads=8, depth=4),
+            pos_emb_dim=64,
+            positional_information_pred_dim=768+64,
+            src_tgt_pos_emb_consistency_loss_weight=10.0,
+            src_tgt_consistency_loss_weight=100.0,
+            cosine_loss_weight=50.0,
+            training_mask_dropout=None,
+            modulate_src_tokens_loss_after_layer_specialization=False,
+            weighted_object_loss=False,
+            src_tgt_start_loss_step=1000,
+        ),
+        inference=dict(
+            guidance_scale=8.0,
+        ),
+        trainer=dict(
+            gradient_accumulation_steps=2,
+        ),
+        hydra_defaults=["single_image_pretraining_v2"]
     )
 
     mode_store(
@@ -1876,6 +1946,55 @@ def get_experiments():
         ),
     )
 
+    def get_zoom_val_aug():
+        return builds(
+            Augmentation,
+            different_src_tgt_augmentation=False,
+            enable_square_crop=True,
+            center_crop=True,
+            enable_random_resize_crop=False, 
+            enable_horizontal_flip=False,
+            enable_rand_augment=False,
+            enable_rotate=False,
+            src_random_scale_ratio=None,
+            tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
+            initial_resolution=144,
+            enable_zoom_crop=True,
+            src_resolution=None,
+            tgt_resolution=None,
+            src_transforms="${get_src_transform:model}",
+            tgt_transforms="${get_tgt_transform:model}",
+            populate_full_signature=True,
+        )
+
+    mode_store(
+        name="calvin",
+        dataset=dict(
+            reset_val_dataset_every_epoch=False,
+            train=builds(
+                CalvinDataset,
+                populate_full_signature=True,
+                zen_partial=True,
+                num_workers=6,
+                batch_size=32,
+                src_eq_tgt=False,
+                return_encoder_normalized_tgt=True,
+                augmentation=get_zoom_val_aug(),
+            ),
+            val=builds(
+                CalvinDataset,
+                populate_full_signature=True,
+                zen_partial=True,
+                batch_size=1,
+                src_eq_tgt=False,
+                return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
+                augmentation=get_zoom_val_aug(),
+            ),
+            additional_train=None,
+            additional_val=None,
+        ),
+        hydra_defaults=[{"override /dataset": "calvin"}],
+    )
 
     mode_store(
         name="kubrics",
@@ -1929,7 +2048,7 @@ def get_experiments():
     mode_store(
         name='kubrics_multiview',
         model=dict(
-            encode_tgt=True,
+            encode_tgt_enc_norm=True,
             src_tgt_consistency_loss_weight=1000,
             modulate_src_tokens_loss_after_layer_specialization=False,
             training_mask_dropout=None,

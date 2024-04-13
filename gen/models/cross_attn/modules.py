@@ -417,10 +417,16 @@ class FeatureMapper(nn.Module):
             nn.init.constant_(self.token_predictor.modulator.bias, 0)
 
         if self.cfg.model.inject_token_positional_information:
-            self.inject_positional_information_film = FilmMlpv3(custom_output_dim, custom_output_dim)
+            self.inject_positional_information_film = FilmMlpv3(custom_output_dim, self.cfg.model.pos_emb_dim)
 
         if self.cfg.model.tgt_positional_information_from_lang:
-            pass
+            self.predict_positional_information = hydra.utils.instantiate(
+                self.cfg.model.token_modulator,
+                _recursive_=False,
+                embed_dim=self.cfg.model.positional_information_pred_dim,
+                use_flash_attn=self.cfg.trainer.mixed_precision != "no",
+            )
+            self.positional_information_mlp = nn.Linear(self.cfg.model.positional_information_pred_dim, self.cfg.model.pos_emb_dim)
 
 class CrossAttn(nn.Module):
     def __init__(self, cfg: BaseConfig, input_dim: int, cross_attn_dim: int, output_dim: int):

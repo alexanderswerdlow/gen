@@ -516,6 +516,7 @@ class CocoPanoptic(AbstractDataset, Dataset):
             ret.update({
                 "tgt_enc_norm_pixel_values": tgt_data_src_transform.image,
                 "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8),
+                "tgt_enc_norm_valid": torch.full((255,), True, dtype=torch.bool),
             })
 
         if self.use_preprocessed_masks is False:
@@ -534,7 +535,8 @@ class CocoPanoptic(AbstractDataset, Dataset):
             "src_pixel_values": src_data.image,
             "src_segmentation": src_data.segmentation,
             "input_ids": get_tokens(self.tokenizer),
-            "src_valid": valid,
+            "src_valid": torch.full((255,), True, dtype=torch.bool),
+            "tgt_valid": torch.full((255,), True, dtype=torch.bool),
             "valid": valid[..., 1:],
             "has_global_instance_ids": torch.tensor(False),
             "metadata" : {

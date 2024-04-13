@@ -156,7 +156,7 @@ class ModelConfig:
 
     debug_feature_maps: bool = False
 
-    encode_tgt: bool = False
+    encode_tgt_enc_norm: bool = False
     encode_src_twice: bool = False
     src_tgt_consistency_loss_weight: Optional[float] = None
     src_tgt_feature_map_consistency_loss_weight: Optional[float] = None
@@ -176,6 +176,13 @@ class ModelConfig:
 
     inject_token_positional_information: bool = False
     tgt_positional_information_from_lang: bool = False
+    pos_emb_dim: int = 192
+    src_tgt_pos_emb_consistency_loss_weight: Optional[float] = None
+    norm_vit_features: bool = False
+    positional_information_pred_dim: Optional[int] = None
+    cosine_similarity_loss: bool = False
+    cosine_loss_weight: Optional[float] = 1.0
+    src_tgt_start_loss_step: Optional[int] = 1000
     
 
 @dataclass

@@ -24,7 +24,7 @@ from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.datasets.run_dataloader import MockTokenizer
 from gen.utils.data_defs import visualize_input_data
 from gen.utils.decoupled_utils import breakpoint_on_error, load_tensor_dict, save_tensor_dict
-from gen.utils.tokenization_utils import get_tokens
+from gen.utils.tokenization_utils import _get_tokens, get_tokens
 
 torchvision.disable_beta_transforms_warning()
 
@@ -51,6 +51,7 @@ class MoviDataset(AbstractDataset, Dataset):
         num_subset: Optional[int] = None,
         return_multiple_frames: Optional[int] = None,
         object_ignore_threshold: Optional[float] = 0.1,
+        repeat_n: Optional[int] = None,
         return_encoder_normalized_tgt: bool = False, # TODO: Needed for hydra
 
         # TODO: All these params are not actually used but needed because of a quick with hydra_zen
@@ -96,7 +97,6 @@ class MoviDataset(AbstractDataset, Dataset):
         single_return=None, # TODO: Needed for hydra
         merge_with_background=None, # TODO: Needed for hydra
         add_background=None,
-        repeat_n=None,
         **kwargs,
     ):
         # Note: The super __init__ is handled by inherit_parent_args
@@ -113,6 +113,7 @@ class MoviDataset(AbstractDataset, Dataset):
         self.return_multiple_frames = return_multiple_frames
         self.object_ignore_threshold = object_ignore_threshold
         self.return_encoder_normalized_tgt = return_encoder_normalized_tgt
+        self.repeat_n = repeat_n
 
         if num_cameras > 1: assert multi_camera_format
 
@@ -342,7 +343,7 @@ class MoviDataset(AbstractDataset, Dataset):
             "src_valid": torch.full((255,), True, dtype=torch.bool),
             "tgt_valid": torch.full((255,), True, dtype=torch.bool),
             "valid": torch.full((254,), True, dtype=torch.bool),
-            "input_ids": get_tokens(self.tokenizer),
+            "input_ids": _get_tokens(self.tokenizer, f"Rotate by {str(pose[:3, :3].tolist())}"),
         })
 
         if src_data.grid is not None: ret["src_grid"] = src_data.grid.squeeze(0)

@@ -199,6 +199,7 @@ class Hypersim(AbstractDataset, Dataset):
             ret.update({
                 "tgt_enc_norm_pixel_values": tgt_data_src_transform.image,
                 "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8),
+                "tgt_enc_norm_valid": torch.full((255,), True, dtype=torch.bool),
             })
 
         pixels = src_data.segmentation.long().contiguous().view(-1)
@@ -225,7 +226,8 @@ class Hypersim(AbstractDataset, Dataset):
             "src_segmentation": src_data.segmentation.to(torch.uint8),
             "src_pose": get_rt(init_src_data),
             "tgt_pose": get_rt(init_tgt_data),
-            "src_valid": valid,
+            "src_valid": torch.full((255,), True, dtype=torch.bool),
+            "tgt_valid": torch.full((255,), True, dtype=torch.bool),
             "input_ids": get_tokens(self.tokenizer),
             "valid": valid[..., 1:],
             "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
@@ -292,6 +294,7 @@ class Hypersim(AbstractDataset, Dataset):
             ret.update({
                 "tgt_enc_norm_pixel_values": tgt_data_src_transform.image,
                 "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8),
+                "tgt_enc_norm_valid": torch.full((255,), True, dtype=torch.bool),
             })
 
         pixels = src_data.segmentation.long().contiguous().view(-1)

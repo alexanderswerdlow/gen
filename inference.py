@@ -23,6 +23,7 @@ from gen.utils.trainer_utils import Trainable, TrainingState, load_from_ckpt, un
 import itertools
 import time
 import cv2
+import traceback
 
 tqdm.monitor_interval = 0 # May not be necessary
 
@@ -96,8 +97,9 @@ def run_inference_dataloader(
             outputs.append(output)
         except Exception as e:
             if get_num_gpus() > 1 and state.global_step > 100:
-                import traceback; traceback.print_exc()
-                log_error(f"Error during validation: {e}. Continuing...", main_process_only=False)
+                log_error(f"Error during validation. Continuing...", main_process_only=False)
+                traceback.print_exc()
+                torch.cuda.empty_cache()
             else:
                 raise
 

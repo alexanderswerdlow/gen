@@ -960,3 +960,4 @@ import antigravity
             # _output = self.mapper.inject_positional_information_film(cond.mask_token_pos_emb)
             # scale, shift = einops.rearrange(_output, "b (n a) -> a b n", a=2)
             # cond.mask_tokens = cond.mask_tokens * (1 - scale) + shift
+            # logging.basicConfig(level=logging.INFO, format= "%(message)s", datefmt="[%X]", handlers=[RichHandler()])

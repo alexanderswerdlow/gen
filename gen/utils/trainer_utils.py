@@ -112,7 +112,7 @@ class TrainingState:
 
 class Trainable(nn.Module, ABC):
     @abstractmethod
-    def forward(self, batch: dict):
+    def forward(self, batch: dict, state: TrainingState) -> dict:
         ...
 
     @abstractmethod
@@ -201,7 +201,12 @@ def unwrap(model):
         else:
             return model
 
-
+def linear_warmup(current_step: int, warmup_steps: int, final_value: float, initial_value: float = 0.0, start_step: int = 0):
+    current_step = max(0, current_step - start_step)
+    if current_step < warmup_steps:
+        return initial_value + (final_value - initial_value) * (current_step / max(1, warmup_steps))
+    else:
+        return final_value
 
 if __name__ == "__main__":
     # assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10)

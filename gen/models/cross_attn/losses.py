@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 import math
 from collections import defaultdict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import cv2
 import numpy as np
@@ -22,6 +22,8 @@ from gen.utils.rotation_utils import (compute_rotation_matrix_from_ortho6d, get_
                                       get_quat_from_discretized_zyx, quat_l1_loss)
 from image_utils import Im
 import einops
+
+from gen.utils.trainer_utils import TrainingState, linear_warmup
 
 if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
@@ -97,13 +99,17 @@ def evenly_weighted_mask_loss(
         mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
         object_masks = get_one_hot_channels(batch.tgt_segmentation[b], mask_idxs_for_batch)
 
-        gt_masks = F.interpolate(rearrange("h w c -> c () h w", object_masks).float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim)).squeeze(1)
+        gt_masks = F.interpolate(rearrange("h w c -> c () h w", object_masks).float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim),  mode='bilinear', align_corners=False).squeeze(1)
         gt_masks = rearrange("c h w -> c (h w)", gt_masks) > 0.5
 
         batch_losses = []
         for i in range(object_masks.shape[-1]):
             pred_ = pred[b, :, gt_masks[i, :]]
             tgt_ = target[b, :, gt_masks[i, :]]
+
+            if pred_.shape[-1] == 0:
+                continue
+            
             loss = F.mse_loss(pred_, tgt_, reduction="mean")
             batch_losses.append(loss)
 
@@ -112,7 +118,9 @@ def evenly_weighted_mask_loss(
         else:
             losses.append(torch.stack(batch_losses).mean())
 
-    return torch.stack(losses).mean()
+    avg_loss = torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=batch.device, requires_grad=True)
+
+    return avg_loss * cfg.model.diffusion_loss_weight
 
 
 def break_a_scene_masked_loss(cfg: BaseConfig, batch: InputData, cond: ConditioningData):
@@ -366,6 +374,7 @@ def src_tgt_token_consistency_loss(
     cfg: BaseConfig,
     batch: InputData,
     cond: ConditioningData,
+    state: Optional[TrainingState] = None,
 ):
     losses = []
     metric_losses = []
@@ -386,8 +395,8 @@ def src_tgt_token_consistency_loss(
             src_mask_tokens = cond.src_mask_tokens[src_valid][src_idx]
             tgt_mask_tokens = cond.tgt_mask_tokens[tgt_valid][tgt_idx]
         else:
-            src_mask_tokens = cond.loss_src_mask_tokens[src_valid][src_idx]
-            tgt_mask_tokens = cond.loss_tgt_mask_tokens[tgt_valid][tgt_idx]
+            src_mask_tokens = cond.src_mask_tokens_before_specialization[src_valid][src_idx]
+            tgt_mask_tokens = cond.tgt_mask_tokens_before_specialization[tgt_valid][tgt_idx]
 
         if len(shared_instance_ids) == 0:
             continue
@@ -400,15 +409,17 @@ def src_tgt_token_consistency_loss(
         num_total_shared_tokens += len(shared_instance_ids)
 
     metric_dict = {}
-    with torch.no_grad():
-        metric_losses = torch.cat(metric_losses)
-        metric_dict = {f"metric_src_tgt_consistency_{i}_{cfg.model.num_conditioning_pairs}": _loss.mean() for i, _loss in enumerate(metric_losses.chunk(cfg.model.num_conditioning_pairs, dim=-1))}
-        
+    if len(metric_losses) > 0:
+        with torch.no_grad():
+            metric_losses = torch.cat(metric_losses)
+            metric_dict = {f"metric_src_tgt_consistency_{i}_{cfg.model.num_conditioning_pairs}": _loss.mean() for i, _loss in enumerate(metric_losses.chunk(cfg.model.num_conditioning_pairs, dim=-1))}
+            
     avg_loss = torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=batch.device, requires_grad=True)
     ret = {}
 
     if cfg.model.src_tgt_consistency_loss_weight is not None:
-        ret["src_tgt_consistency_loss"] = avg_loss * cfg.model.src_tgt_consistency_loss_weight
+        cur_step = state.global_step if state is not None else 0
+        ret["src_tgt_consistency_loss"] = avg_loss * max(linear_warmup(cur_step, 6000, cfg.model.src_tgt_consistency_loss_weight, start_step=cfg.model.src_tgt_start_loss_step), 1e-2)
 
     ret.update({
         "metric_src_tgt_consistency": avg_loss,
@@ -433,3 +444,100 @@ def src_tgt_feature_map_consistency_loss(
         "metric_orig_feature_map_distribution": wandb.Histogram((torch.cat((cond.src_orig_feature_map, cond.tgt_orig_feature_map), dim=0)).detach().float().cpu()),
         "metric_warped_feature_map_distribution": wandb.Histogram((torch.cat((cond.src_warped_feature_map, cond.tgt_warped_feature_map), dim=0)).detach().float().cpu()),
     }
+
+
+def tgt_positional_information_loss(
+    cfg: BaseConfig,
+    batch: InputData,
+    cond: ConditioningData,
+    state: Optional[TrainingState] = None,
+):
+    losses = []
+    assert cfg.model.only_encode_shared_tokens
+    for b in range(batch.bs):
+        src_valid = cond.mask_batch_idx == b
+        tgt_valid = cond.tgt_mask_batch_idx == b
+
+        src_loss_instance_idx = cond.mask_instance_idx[src_valid]
+        tgt_loss_instance_idx = cond.tgt_mask_instance_idx[tgt_valid]
+        shared_instance_ids, src_idx, tgt_idx = np.intersect1d(src_loss_instance_idx.cpu().numpy(), tgt_loss_instance_idx.cpu().numpy(), return_indices=True)
+
+        if cfg.model.only_encode_shared_tokens and cfg.model.max_num_training_masks is None:
+            assert len(shared_instance_ids) == len(src_loss_instance_idx) == len(tgt_loss_instance_idx), "Only shared tokens should be encoded"
+
+        src_mask_token_pos_emb = cond.src_mask_token_pos_emb[src_valid][src_idx][..., :cfg.model.pos_emb_dim]
+        tgt_mask_token_pos_emb = cond.tgt_mask_token_pos_emb[src_valid][src_idx][..., :cfg.model.pos_emb_dim]
+
+        if len(shared_instance_ids) == 0:
+            continue
+        
+        loss = F.mse_loss(src_mask_token_pos_emb, tgt_mask_token_pos_emb, reduction="mean")
+        losses.append(loss)
+
+
+    avg_loss = torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=batch.device, requires_grad=True)
+    ret = {}
+
+    if cfg.model.src_tgt_pos_emb_consistency_loss_weight is not None:
+        cur_step = state.global_step if state is not None else 0
+        ret["src_tgt_pos_emb_consistency_loss"] = avg_loss * max(linear_warmup(cur_step, 6000, cfg.model.src_tgt_pos_emb_consistency_loss_weight, start_step=cfg.model.src_tgt_start_loss_step), 1e-2)
+
+    ret.update({
+        "metric_src_tgt_pos_emb_consistency": avg_loss,
+    })
+
+    return ret
+
+
+def cosine_similarity_loss(
+    cfg: BaseConfig,
+    batch: InputData,
+    cond: ConditioningData,
+    state: Optional[TrainingState] = None,
+):
+    losses = []
+    for b in range(batch.bs):
+        src_valid = cond.mask_batch_idx == b
+        tgt_valid = cond.tgt_mask_batch_idx == b
+
+        src_mask_tokens = cond.src_mask_tokens[src_valid]
+        tgt_mask_tokens = cond.tgt_mask_tokens[tgt_valid]
+
+        def get_cosine_loss(_mask_tokens):
+            projection = _mask_tokens[None]
+            batch_size, num_slots, proj_dim = projection.shape
+            proj = projection.repeat(1, num_slots, 1)
+            # `proj` has shape: [batch_size, num_slots*num_slots, proj_dim]
+            proj2 = projection.repeat(1, 1, num_slots).reshape(batch_size, num_slots*num_slots, proj_dim)
+            # `proj2` has shape: [batch_size, num_slots*num_slots, proj_dim]
+            target = -torch.ones(num_slots*num_slots).to(_mask_tokens.device)
+            for i in range(num_slots):
+                target[num_slots*i+i] = 1
+            # `target` has shape: [num_slots*num_slots,]
+
+            proj = proj.view(-1, proj_dim)
+            # `proj` has shape: [batch_size*num_slots*num_slots, proj_dim]
+            proj2 = proj2.view(-1, proj_dim)
+            # `proj2` has shape: [batch_size*num_slots*num_slots, proj_dim]
+            target = target.repeat(batch_size)
+            # `target` has shape: [batch_size*num_slots*num_slots,]
+
+            info_nce_loss = torch.nn.functional.cosine_embedding_loss(proj, proj2, target, margin=0.2)
+            return info_nce_loss
+
+        losses.append(get_cosine_loss(src_mask_tokens))
+        losses.append(get_cosine_loss(tgt_mask_tokens))
+    
+    ret = {}
+
+    avg_loss = torch.stack(losses).mean() if len(losses) > 0 else torch.tensor(0.0, device=batch.device, requires_grad=True)
+
+    if cfg.model.cosine_loss_weight is not None:
+        cur_step = state.global_step if state is not None else 0
+        ret["cosine_loss"] = avg_loss * max(linear_warmup(cur_step, 5000, cfg.model.cosine_loss_weight, start_step=cfg.model.src_tgt_start_loss_step), 1e-2)
+
+    ret.update({
+        "metric_cosine": avg_loss,
+    })
+
+    return ret

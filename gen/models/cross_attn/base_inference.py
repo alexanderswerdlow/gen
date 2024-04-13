@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from math import sqrt
 from pathlib import Path
+import traceback
 from typing import TYPE_CHECKING, Any, Optional
 
 from image_utils.standalone_image_utils import integer_to_color
@@ -10,6 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import repeat
+import einops
 from einx import mean, rearrange, softmax
 from image_utils import ChannelRange, Im, onehot_to_color
 from PIL import Image
@@ -72,7 +74,7 @@ def get_composited_mask(batch: dict, b: int, j: int, alpha=0.5, mask=None, color
 def get_metrics(self: BaseMapper, batch: InputData, cond: ConditioningData):
     loss_dict = self.compute_losses(batch, cond)
     loss_dict = {k: (float(v.detach().cpu().item()) if isinstance(v, torch.Tensor) else v) for k, v in loss_dict.items() }
-    if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt:
+    if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm:
         loss_dict['hist_src_mask_tokens'] = cond.src_mask_tokens.detach().float().cpu()
         loss_dict['hist_tgt_mask_tokens'] = cond.tgt_mask_tokens.detach().float().cpu()
 
@@ -328,7 +330,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     bs_ = batch.input_ids.shape[0]
     b_ = 0
     gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_tgt_image.torch[b_], onehot_to_color(batch.one_hot_tgt_segmentation[b_])).write_text(text="Target", color=(164, 164, 128)) for b_ in range(bs_)])
-    if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels or self.cfg.model.modulate_src_tokens_with_tgt_pose or self.cfg.model.modulate_src_feature_map:
+    if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels or self.cfg.model.modulate_src_tokens_with_tgt_pose or self.cfg.model.modulate_src_feature_map or self.cfg.model.encode_tgt_enc_norm:
         src_one_hot = integer_to_one_hot(batch.src_segmentation + 1, batch.src_segmentation.max() + 1)
         src_seg = Im(onehot_to_color(src_one_hot[b_].squeeze(0)))
         src_info = Im.concat_vertical(orig_src_image, src_seg).write_text("Source", color=(164, 164, 128))
@@ -342,7 +344,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
     batch.formatted_input_ids = None
     batch.attach_debug_info = True
-    batch.treat_as_train_batch = (state.split == Split.TRAIN)
+    batch.treat_as_train_batch = (state.split == Split.TRAIN) and torch.unique(batch.src_segmentation).shape[0] > 2
     prompt_image, cond = self.infer_batch(batch=batch, num_images_per_prompt=self.cfg.inference.num_images_per_prompt, **added_kwargs)
     batch.attach_debug_info = False
     batch.treat_as_train_batch = False
@@ -350,9 +352,10 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     if self.cfg.inference.compute_quantitative_token_metrics is False or self.cfg.trainer.custom_inference_every_n_steps is None:
         ret.update(get_metrics(self, batch, cond))
     try:
-        ret["data_viz"] = visualize_input_data(orig_batch.clone(), cfg=self.cfg, show_overlapping_masks=True, return_img=True, cond=cond)
+        ret["data_viz"] = visualize_input_data(orig_batch.clone(), cfg=self.cfg, show_overlapping_masks=True, remove_invalid=False, return_img=True, cond=cond)
     except Exception as e:
-        print(e)
+        log_warn(f"Failed to visualize input data", main_process_only=False)
+        traceback.print_exc()
         ret["data_viz"] = Im.new(256, 256)
         
     cond.src_feature_map = None
@@ -425,8 +428,8 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
             ret["attn_vis"] = Im.concat_vertical(*attn_imgs)
         except Exception as e:
-            log_warn(f"Failed to visualize attention maps: {e}")
-            import traceback; traceback.print_exc()
+            log_warn(f"Failed to visualize attention maps: {e.__traceback__}", main_process_only=False)
+            traceback.print_exc()
 
     use_idx = self.cfg.model.predict_rotation_from_n_frames is not None
 
@@ -453,32 +456,110 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
         ret["cond"] = {"mask_tokens": cond.mask_tokens, "mask_rgb": np.stack(all_masks), "orig_image": orig_tgt_image.np}
 
-    if self.cfg.model.only_encode_shared_tokens and (self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt):
-        _batch = repeat_batch(batch, 4)
-        assert _batch.bs == 4
-        _batch.force_encode_all_masks = torch.full((_batch.bs,), False, dtype=torch.bool)
-        _batch.force_encode_all_masks[[0, 3]] = True
+    torch.cuda.empty_cache()
 
-        with torch.cuda.amp.autocast():
-            _cond = self.get_standard_conditioning_for_inference(batch=_batch)
-        
-        layers = _cond.encoder_hidden_states.shape[-1] // self.uncond_hidden_states.shape[-1]
-        _cond.encoder_hidden_states[2:4, :, :] = rearrange('t d -> b t (l d)', self.uncond_hidden_states, l=layers, b=2)
+    if self.cfg.model.only_encode_shared_tokens and (self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm):
+        ret["view_pred"] = Im.new(64, 64)
+        try:
+            _batch = repeat_batch(batch, 4)
+            assert _batch.bs == 4
+            _batch.force_encode_all_masks = torch.full((_batch.bs,), False, dtype=torch.bool)
+            _batch.force_encode_all_masks[[0, 3]] = True
 
-        shared_tgt_tokens = _cond.tgt_mask_tokens[_cond.tgt_mask_batch_idx == 2]
-        _cond.encoder_hidden_states[2, :shared_tgt_tokens.shape[0], :] = shared_tgt_tokens
+            with torch.cuda.amp.autocast():
+                _cond = self.get_standard_conditioning_for_inference(batch=_batch)
+            
+            layers = _cond.encoder_hidden_states.shape[-1] // self.uncond_hidden_states.shape[-1]
+            _cond.encoder_hidden_states[2:4, :, :] = rearrange('t d -> b t (l d)', self.uncond_hidden_states, l=layers, b=2)
 
-        all_tgt_tokens = _cond.tgt_mask_tokens[_cond.tgt_mask_batch_idx == 3]
-        _cond.encoder_hidden_states[3, :all_tgt_tokens.shape[0], :] = all_tgt_tokens
-        
-        _prompt_images, _ = self.infer_batch(batch=_batch, cond=_cond, num_images_per_prompt=1)
+            shared_tgt_tokens = _cond.tgt_mask_tokens[_cond.tgt_mask_batch_idx == 2]
+            if shared_tgt_tokens.shape[0] > self.cfg.model.num_decoder_cross_attn_tokens:
+                log_info(f"Got too many tokens...{batch.metadata}")
+            _cond.encoder_hidden_states[2, :min(shared_tgt_tokens.shape[0], _cond.encoder_hidden_states.shape[1]), :] = shared_tgt_tokens[:_cond.encoder_hidden_states.shape[1]]
 
-        ret["view_pred"] = Im.concat_horizontal(
-            Im(_prompt_images[0]).write_text("Src Enc -> Tgt, All Tok", size=0.5),
-            Im(_prompt_images[1]).write_text("Src Enc -> Tgt, Shared Tok", size=0.5),
-            Im(_prompt_images[2]).write_text("GT Tgt Enc, Shared Tok", size=0.5),
-            Im(_prompt_images[3]).write_text("GT Tgt Enc, All Tok", size=0.5),
-        )
+            all_tgt_tokens = _cond.tgt_mask_tokens[_cond.tgt_mask_batch_idx == 3]
+            _cond.encoder_hidden_states[3, :all_tgt_tokens.shape[0], :] = all_tgt_tokens
+            
+            _prompt_images, _ = self.infer_batch(batch=_batch, cond=_cond, num_images_per_prompt=1)
+
+            ret["view_pred"] = Im.concat_vertical(
+                Im.concat_horizontal(
+                    Im(_prompt_images[0]).write_text("Src Enc -> Tgt, All Tok", size=0.5),
+                    Im(_prompt_images[1]).write_text("Src Enc -> Tgt, Shared Tok", size=0.5),
+                    Im(_prompt_images[2]).write_text("GT Tgt Enc, Shared Tok", size=0.5),
+                    Im(_prompt_images[3]).write_text("GT Tgt Enc, All Tok", size=0.5),
+                ),
+                Im.concat_horizontal(
+                    Im(orig_src_image.torch.cpu()).resize(orig_src_image.height, orig_src_image.width).write_text("Src Image", size=0.5),
+                    Im(orig_tgt_image.torch.cpu()).resize(orig_src_image.height, orig_src_image.width).write_text("GT Tgt Image", size=0.5),
+                    spacing=(Im(_prompt_images[0]).width * 2)
+                )
+            )
+        except:
+            log_warn("Failed to visualize shared tokens", main_process_only=False)
+            traceback.print_exc()
+
+    if self.cfg.model.inject_token_positional_information:
+        ret["positional_control"] = Im.new(64, 64)
+        try:
+            log_info(f"Visualizing positional control", main_process_only=False)
+            num_from_top = 3
+            max_num_viz = 4
+            num_variations = 9
+
+            _batch = repeat_batch(batch, num_variations)
+            
+            indices_ = batch.src_segmentation.view(batch.batch_size[0], -1)
+            ones_ = torch.ones_like(indices_, dtype=torch.int32)
+            all_non_empty_mask = ones_.new_zeros((batch.batch_size[0], 256))
+            all_non_empty_mask.scatter_add_(1, indices_.long(), ones_)
+            all_non_empty_mask = all_non_empty_mask[:, :-1]
+
+            sorted, indices = torch.sort(all_non_empty_mask.squeeze(0), descending=True)
+            indices = indices[num_from_top:sorted.nonzero().shape[0]][:max_num_viz]
+            from gen.models.utils import positionalencoding2d
+            for instance_idx in indices:
+                with torch.cuda.amp.autocast():
+                    _cond = self.get_standard_conditioning_for_inference(batch=_batch)
+
+                    pos_emb = positionalencoding2d(self.cfg.model.pos_emb_dim, self.cfg.model.encoder_latent_dim, self.cfg.model.encoder_latent_dim, device=self.device, dtype=self.dtype)
+
+                    instance_mask = _cond.mask_instance_idx == instance_idx
+                    
+                    if instance_mask.sum() == 0:
+                        continue
+
+                    _gt_centroids = _cond.mask_token_centroids[instance_mask]
+
+                    variations = torch.tensor([(0, 0), (-4, 0), (-16, 0), (0, -8), (0, -16), (8, 0), (16, 0), (0, 8), (0, 16)])[:num_variations]
+
+                    _gt_centroids = _gt_centroids + variations.to(_gt_centroids)
+                    _gt_centroids = torch.clamp(_gt_centroids, 0, self.cfg.model.encoder_latent_dim - 1)
+                    
+                    _cond.gt_src_mask_token_pos_emb[(_cond.mask_instance_idx == instance_idx)] = einops.rearrange(pos_emb[:, _gt_centroids[:, 0], _gt_centroids[:, 1]], "d tokens -> tokens d")
+
+                    new_src_tokens = self.mapper.inject_positional_information_film(_cond.src_mask_tokens_before_specialization, _cond.gt_src_mask_token_pos_emb)
+                    _cond.mask_tokens[:] = new_src_tokens
+                    _cond = self.update_hidden_state_with_mask_tokens(_batch, _cond)
+
+                    _prompt_images, _ = self.infer_batch(batch=_batch, cond=_cond, num_images_per_prompt=1)
+
+                    ret["positional_control"] = Im.concat_vertical(
+                        ret["positional_control"],
+                        Im.concat_vertical(
+                            Im.concat_horizontal(
+                                Im(_prompt_image).write_text(f"{(_variation.cpu().tolist())}", size=0.5) for _variation, _prompt_image in zip(variations, _prompt_images)
+                            ),
+                            Im.concat_horizontal(
+                                Im(orig_src_image.torch).resize(orig_tgt_image.height, orig_tgt_image.width),
+                                Im((batch.src_segmentation == instance_idx).squeeze(0)).resize(orig_tgt_image.height, orig_tgt_image.width).write_text(f"Instance {instance_idx}", size=0.5),
+                            ),
+                        )
+                    )
+        except:
+            log_warn("Failed to visualize shared tokens", main_process_only=False)
+            traceback.print_exc()
+
 
     if self.cfg.inference.vary_cfg_plot:
         scale_images = []

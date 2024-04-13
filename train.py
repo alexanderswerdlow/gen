@@ -20,7 +20,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchinfo import summary
 from tqdm.auto import tqdm
-from transformers import CLIPTokenizer
+from transformers import AutoTokenizer
 
 import wandb
 from diffusers.optimization import get_scheduler
@@ -29,7 +29,7 @@ from gen.configs import BaseConfig, ModelType
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.models.cross_attn.base_model import BaseMapper
 from gen.models.utils import get_model_from_cfg, set_default_inference_func, set_inference_func
-from gen.utils.decoupled_utils import Profiler, get_num_gpus, get_rank, is_main_process, save_memory_profile, show_memory_usage, write_to_file, print_memory
+from gen.utils.decoupled_utils import Profiler, get_num_gpus, get_rank, is_main_process, save_memory_profile, show_memory_usage, try_except, write_to_file, print_memory
 from gen.utils.logging_utils import log_debug, log_error, log_info, log_warn
 from gen.utils.trainer_utils import (
     Trainable,
@@ -82,7 +82,7 @@ class Trainer:
         self.models: list[Union[nn.Module, dict]] = None  # We support multiple models or dicts of named parameters if necessary
         self.optimizer: torch.optim.Optimizer = None
         self.lr_scheduler: torch.optim.lr_scheduler.LRScheduler = None
-        self.tokenizer: CLIPTokenizer = None
+        self.tokenizer: AutoTokenizer = None
 
         self.train_dataloader: DataLoader = None
         self.validation_dataloader: DataLoader = None
@@ -216,6 +216,7 @@ class Trainer:
         # Afterwards we recalculate our number of training epochs
         self.cfg.trainer.num_train_epochs = math.ceil(self.cfg.trainer.max_train_steps / num_update_steps_per_epoch)
 
+    @try_except
     def checkpoint(self, state: TrainingState):
         prefix = "checkpoint"
         self.cfg.checkpoint_dir.mkdir(exist_ok=True, parents=True)
@@ -326,7 +327,7 @@ class Trainer:
                     batch = batch.to(self.accelerator.device)
                     match self.cfg.model.model_type:
                         case ModelType.BASE_MAPPER:
-                            losses = self.model(batch)
+                            losses = self.model(batch, state)
                     global_step_metrics["forward_pass_time"] += time() - start_forward_time
 
                     true_step += 1

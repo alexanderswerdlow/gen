@@ -508,7 +508,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
             ret.update({
                 "tgt_enc_norm_pixel_values": tgt_data_src_transform.image,
                 "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8),
-                "tgt_enc_norm_valid": tgt_data_src_transform.valid,
+                "tgt_enc_norm_valid": torch.full((255,), True, dtype=torch.bool),
             })
         
         ret.update({
@@ -521,8 +521,8 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
             "src_pose": src_pose,
             "tgt_pose": tgt_pose,
             "input_ids": get_tokens(self.tokenizer),
-            "src_valid": src_data.valid,
-            "tgt_valid": tgt_data.valid,
+            "src_valid": torch.full((255,), True, dtype=torch.bool),
+            "tgt_valid": torch.full((255,), True, dtype=torch.bool),
             "valid": src_data.valid[..., 1:],
             **metadata
         })

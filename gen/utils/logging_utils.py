@@ -2,8 +2,6 @@ import logging
 from typing import Optional
 from rich.logging import RichHandler
 
-logging.basicConfig(level=logging.INFO, format= "%(message)s", datefmt="[%X]", handlers=[RichHandler()])
-
 logger: Optional[logging.Logger] = None
 
 
@@ -15,7 +13,7 @@ def set_logger(name: str):
     logger.handlers = []
 
     console_handler = RichHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.DEBUG)
     logger.addHandler(console_handler)
 
 
@@ -26,6 +24,7 @@ def get_logger():
 def set_log_file(log_file_path):
     log_format = "[%(asctime)s][%(name)s][%(levelname)s] - %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
+    
     formatter = logging.Formatter(fmt=log_format, datefmt=date_format)
     file_handler = logging.FileHandler(log_file_path)
     file_handler.setLevel(logging.DEBUG)

@@ -25,7 +25,7 @@ from torch.utils.data import Dataset
 from torchvision.ops import nms
 from tqdm import tqdm
 
-from gen import GLOBAL_CACHE_PATH, SCANNETPP_CUSTOM_DATA_PATH, SCANNETPP_DATASET_PATH
+from gen import CALVIN_V0_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
@@ -37,7 +37,7 @@ from gen.utils.decoupled_utils import (breakpoint_on_error, get_device, get_rank
                                        set_timing_builtins, to_numpy)
 from gen.utils.file_utils import get_available_path, sync_data
 from gen.utils.logging_utils import log_error, log_info, log_warn
-from gen.utils.tokenization_utils import get_tokens
+from gen.utils.tokenization_utils import _get_tokens, get_tokens
 from image_utils.standalone_image_utils import integer_to_color, onehot_to_color
 from gen.datasets.imagefolder.run_sam import save_type_names
 
@@ -70,15 +70,18 @@ def im_to_numpy(im):
     return data
 
 @inherit_parent_args
-class ImagefolderDataset(AbstractDataset, Dataset):
+class CalvinDataset(AbstractDataset, Dataset):
     def __init__(
         self,
         *,
-        root: Path = SCANNETPP_DATASET_PATH,
+        root: Path = CALVIN_V0_DATASET_PATH,
         augmentation: Optional[Augmentation] = None,
         return_encoder_normalized_tgt: bool = False,
         src_eq_tgt: bool = False,
         tokenizer = None,
+        specific_scenes: Optional[list[str]] = None,
+
+        # TODO: All these params are not actually used but needed because of a quick with hydra_zen
         image_pairs_per_scene: int = 16384,
         distance_threshold: tuple[float] = (0.30, 0.1, 0.12, 0.8),
         depth_map_type: str = "gt",
@@ -99,7 +102,6 @@ class ImagefolderDataset(AbstractDataset, Dataset):
         no_filtering: bool = False,
         dummy_mask: bool = False,
         merge_masks: bool = False,
-        # TODO: All these params are not actually used but needed because of a quick with hydra_zen
         num_objects=-1,
         resolution=-1,
         custom_split=None, # TODO: Needed for hydra
@@ -134,53 +136,71 @@ class ImagefolderDataset(AbstractDataset, Dataset):
         **kwargs
     ):
         
-        self.root = root
-        from datetime import datetime
-        current_datetime = datetime.now()
-        image_files, saved_data = get_to_process(current_datetime, self.root, save_type_names, return_raw_data=True)
-        self.saved_scene_frames = defaultdict(set)
-        for scene_id, frame_id in saved_data:
-            self.saved_scene_frames[scene_id].add(frame_id)
-
+        self.root = root / ("training" if self.split == Split.TRAIN else "validation")
+        # self.root = root / "validation"
+        self.specific_scenes = specific_scenes
         self.return_encoder_normalized_tgt = return_encoder_normalized_tgt
         self.src_eq_tgt = src_eq_tgt
         self.augmentation = augmentation
         self.tokenizer = tokenizer
+        
+        self.scene_paths = [folder for folder in Path(self.root).iterdir() if folder.is_dir() and (folder / "metadata.json").exists()]
+        self.scene_names = [scene.name for scene in self.scene_paths]
+        self.metadata = [list(json.load((folder / 'metadata.json').open()).values()) for folder in self.scene_paths]
+        print(f"Initial num pairs: {sum(len(task['start_end_ids']) for scene in self.metadata for task in scene)}")
+        for i, scene in enumerate(self.metadata):
+            for task in scene:
+                frame_ids = set()
+                for start, end in task['start_end_ids']:
+                    frame_ids.add(start)
+                    frame_ids.add(end)
+
+                episode_numbers = sorted(int(e.split('_')[1]) for e in frame_ids)
+                n = 40
+                task['start_end_ids'] = [[f'episode_{i}', f'episode_{i + n}'] for i in episode_numbers if i + n in episode_numbers]
+
+        print(f"Final num pairs: {sum(len(task['start_end_ids']) for scene in self.metadata for task in scene)} on {self.split.name.lower()}")
 
     def __len__(self) -> int:
-        return len(self.saved_scene_frames)
+        return len(self.metadata) * 10000
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        return self.get_paired_data(idx)
+        for i in range(30):
+            try:
+                idx %= len(self.metadata)
+                return self.get_paired_data(idx)
+            except Exception as e:
+                print(e)
+                idx = np.random.randint(len(self.metadata))
+
+        raise Exception("Failed to get data")
             
     def get_image(self, image_path: Path):
-        image_path = get_available_path(image_path, resolve=False, return_scratch_only=False)
-        with open(image_path, 'rb', buffering=100*1024) as fp: data = fp.read()
-        image = simplejpeg.decode_jpeg(data)
+        image = np.asarray(Image.open(image_path))
         image = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
 
         return image
     
-    def get_raw_image(self, image_path: Path):
-        import torchvision
-        image_path = get_available_path(image_path, resolve=False, return_scratch_only=False)
-
-        target_file = torchvision.io.read_file(str(image_path))
-        image = torchvision.io.decode_jpeg(target_file, device=self.device)
-
-        return image
     
     def get_paired_data(self, idx: int):
-        metadata = self.get_metadata(idx)
+        metadata, (idx, task_id, pair_idx) = self.get_metadata(idx)
 
-        scene_id = metadata['metadata']['scene_id']
-        src_img_idx, tgt_img_idx = metadata['metadata']['frame_idxs']
+        scene_id = idx
+        scene_name = self.scene_names[scene_id]
+        src_img_name, tgt_img_name = self.metadata[idx][task_id]['start_end_ids'][pair_idx]
+        instruction = self.metadata[idx][task_id]['instruction']
+
+        def process_name(filename, padding_length=7):
+            return f"{filename[:-len(str(int(filename.split('_')[-1])))]}{int(filename.split('_')[-1]):0{padding_length}d}"
+        
+        src_img_name = process_name(src_img_name)
+        tgt_img_name = process_name(tgt_img_name)
 
         if self.src_eq_tgt:
-            tgt_img_idx = src_img_idx
+            tgt_img_name = src_img_name
         
-        src_path = self.root / save_type_names[0] / scene_id / f"{src_img_idx}.jpg"
-        tgt_path = self.root / save_type_names[0] / scene_id / f"{tgt_img_idx}.jpg"
+        src_path = self.root / scene_name / "image" / f"{src_img_name}.png"
+        tgt_path = self.root / scene_name / "image" / f"{tgt_img_name}.png"
 
         def get_seg(src_seg_path_):
             src_seg = torch.from_numpy(im_to_numpy(Image.open(src_seg_path_)))
@@ -188,13 +208,13 @@ class ImagefolderDataset(AbstractDataset, Dataset):
             src_seg[src_seg == 255] = -1
             return src_seg
 
-        src_seg_path = self.root / save_type_names[2] / scene_id / f"{src_img_idx}.png"
+        src_seg_path = self.root / scene_name / "segmentation" / f"{src_img_name}.png"
         src_seg = get_seg(src_seg_path)
 
         if self.src_eq_tgt:
             tgt_seg = src_seg.clone()
         else:
-            tgt_seg_path = self.root / save_type_names[2] / scene_id / f"{tgt_img_idx}.png"
+            tgt_seg_path = self.root / scene_name / "segmentation" / f"{tgt_img_name}.png"
             tgt_seg = get_seg(tgt_seg_path)
 
         src_img = self.get_image(src_path)
@@ -220,17 +240,11 @@ class ImagefolderDataset(AbstractDataset, Dataset):
             data_.segmentation = rearrange(data_.segmentation, "() c h w -> h w c")
             assert data_.segmentation.max() < 255
             data_.segmentation[data_.segmentation == -1] = 255
-            data_.segmentation[data_.segmentation >= 8] = 255
             data_.pad_mask = ~(data_.segmentation < 255).any(dim=-1)
             return data_
 
         src_data = process_data(src_data)
         tgt_data = process_data(tgt_data)
-
-        pixels = src_data.segmentation.long().contiguous().view(-1)
-        pixels = pixels[(pixels < 255) & (pixels >= 0)]
-        src_bincount = torch.bincount(pixels, minlength=256)
-        valid = src_bincount > 0
 
         if self.return_encoder_normalized_tgt:
             tgt_data_src_transform = process_data(tgt_data_src_transform)
@@ -247,35 +261,48 @@ class ImagefolderDataset(AbstractDataset, Dataset):
             "src_pad_mask": src_data.pad_mask,
             "src_pixel_values": src_data.image,
             "src_segmentation": src_data.segmentation.to(torch.uint8),
-            "input_ids": get_tokens(self.tokenizer),
-            "valid": valid[..., 1:],
+            "input_ids": _get_tokens(self.tokenizer, instruction, max_length=24),
+            "valid": torch.full((254,), True, dtype=torch.bool),
+            "src_valid": torch.full((255,), True, dtype=torch.bool),
+            "tgt_valid": torch.full((255,), True, dtype=torch.bool),
             **metadata
         })
 
         return ret
     
     def get_metadata(self, idx):
-        scene_name = list(self.saved_scene_frames.keys())[idx]
-        allowed_frames = self.saved_scene_frames[scene_name]
+        scene_name = self.scene_names[idx]
 
-        src_img_idx, tgt_img_idx = np.random.choice(list(allowed_frames), size=2, replace=False)
+        num_scene_tasks = len(self.metadata[idx])
+        task_id = np.random.randint(num_scene_tasks)
+        task_data = self.metadata[idx][task_id]
+        num_task_pairs = len(task_data['start_end_ids'])
+
+        if num_task_pairs == 0:
+            return self.get_metadata((idx + 1) % len(self.metadata))
+        
+        pair_idx = np.random.randint(num_task_pairs)
+        src_img_idx, tgt_img_idx = task_data['start_end_ids'][pair_idx]
+
         frame_name = f"{src_img_idx}-{tgt_img_idx}"
-        frame_idxs = (src_img_idx, tgt_img_idx)
+        frame_idxs = (0, 0)
+        name = f"{scene_name}_{task_id}_{frame_name}"
 
-        name = f"{scene_name}_{frame_name}"
-        return {
+        ret = {
             "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
-            "has_global_instance_ids": torch.tensor(False),
+            "has_global_instance_ids": torch.tensor(True),
             "metadata": {
-                "dataset": "imagefolder",
+                "dataset": "calvin",
                 "name": name,
                 "scene_id": scene_name,
+                "camera_trajectory": str(task_id), # Dummy value
                 "camera_frame": frame_name,
-                "index": idx,
-                "camera_trajectory": "0", # Dummy value
                 "frame_idxs": frame_idxs,
+                "index": idx,
             },
         }
+
+        return ret, (idx, task_id, pair_idx)
 
     def get_dataset(self):
         return self
@@ -288,7 +315,6 @@ app = typer.Typer(pretty_exceptions_show_locals=False)
 
 @app.command()
 def main(
-    root: Path,
     num_workers: int = 0,
     batch_size: int = 1,
     viz: bool = True,
@@ -304,18 +330,17 @@ def main(
             enable_square_crop=True,
             center_crop=True,
             different_src_tgt_augmentation=False,
-            enable_random_resize_crop=True,
+            enable_random_resize_crop=False,
             enable_horizontal_flip=False,
             tgt_random_scale_ratio=((1.0, 1.0), (1.0, 1.0)),
             enable_rand_augment=False,
             enable_rotate=False,
             reorder_segmentation=False,
             return_grid=False,
-            src_transforms=get_stable_diffusion_transforms(resolution=512),
-            tgt_transforms=get_stable_diffusion_transforms(resolution=512),
+            src_transforms=get_stable_diffusion_transforms(resolution=256),
+            tgt_transforms=get_stable_diffusion_transforms(resolution=256),
         )
-        dataset = ImagefolderDataset(
-            root=root,
+        dataset = CalvinDataset(
             shuffle=True,
             cfg=None,
             split=Split.TRAIN,
@@ -324,8 +349,6 @@ def main(
             tokenizer=MockTokenizer(),
             augmentation=augmentation,
             return_tensorclass=return_tensorclass,
-            top_n_masks_only=128,
-            num_overlapping_masks=1,
             use_cuda=False,
         )
 
