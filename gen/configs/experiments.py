@@ -1935,8 +1935,10 @@ def get_experiments():
             positional_information_pred_dim=768,
             use_t5_text_encoder_for_token_pred=False,
             token_modulator=dict(final_norm=False),
-            src_tgt_consistency_loss_weight=10,
+            src_tgt_consistency_loss_weight=25,
             text_encoder_lora=True,
+            freeze_unet=True,
+            freeze_token_encoder=True,
         ),
         inference=dict(
             visualize_positional_control=False,

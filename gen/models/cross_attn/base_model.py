@@ -530,6 +530,19 @@ class BaseMapper(Trainable):
                 other.mapper.token_predictor.train()
                 other.mapper.layer_specialization.train()
 
+            if md.tgt_positional_information_from_lang:
+                if set_grad:
+                    other.mapper.predict_positional_information.requires_grad_(True)
+                    other.mapper.predict_positional_information.to(device=_device, dtype=torch.float32)
+                
+                other.mapper.predict_positional_information.train()
+
+            if md.predict_only_pos_emb_from_lang:
+                if set_grad:
+                    other.mapper.positional_information_mlp.requires_grad_(True)
+                    other.mapper.positional_information_mlp.to(device=_device, dtype=torch.float32)
+                other.mapper.positional_information_mlp.train()
+
     def unfreeze_unet(self):
         self.cfg.model.freeze_unet = False
         self.unet.to(device=self.device, dtype=torch.float32)
@@ -864,7 +877,8 @@ class BaseMapper(Trainable):
             clip_feature_map['norm'] = torch.cat((clip_feature_map['final_norm'][:orig_bs], clip_feature_map['norm'][orig_bs:]), dim=0)
         elif self.cfg.model.custom_dino_v2:
             with torch.no_grad():
-                clip_feature_map = {f'blocks.{i}':v[:, 4:] for i,v in enumerate(self.clip.get_intermediate_layers(x=clip_input, n=24 if 'large' in self.cfg.model.encoder.model_name else 12, norm=True))}
+                # [:, 4:]
+                clip_feature_map = {f'blocks.{i}':v for i,v in enumerate(self.clip.get_intermediate_layers(x=clip_input, n=24 if 'large' in self.cfg.model.encoder.model_name else 12, norm=True))}
         else:
             with torch.no_grad() if self.cfg.model.freeze_clip and self.cfg.model.unfreeze_last_n_clip_layers is None else nullcontext():
                 clip_feature_map = self.clip.forward_model(clip_input)  # b (h w) d
@@ -1261,7 +1275,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.tgt_positional_information_from_lang:
             self_attn_dim = self.cfg.model.positional_information_pred_dim
-            with torch.no_grad():
+            with nullcontext() if self.cfg.model.text_encoder_lora else torch.no_grad():
                 text_encoding = self.text_encoder(input_ids=batch.input_ids[:, :24]).last_hidden_state
                 text_encoding = F.pad(text_encoding, (0, self_attn_dim - text_encoding.shape[-1]), "constant", 0)
 
