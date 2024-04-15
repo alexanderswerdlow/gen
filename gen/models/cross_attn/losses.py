@@ -404,7 +404,10 @@ def src_tgt_token_consistency_loss(
         with torch.no_grad():
             metric_losses.append(F.mse_loss(src_mask_tokens, tgt_mask_tokens, reduction="none"))
         
-        loss = F.mse_loss(src_mask_tokens, tgt_mask_tokens, reduction="mean")
+        if cfg.model.use_cosine_similarity_src_tgt_token_consistency:
+            loss = 1 - F.cosine_similarity(src_mask_tokens, tgt_mask_tokens, dim=-1).mean()
+        else:
+            loss = F.mse_loss(src_mask_tokens, tgt_mask_tokens, reduction="mean")
         losses.append(loss)
         num_total_shared_tokens += len(shared_instance_ids)
 

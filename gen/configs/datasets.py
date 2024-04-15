@@ -28,8 +28,8 @@ class DatasetConfig:
     num_validation_images: int = 2
     overfit: bool = False
     reset_val_dataset_every_epoch: bool = False
-    additional_train: Optional[list[AbstractDataset]] = None
-    additional_val: Optional[list[AbstractDataset]] = None
+    additional_train: Optional[dict[str, AbstractDataset]] = None
+    additional_val: Optional[dict[str, AbstractDataset]] = None
 
 @dataclass
 class HuggingFaceControlNetConfig(DatasetConfig):

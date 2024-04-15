@@ -154,11 +154,15 @@ class Hypersim(AbstractDataset, Dataset):
             ret = self.get_two_frames(camera_trajectory_frames[first_frame_idx][0], camera_trajectory_frames[second_frame_idx][0])
             return ret
         else:
-            return self.get_single_frame(index)
+            return self.get_two_frames(index, index)
 
     def get_two_frames(self, src_index, tgt_index):
         init_src_data = self.hypersim.__getitem__(src_index)
-        init_tgt_data = self.hypersim.__getitem__(tgt_index)
+
+        if src_index == tgt_index:
+            init_tgt_data = init_src_data
+        else:
+            init_tgt_data = self.hypersim.__getitem__(tgt_index)
 
         ret = {}
 
@@ -171,7 +175,6 @@ class Hypersim(AbstractDataset, Dataset):
         
         src_rgb, src_seg, src_metadata = _process(init_src_data)
         tgt_rgb, tgt_seg, tgt_metadata = _process(init_tgt_data)
-
 
         src_data, tgt_data = self.augmentation(
             src_data=Data(image=src_rgb, segmentation=src_seg),
@@ -239,102 +242,6 @@ class Hypersim(AbstractDataset, Dataset):
                 "camera_frame": src_metadata[2],
                 "index": src_index,
                 "camera_trajectory": src_metadata[1],
-                "split": self.split.name.lower(),
-                "frame_idxs": (0, 0) # Dummy value
-            },
-        })
-
-        if src_data.grid is not None: ret["src_grid"] = src_data.grid.squeeze(0)
-        if tgt_data.grid is not None: ret["tgt_grid"] = tgt_data.grid.squeeze(0)
-
-        return ret
-
-
-    def get_single_frame(self, index):
-        try:
-            data = self.hypersim.__getitem__(index)
-        except Exception as e:
-            log_error(e)
-            return self.__getitem__(random.randint(0, len(self))) # Very hacky but might save us in case of an error with a single instance.
-
-        ret = {}
-
-        if self.return_raw_dataset_image: ret["raw_dataset_image"] = data["rgb"].copy()
-
-        rgb, seg, metadata = torch.from_numpy(data['rgb']).to(self.device), torch.from_numpy(data['instance']).to(self.device), data["identifier"]
-        rgb = rearrange(rgb / 255, "h w c -> () c h w")
-        seg = rearrange(seg.to(torch.float32), "h w -> () () h w")
-
-        if len(torch.unique(seg)) <= 1:
-            raise Exception(f"Segmentation mask has only one unique value for index {index}")
-        
-        src_data, tgt_data = self.augmentation(
-            src_data=Data(image=rgb, segmentation=seg),
-            tgt_data=Data(image=rgb, segmentation=seg),
-            use_keypoints=False, 
-            return_encoder_normalized_tgt=self.return_encoder_normalized_tgt
-        )
-
-        if self.return_encoder_normalized_tgt:
-            tgt_data, tgt_data_src_transform = tgt_data
-
-        def process_data(data_: Data):
-            data_.image = data_.image.squeeze(0)
-            data_.segmentation = rearrange(data_.segmentation, "() c h w -> h w c")
-            data_.segmentation[data_.segmentation == -1] = 255
-            data_.segmentation = torch.cat([data_.segmentation, data_.segmentation.new_full((*data_.segmentation.shape[:-1], self.num_overlapping_masks - 1), 255)], dim=-1)
-            data_.pad_mask = ~(data_.segmentation < 255).any(dim=-1)
-            return data_
-        
-        src_data = process_data(src_data)
-        tgt_data = process_data(tgt_data)
-
-        if self.return_encoder_normalized_tgt:
-            tgt_data_src_transform = process_data(tgt_data_src_transform)
-            ret.update({
-                "tgt_enc_norm_pixel_values": tgt_data_src_transform.image,
-                "tgt_enc_norm_segmentation": tgt_data_src_transform.segmentation.to(torch.uint8),
-                "tgt_enc_norm_valid": torch.full((255,), True, dtype=torch.bool),
-            })
-
-        pixels = src_data.segmentation.long().contiguous().view(-1)
-        pixels = pixels[(pixels < 255) & (pixels >= 0)]
-        src_bincount = torch.bincount(pixels, minlength=self.top_n_masks_only)
-        valid = src_bincount > 0
-
-        name = "_".join(metadata)
-
-        extrinsics = data['extrinsics']
-        rot = R.from_quat((extrinsics['quat_x'], extrinsics['quat_y'], extrinsics['quat_z'], extrinsics['quat_w']))
-
-        # Normalize translation
-        # camera_trajectory_extent = self.camera_trajectory_extents[(metadata[0], metadata[1])]
-        T = torch.tensor([extrinsics['x'], extrinsics['y'], extrinsics['z']]).view(3, 1) / 50
-        
-        RT = torch.cat((torch.from_numpy(rot.as_matrix()), T), dim=1)
-        RT = torch.cat((RT, torch.tensor([[0, 0, 0, 1]])), dim=0)
-
-        ret.update({
-            "tgt_pad_mask": tgt_data.pad_mask,
-            "tgt_pixel_values": tgt_data.image,
-            "tgt_segmentation": tgt_data.segmentation.to(torch.uint8),
-            "src_pad_mask": src_data.pad_mask,
-            "src_pixel_values": src_data.image,
-            "src_segmentation": src_data.segmentation.to(torch.uint8),
-            "src_pose": RT,
-            "tgt_pose": RT,
-            "src_valid": valid,
-            "input_ids": get_tokens(self.tokenizer),
-            "valid": valid[..., 1:],
-            "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
-            "has_global_instance_ids": torch.tensor(True),
-            "metadata": {
-                "dataset": "hypersim",
-                "name": name,
-                "scene_id": metadata[0],
-                "camera_frame": metadata[2],
-                "index": index,
-                "camera_trajectory": metadata[1],
                 "split": self.split.name.lower(),
                 "frame_idxs": (0, 0) # Dummy value
             },

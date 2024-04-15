@@ -165,7 +165,8 @@ def visualize_input_data(
         cfg: Optional[BaseConfig] = None,
         image_only: bool = False,
         return_img: bool = False,
-        cond: Optional[Any] = None
+        cond: Optional[Any] = None,
+        tokenizer=None,
     ):
 
     from image_utils import Im, onehot_to_color
@@ -254,6 +255,9 @@ def visualize_input_data(
             from gen.datasets.scannetpp.scannetpp import get_distance_matrix_vectorized
             rot, dist = get_distance_matrix_vectorized(torch.stack((batch.src_pose[b], batch.tgt_pose[b]), dim=0))
             output_img = output_img.write_text(f"Relative Pose Rot: {rot[0, 1]:.2f}, Relative Pose Dist: {dist[0, 1]:.2f}", (10, 10), size=0.25)
+
+        if batch.input_ids is not None and tokenizer is not None:
+            output_img = output_img.write_text(tokenizer.batch_decode(batch.input_ids, skip_special_tokens=True)[b], position=(0.9525, 0.01), size=0.35)
         
         if cond is not None:
             def get_pca_img(_feat_map):

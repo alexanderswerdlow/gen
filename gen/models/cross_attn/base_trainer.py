@@ -204,7 +204,7 @@ class BaseTrainer(Trainer):
     def after_backward(self, state: TrainingState):
         tr = self.cfg.trainer
         if check_every_n_steps(
-            state, tr.eval_every_n_steps, run_first=tr.eval_on_start, all_processes=True, decay_steps=tr.eval_decay_steps
+            state, tr.eval_every_n_steps, run_first=tr.eval_on_start, all_processes=True, decay_steps=tr.eval_decay_steps,
         ) or check_every_n_epochs(state, tr.eval_every_n_epochs, all_processes=True):
             with show_memory_usage():
                 try:

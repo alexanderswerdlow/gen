@@ -351,7 +351,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         log_info(f"Scannet++ has {len(self)} samples with {len(self.scenes)} scenes and {len(self.image_files)} images")
 
     def __len__(self) -> int:
-        return len(self.image_files) if self.return_raw_dataset_image else len(self.dataset_idx_to_frame_pair)
+        return len(self.image_files) if (self.return_raw_dataset_image or self.src_eq_tgt) else len(self.dataset_idx_to_frame_pair)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         if self.return_raw_dataset_image:
@@ -413,6 +413,9 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
 
     
     def get_paired_data(self, idx: int):
+        if self.src_eq_tgt:
+            idx = torch.randint(0, len(self.dataset_idx_to_frame_pair), (1,)).item()
+            
         metadata = self.get_metadata(idx)
 
         src_img_idx, tgt_img_idx = metadata['metadata']['frame_idxs']

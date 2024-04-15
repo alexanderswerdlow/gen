@@ -151,7 +151,7 @@ def check_every_n_steps(
 ):
     if n is None: return False
     if decay_steps:
-        max_eval_interval = max_eval_interval or n * 5
+        max_eval_interval = max_eval_interval or n * 2
         decrease_n_runs = decrease_n_runs or 5
         n = min(n * ((state.global_step // (decrease_n_runs * n)) + 1), max_eval_interval)
     return (state.global_step % n == 0 and (run_first or state.global_step > 0)) and (is_main_process() or all_processes)

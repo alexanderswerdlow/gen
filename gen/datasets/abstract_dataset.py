@@ -133,7 +133,7 @@ class AbstractDataset(ABC):
             self,
             generator: Optional[Generator] = None,
             pin_memory: bool = True,
-            additional_datasets: Optional[Iterable[Dataset]] = None,
+            additional_datasets: Optional[dict[str, Dataset]] = None,
             subset_range: Optional[Any] = None,
             **kwargs
         ):
@@ -155,13 +155,9 @@ class AbstractDataset(ABC):
 
         if self.additional_datasets is not None:
             log_info(f"Concatenating additional datasets: {self.additional_datasets}")
-            for _ds in [orig_dataset, *self.additional_datasets]:
-                if self.repeat_single_dataset_n_times:
-                    _name = orig_dataset.datasets[0].__class__.__name__
-                else:
-                    _name = _ds.__class__.__name__
-                log_info(f"Dataset {_name} has size: {len(_ds)}")
-            orig_dataset = ConcatDataset([orig_dataset, *self.additional_datasets])
+            for _ds_name, _ds in dict(primary=orig_dataset, **self.additional_datasets).items():
+                log_info(f"Dataset {_ds_name} has size: {len(_ds)}")
+            orig_dataset = ConcatDataset([orig_dataset, *self.additional_datasets.values()])
 
         if self.allow_subset and self.subset_size is not None:
             if self.random_subset:

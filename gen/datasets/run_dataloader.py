@@ -55,7 +55,7 @@ def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
         )
 
         if exists(cfg.dataset.additional_train):
-            additional_datasets = [instantiate(dataset_cfg)(cfg=cfg, split=Split.TRAIN, tokenizer=MockTokenizer(), _partial_=True) for dataset_cfg in cfg.dataset.additional_train]
+            additional_datasets = {dataset_name: instantiate(dataset_cfg)(cfg=cfg, split=Split.TRAIN, tokenizer=MockTokenizer(), _partial_=True) for dataset_name, dataset_cfg in cfg.dataset.additional_train.items()}
 
         dataset = train
     else:
@@ -64,7 +64,7 @@ def iterate_dataloader(cfg: BaseConfig, accelerator: Accelerator):
         )
 
         if exists(cfg.dataset.additional_val):
-            additional_datasets = [instantiate(dataset_cfg)(cfg=cfg, split=Split.VALIDATION, tokenizer=MockTokenizer(), _partial_=True) for dataset_cfg in cfg.dataset.additional_val]
+            additional_datasets = {dataset_name: instantiate(dataset_cfg)(cfg=cfg, split=Split.VALIDATION, tokenizer=MockTokenizer(), _partial_=True) for dataset_name, dataset_cfg in cfg.dataset.additional_val.items()}
 
         dataset = val
 

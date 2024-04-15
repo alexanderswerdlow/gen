@@ -274,6 +274,7 @@ class ImagefolderDataset(AbstractDataset, Dataset):
                 "index": idx,
                 "camera_trajectory": "0", # Dummy value
                 "frame_idxs": frame_idxs,
+                "split": self.split.name.lower(),
             },
         }
 

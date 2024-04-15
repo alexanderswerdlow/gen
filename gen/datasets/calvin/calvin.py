@@ -80,7 +80,7 @@ class CalvinDataset(AbstractDataset, Dataset):
         src_eq_tgt: bool = False,
         tokenizer = None,
         specific_scenes: Optional[list[str]] = None,
-
+        fake_return_n: Optional[int] = 10000,
         # TODO: All these params are not actually used but needed because of a quick with hydra_zen
         image_pairs_per_scene: int = 16384,
         distance_threshold: tuple[float] = (0.30, 0.1, 0.12, 0.8),
@@ -110,7 +110,6 @@ class CalvinDataset(AbstractDataset, Dataset):
         num_cameras=None, # TODO: Needed for hydra
         multi_camera_format=None, # TODO: Needed for hydra
         subset=None, # TODO: Needed for hydra
-        fake_return_n=None, # TODO: Needed for hydra
         use_single_mask=None,# TODO: Needed for hydra
         cache_in_memory=None, # TODO: Needed for hydra
         cache_instances_in_memory= None, # TODO: Needed for hydra
@@ -143,26 +142,29 @@ class CalvinDataset(AbstractDataset, Dataset):
         self.src_eq_tgt = src_eq_tgt
         self.augmentation = augmentation
         self.tokenizer = tokenizer
+        self.fake_return_n = fake_return_n
         
         self.scene_paths = [folder for folder in Path(self.root).iterdir() if folder.is_dir() and (folder / "metadata.json").exists()]
         self.scene_names = [scene.name for scene in self.scene_paths]
         self.metadata = [list(json.load((folder / 'metadata.json').open()).values()) for folder in self.scene_paths]
         print(f"Initial num pairs: {sum(len(task['start_end_ids']) for scene in self.metadata for task in scene)}")
-        for i, scene in enumerate(self.metadata):
-            for task in scene:
-                frame_ids = set()
-                for start, end in task['start_end_ids']:
-                    frame_ids.add(start)
-                    frame_ids.add(end)
+        
+        if self.src_eq_tgt is False:
+            for i, scene in enumerate(self.metadata):
+                for task in scene:
+                    frame_ids = set()
+                    for start, end in task['start_end_ids']:
+                        frame_ids.add(start)
+                        frame_ids.add(end)
 
-                episode_numbers = sorted(int(e.split('_')[1]) for e in frame_ids)
-                n = 40
-                task['start_end_ids'] = [[f'episode_{i}', f'episode_{i + n}'] for i in episode_numbers if i + n in episode_numbers]
+                    episode_numbers = sorted(int(e.split('_')[1]) for e in frame_ids)
+                    n = 40
+                    task['start_end_ids'] = [[f'episode_{i}', f'episode_{i + n}'] for i in episode_numbers if i + n in episode_numbers]
 
         print(f"Final num pairs: {sum(len(task['start_end_ids']) for scene in self.metadata for task in scene)} on {self.split.name.lower()}")
 
     def __len__(self) -> int:
-        return len(self.metadata) * 10000
+        return len(self.metadata) * self.fake_return_n
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         for i in range(30):
@@ -261,7 +263,7 @@ class CalvinDataset(AbstractDataset, Dataset):
             "src_pad_mask": src_data.pad_mask,
             "src_pixel_values": src_data.image,
             "src_segmentation": src_data.segmentation.to(torch.uint8),
-            "input_ids": _get_tokens(self.tokenizer, instruction, max_length=24),
+            "input_ids": _get_tokens(self.tokenizer, instruction),
             "valid": torch.full((254,), True, dtype=torch.bool),
             "src_valid": torch.full((255,), True, dtype=torch.bool),
             "tgt_valid": torch.full((255,), True, dtype=torch.bool),
@@ -299,6 +301,7 @@ class CalvinDataset(AbstractDataset, Dataset):
                 "camera_frame": frame_name,
                 "frame_idxs": frame_idxs,
                 "index": idx,
+                "split": self.split.name.lower(),
             },
         }
 

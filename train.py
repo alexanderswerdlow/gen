@@ -127,7 +127,7 @@ class Trainer:
 
         additional_train_datasets = None
         if exists(self.cfg.dataset.additional_train):
-            additional_train_datasets = [instantiate(dataset_cfg)(cfg=self.cfg, split=Split.TRAIN, tokenizer=self.tokenizer) for dataset_cfg in self.cfg.dataset.additional_train]
+            additional_train_datasets = {dataset_name: instantiate(dataset_cfg)(cfg=self.cfg, split=Split.TRAIN, tokenizer=self.tokenizer) for dataset_name, dataset_cfg in self.cfg.dataset.additional_train.items()}
 
         self.train_dataloader: DataLoader = self.train_dataloader_holder.get_dataloader(additional_datasets=additional_train_datasets, pin_memory=True)
         assert len(self.train_dataloader) > 0
@@ -137,7 +137,7 @@ class Trainer:
 
         additional_val_datasets = None
         if exists(self.cfg.dataset.additional_val):
-            additional_val_datasets = [instantiate(dataset_cfg)(cfg=self.cfg, split=Split.VALIDATION, tokenizer=self.tokenizer) for dataset_cfg in self.cfg.dataset.additional_val]
+            additional_val_datasets = {dataset_name: instantiate(dataset_cfg)(cfg=self.cfg, split=Split.VALIDATION, tokenizer=self.tokenizer) for dataset_name, dataset_cfg in self.cfg.dataset.additional_val.items()}
 
         if self.cfg.dataset.overfit: self.val_dataset_holder.get_dataset = lambda: self.train_dataloader.dataset
 

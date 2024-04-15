@@ -86,6 +86,7 @@ class ConditioningData:
     src_mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
     tgt_mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
     gt_src_mask_token_pos_emb: Optional[Float[Tensor, "n d"]] = None
+    gt_src_mask_token: Optional[Float[Tensor, "n d"]] = None
 
     src_mask_tokens_before_specialization: Optional[Float[Tensor, "n d"]] = None # We duplicate for loss calculation
     tgt_mask_tokens_before_specialization: Optional[Float[Tensor, "n d"]] = None
@@ -215,7 +216,7 @@ class BaseMapper(Trainable):
 
     def initialize_diffusers_models(self) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
         # Load the tokenizer
-        tokenizer_encoder_name = "runwayml/stable-diffusion-v1-5" if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.pretrained_model_name_or_path
+        tokenizer_encoder_name = "CompVis/stable-diffusion-v1-4" if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.pretrained_model_name_or_path
         revision = None if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.revision
         self.tokenizer: AutoTokenizer = AutoTokenizer.from_pretrained(
             tokenizer_encoder_name, subfolder="tokenizer", revision=revision, use_fast=False
@@ -229,13 +230,13 @@ class BaseMapper(Trainable):
             prediction_type=self.cfg.model.rotation_diffusion_parameterization,
         )
 
-        if self.cfg.model.add_text_tokens:
+        if self.cfg.model.add_text_tokens or (self.cfg.model.tgt_positional_information_from_lang and self.cfg.model.use_t5_text_encoder_for_token_pred is False):
             self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
-                tokenizer_encoder_name, subfolder="text_encoder", revision=self.cfg.model.revision
+                tokenizer_encoder_name, subfolder="text_encoder", revision=revision
             )
 
-        if self.cfg.model.tgt_positional_information_from_lang:
-            from transformers import T5Tokenizer, T5ForConditionalGeneration
+        if self.cfg.model.tgt_positional_information_from_lang and self.cfg.model.use_t5_text_encoder_for_token_pred:
+            from transformers import T5Tokenizer
             from transformers import T5EncoderModel
             self.tokenizer = T5Tokenizer.from_pretrained("google-t5/t5-small") 
             self.text_encoder = T5EncoderModel.from_pretrained("google-t5/t5-small")
@@ -923,9 +924,10 @@ class BaseMapper(Trainable):
         only_encode_shared_tokens = self.cfg.model.only_encode_shared_tokens
         encode_src_twice = self.cfg.model.encode_src_twice
         less_token_dropout = self.cfg.model.less_token_dropout
+        max_num_training_masks = self.cfg.model.max_num_training_masks
 
         indices_ = batch.src_segmentation.view(batch.batch_size[0], -1)
-        ones_ = torch.ones_like(indices_, dtype=torch.bool)
+        ones_ = torch.ones_like(indices_, dtype=torch.int32)
         all_non_empty_mask = ones_.new_zeros((batch.batch_size[0], 256))
         all_non_empty_mask.scatter_add_(1, indices_.long(), ones_)  # Perform batched bincount
         all_non_empty_mask = all_non_empty_mask[:, :-1]
@@ -934,7 +936,7 @@ class BaseMapper(Trainable):
         for i in range(bs):
             one_hot_idx = torch.arange(segmentation_map_size, device=device)
             non_empty_mask = all_non_empty_mask[i] > 0
-            # non_empty_mask &= batch.src_valid[i]
+            # non_empty_mask &= batch.src_valid[i] # TODO: We don't really need this
             
             dropout_mask = non_empty_mask.new_full((non_empty_mask.shape[0],), False, dtype=torch.bool)
             non_empty_idx = non_empty_mask.nonzero().squeeze(1)
@@ -943,14 +945,19 @@ class BaseMapper(Trainable):
                 allowed_idxs = batch.shared_src_tgt_instance_idxs[i][batch.shared_src_tgt_instance_idxs[i] != 255]
                 non_empty_idx = non_empty_idx[torch.isin(non_empty_idx, allowed_idxs)]
 
-            if encode_src_twice and i >= batch.bs // 2 and (self.training or batch.treat_as_train_batch):
-                first_img_non_empty_idx = mask_instance_idx[i - batch.bs // 2]
-                non_empty_idx = first_img_non_empty_idx
+            less_token_dropout_fraction = 1/2
+            if encode_src_twice and (self.training or batch.treat_as_train_batch):
+                if i >= batch.bs // 2:
+                    first_img_non_empty_idx = mask_instance_idx[i - batch.bs // 2]
+                    non_empty_idx = first_img_non_empty_idx
+                    less_token_dropout_fraction = 1/3
+                else:
+                    less_token_dropout_fraction = 3/4
             
-            can_dropout = training_mask_dropout is not None and non_empty_idx.shape[0] > 0 and (self.training or batch.treat_as_train_batch)
+            can_dropout = (training_mask_dropout is not None and non_empty_idx.shape[0] > 0 and (self.training or batch.treat_as_train_batch))
             if can_dropout:
                 if less_token_dropout:
-                    num_sel_masks = torch.randint(max(1, int(non_empty_idx.shape[0] * 3/4)), non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
+                    num_sel_masks = torch.randint(max(1, int(non_empty_idx.shape[0] * less_token_dropout_fraction)), non_empty_idx.shape[0] + 1, (1,)) # We randomly take n/2 to n available masks
                 else:
                     num_sel_masks = torch.randint(1, non_empty_idx.shape[0] + 1, (1,)) # We randomly take 1 to n available masks
                 selected_masks = non_empty_idx[torch.randperm(len(non_empty_idx))[:num_sel_masks]] # Randomly select the subset of masks
@@ -966,18 +973,20 @@ class BaseMapper(Trainable):
             if can_dropout and dropout_mask.sum().item() == 0:
                 if non_empty_idx.shape[0] > 0:
                     dropout_mask[non_empty_idx[0]] = True
-                elif False:
-                    log_warn("We would have dropped all masks but instead we preserved the background", main_process_only=False)
-                    dropout_mask[background_mask_idx] = True
 
             combined_mask = dropout_mask & non_empty_mask
 
-            if self.cfg.model.max_num_training_masks is not None and (self.training or batch.treat_as_train_batch):
-                keep_idxs = combined_mask.nonzero().squeeze(1)
-                keep_idxs = keep_idxs[torch.randperm(keep_idxs.shape[0])]
-                keep_idxs = keep_idxs[:self.cfg.model.max_num_training_masks]
+            if max_num_training_masks is not None and (self.training or batch.treat_as_train_batch):
+                weights = all_non_empty_mask[i].pow(1/3)
+                valid_ = combined_mask.nonzero().squeeze(1)
+                weights[~torch.isin(torch.arange(weights.shape[0], device=batch.device), valid_)] = 0
+                num_to_select = min(max_num_training_masks, valid_.shape[0])
+                if num_to_select != 0:
+                    keep_idxs = torch.multinomial(weights, num_to_select, replacement=False)
+                    assert torch.isin(keep_idxs, valid_).sum() == keep_idxs.shape[0]
                 combined_mask = combined_mask.new_full((combined_mask.shape[0],), False, dtype=torch.bool)
-                combined_mask[keep_idxs] = True
+                if num_to_select != 0:
+                    combined_mask[keep_idxs] = True
         
             one_hot_idx = one_hot_idx[combined_mask]
 
@@ -1068,6 +1077,9 @@ class BaseMapper(Trainable):
             centroids_ = torch.clamp(torch.round(centroids_).to(torch.int64), 0, latent_dim - 1)
             cond.mask_token_centroids = centroids_
             cond.mask_token_pos_emb = einops.rearrange(pos_emb[:, centroids_[:, 0], centroids_[:, 1]], "d tokens -> tokens d")
+
+            if self.cfg.model.add_vgg_to_pos_emb:
+                breakpoint()
 
         # The actual query is obtained from the mapper class (a learnable tokens)        
         cu_seqlens_q = F.pad(torch.arange(seqlens_k.shape[0]).to(torch.int32) + 1, (1, 0)).to(device)
@@ -1172,6 +1184,7 @@ class BaseMapper(Trainable):
            cond.mask_tokens = cond.mask_tokens[token_mask]
            cond.mask_batch_idx = cond.mask_batch_idx[token_mask]
            cond.mask_instance_idx = cond.mask_instance_idx[token_mask]
+           cond.gt_src_mask_token = cond.mask_tokens.clone()
            if cond.mask_token_pos_emb is not None:
                cond.mask_token_pos_emb = cond.mask_token_pos_emb[token_mask]
                cond.gt_src_mask_token_pos_emb = cond.mask_token_pos_emb.clone()
@@ -1234,7 +1247,7 @@ class BaseMapper(Trainable):
         if self.cfg.model.tgt_positional_information_from_lang:
             self_attn_dim = self.cfg.model.positional_information_pred_dim
             with torch.no_grad():
-                text_encoding = self.text_encoder(input_ids=batch.input_ids).last_hidden_state
+                text_encoding = self.text_encoder(input_ids=batch.input_ids[:, :24]).last_hidden_state
                 text_encoding = F.pad(text_encoding, (0, self_attn_dim - text_encoding.shape[-1]), "constant", 0)
 
             num_text_tokens = text_encoding.shape[-2]
@@ -1245,7 +1258,10 @@ class BaseMapper(Trainable):
             cu_seqlens = torch.cat([torch.zeros(1, dtype=cu_seqlens.dtype, device=cu_seqlens.device), cu_seqlens])
 
             max_seqlen = seq_lengths.max().item() + num_text_tokens
-            input_tokens = torch.cat((cond.mask_tokens, cond.mask_token_pos_emb), dim=-1)
+            if self.cfg.model.predict_only_pos_emb_from_lang:
+                input_tokens = torch.cat((cond.mask_tokens, cond.mask_token_pos_emb), dim=-1)
+            else:
+                input_tokens = cond.mask_tokens
             split_tokens = torch.split(input_tokens, seq_lengths.tolist())  
             new_tokens = [torch.cat([tokens, text_encoding[i]], dim=0) for i, tokens in enumerate(split_tokens)]
             new_cond_mask_tokens = torch.cat(new_tokens, dim=0)
@@ -1254,19 +1270,23 @@ class BaseMapper(Trainable):
 
             split_tokens = torch.split(output, (seq_lengths + num_text_tokens).tolist(), dim=0)
             new_tokens = [tokens[:-num_text_tokens] for i, tokens in enumerate(split_tokens)]
-            new_tokens = self.mapper.positional_information_mlp(torch.cat(new_tokens, dim=0))
 
-            if torch.isnan(new_tokens).any(): breakpoint()
+            if self.cfg.model.predict_only_pos_emb_from_lang:
+                new_tokens = self.mapper.positional_information_mlp(torch.cat(new_tokens, dim=0))
 
-            cond.mask_token_pos_emb = new_tokens
-            cond.src_mask_token_pos_emb = cond.mask_token_pos_emb.clone()
+                if torch.isnan(new_tokens).any(): breakpoint()
+
+                cond.mask_token_pos_emb = new_tokens
+                cond.src_mask_token_pos_emb = cond.mask_token_pos_emb.clone()
+            else:
+                cond.mask_tokens = cond.mask_tokens + torch.cat(new_tokens, dim=0)
             
         if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm or self.cfg.model.modulate_src_feature_map:
             cond.src_mask_tokens = cond.mask_tokens.clone()
             cond.src_mask_tokens_before_specialization = cond.mask_tokens.clone()
             cond.tgt_mask_tokens_before_specialization = cond.tgt_mask_tokens.clone()
 
-        if self.cfg.model.inject_token_positional_information:
+        if self.cfg.model.inject_token_positional_information and self.cfg.model.predict_only_pos_emb_from_lang:
             cond.mask_tokens = self.mapper.inject_positional_information_film(cond.mask_tokens, cond.mask_token_pos_emb)
             cond.src_mask_tokens = cond.mask_tokens.clone()
             cond.tgt_mask_tokens = self.mapper.inject_positional_information_film(cond.tgt_mask_tokens, cond.tgt_mask_token_pos_emb)
@@ -1591,7 +1611,7 @@ class BaseMapper(Trainable):
         if self.cfg.model.src_tgt_feature_map_consistency_loss_weight is not None:
             losses.update(src_tgt_feature_map_consistency_loss(cfg=self.cfg, batch=batch, cond=cond))
 
-        if self.cfg.model.tgt_positional_information_from_lang:
+        if self.cfg.model.src_tgt_pos_emb_loss:
             losses.update(tgt_positional_information_loss(cfg=self.cfg, batch=batch, cond=cond, state=state))
 
         if self.cfg.model.cosine_similarity_loss:

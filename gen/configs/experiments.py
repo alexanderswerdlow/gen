@@ -749,8 +749,8 @@ def get_experiments():
             val=dict(
                 return_encoder_normalized_tgt=True,
             ),
-            additional_train=(
-                builds(
+            additional_train=dict(
+                hypersim=builds(
                     Hypersim, 
                     populate_full_signature=True,
                     zen_partial=True,
@@ -783,8 +783,8 @@ def get_experiments():
                     )
                 ),
             ),
-            additional_val=(
-                builds(
+            additional_val=dict(
+                hypersim=builds(
                     Hypersim, 
                     populate_full_signature=True,
                     zen_partial=True,
@@ -1632,7 +1632,7 @@ def get_experiments():
             train=builds(
                 CocoPanoptic,
                 populate_full_signature=True,
-                repeat_single_dataset_n_times=20,
+                repeat_single_dataset_n_times=10,
                 num_workers=8,
                 batch_size=36,
                 object_ignore_threshold=0.0,
@@ -1667,7 +1667,7 @@ def get_experiments():
             val=builds(
                 CocoPanoptic,
                 populate_full_signature=True,
-                repeat_single_dataset_n_times=20,
+                repeat_single_dataset_n_times=10,
                 batch_size=1,
                 object_ignore_threshold=0.0,
                 top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
@@ -1679,8 +1679,8 @@ def get_experiments():
                 augmentation=get_val_aug(),
                 allowed_keys=("tgt_pixel_values", "src_pixel_values", "tgt_mask", "src_mask", "src_segmentation", "tgt_segmentation", "input_ids", "metadata", "valid", "src_valid", "has_global_instance_ids", "tgt_enc_norm_pixel_values", "tgt_enc_norm_segmentation", "tgt_enc_norm_valid"),
             ),
-            additional_train=(
-                builds(
+            additional_train=dict(
+                scannetpp=builds(
                     ScannetppIphoneDataset,
                     zen_partial=True,
                     image_pairs_per_scene=16384,
@@ -1691,62 +1691,7 @@ def get_experiments():
                     num_overlapping_masks=1,
                     augmentation=get_train_aug(),
                 ),
-                builds(
-                    Hypersim, 
-                    populate_full_signature=True,
-                    zen_partial=True,
-                    repeat_n=75,
-                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
-                    camera_trajectory_window=32,
-                    return_different_views=False,
-                    bbox_overlap_threshold=0.75,
-                    bbox_area_threshold=0.75,
-                    object_ignore_threshold=0.0,
-                    top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
-                    num_overlapping_masks=1,
-                    augmentation=get_train_aug(),
-                ),
-                builds(
-                    MoviDataset,
-                    populate_full_signature=True,
-                    zen_partial=True,
-                    dataset="movi_e",
-                    path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
-                    num_objects=23,
-                    num_frames=24,
-                    num_cameras=1,
-                    fake_return_n=50,
-                    multi_camera_format=True,
-                    cache_in_memory=True,
-                    cache_instances_in_memory=False,
-                    num_subset=None,
-                    return_tensorclass=True,
-                    return_multiple_frames=None,
-                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
-                    augmentation=get_train_aug(),
-                ),
-                builds(
-                    CalvinDataset,
-                    populate_full_signature=True,
-                    zen_partial=True,
-                    src_eq_tgt=True,
-                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
-                    augmentation=get_train_aug(),
-                ),
-            ),
-            additional_val=(
-                builds(
-                    ScannetppIphoneDataset,
-                    image_pairs_per_scene=16384,
-                    top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
-                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
-                    src_eq_tgt=True,
-                    distance_threshold=(0.3, 0.1, 0.12, 0.7),
-                    num_overlapping_masks=1,
-                    augmentation=get_val_aug(),
-                    zen_partial=True,
-                ),
-                builds(
+                hypersim=builds(
                     Hypersim, 
                     populate_full_signature=True,
                     zen_partial=True,
@@ -1759,9 +1704,9 @@ def get_experiments():
                     object_ignore_threshold=0.0,
                     top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
                     num_overlapping_masks=1,
-                    augmentation=get_val_aug(),
+                    augmentation=get_train_aug(),
                 ),
-                builds(
+                kubrics=builds(
                     MoviDataset,
                     populate_full_signature=True,
                     zen_partial=True,
@@ -1770,7 +1715,63 @@ def get_experiments():
                     num_objects=23,
                     num_frames=24,
                     num_cameras=1,
-                    fake_return_n=50,
+                    fake_return_n=10,
+                    multi_camera_format=True,
+                    cache_in_memory=True,
+                    cache_instances_in_memory=False,
+                    num_subset=None,
+                    return_tensorclass=True,
+                    return_multiple_frames=None,
+                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
+                    augmentation=get_train_aug(),
+                ),
+                calvin=builds(
+                    CalvinDataset,
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    src_eq_tgt=True,
+                    fake_return_n=200000,
+                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
+                    augmentation=get_train_aug(),
+                ),
+            ),
+            additional_val=dict(
+                scannetpp=builds(
+                    ScannetppIphoneDataset,
+                    image_pairs_per_scene=16384,
+                    top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
+                    src_eq_tgt=True,
+                    distance_threshold=(0.3, 0.1, 0.12, 0.7),
+                    num_overlapping_masks=1,
+                    augmentation=get_val_aug(),
+                    zen_partial=True,
+                ),
+                hypersim=builds(
+                    Hypersim, 
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    repeat_n=10,
+                    return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
+                    camera_trajectory_window=32,
+                    return_different_views=False,
+                    bbox_overlap_threshold=0.75,
+                    bbox_area_threshold=0.75,
+                    object_ignore_threshold=0.0,
+                    top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                    num_overlapping_masks=1,
+                    augmentation=get_val_aug(),
+                ),
+                kubrics=builds(
+                    MoviDataset,
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    dataset="movi_e",
+                    path=MOVI_MEDIUM_SINGLE_OBJECT_PATH,
+                    num_objects=23,
+                    num_frames=24,
+                    num_cameras=1,
+                    fake_return_n=10,
                     multi_camera_format=True,
                     cache_in_memory=True,
                     cache_instances_in_memory=False,
@@ -1780,11 +1781,12 @@ def get_experiments():
                     return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
                     augmentation=get_val_aug(),
                 ),
-                builds(
+                calvin=builds(
                     CalvinDataset,
                     populate_full_signature=True,
                     zen_partial=True,
                     src_eq_tgt=True,
+                    fake_return_n=20000,
                     return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
                     augmentation=get_val_aug(),
                 ),
@@ -1813,12 +1815,31 @@ def get_experiments():
             vary_cfg_plot=True,
             visualize_attention_map=False,
             num_single_token_gen=4,
-            num_masks_to_remove=4,
+            num_masks_to_remove=6,
         ),
         hydra_defaults=[
            {"override /model": "basemapper_vit_scratch"},
            {"override /dataset": "coco_panoptic"},
         ],
+    )
+
+    mode_store(
+        name="single_image_pretraining_v1",
+        model=dict(
+            encode_src_twice=True,
+            src_tgt_consistency_loss_weight=25.0,
+            src_tgt_start_loss_step=0,
+            max_num_training_masks=16,
+            use_cosine_similarity_src_tgt_token_consistency=True,
+            only_encode_shared_tokens=False,
+        ),
+        trainer=dict(
+            checkpointing_steps=1000,
+        ),
+        inference=dict(
+            num_images_per_prompt=4
+        ),
+        hydra_defaults=["single_image_pretraining"]
     )
 
     def get_large_train_aug():
@@ -1837,6 +1858,7 @@ def get_experiments():
         )
 
     mode_store(
+        # Here we randomly augment src/tgt and enforce that the tokens have the same representation with some injected positional offset
         name="single_image_pretraining_v2",
         model=dict(
             encode_src_twice=False,
@@ -1845,9 +1867,11 @@ def get_experiments():
             inject_token_positional_information=True,
             src_tgt_consistency_loss_weight=1.0,
             src_tgt_start_loss_step=4000,
+            use_cosine_similarity_src_tgt_token_consistency=True,
         ),
         inference=dict(
             visualize_attention_map=False,
+            visualize_positional_control=True,
         ),
         dataset=dict(
             train=dict(return_encoder_normalized_tgt=True, augmentation=get_large_train_aug()),
@@ -1856,7 +1880,7 @@ def get_experiments():
         trainer=dict(
             checkpointing_steps=1000,
         ),
-        hydra_defaults=["single_image_pretraining"]
+        hydra_defaults=["single_image_pretraining_v1"]
     )
 
     mode_store(
@@ -1873,14 +1897,41 @@ def get_experiments():
             modulate_src_tokens_loss_after_layer_specialization=False,
             weighted_object_loss=False,
             src_tgt_start_loss_step=1000,
+            src_tgt_pos_emb_loss=True,
+            predict_only_pos_emb_from_lang=True,
+            use_t5_text_encoder_for_token_pred=True,
         ),
         inference=dict(
-            guidance_scale=8.0,
+            guidance_scale=7.5,
         ),
         trainer=dict(
             gradient_accumulation_steps=2,
         ),
         hydra_defaults=["single_image_pretraining_v2"]
+    )
+
+    mode_store(
+        name="single_image_pretraining_v4",
+        model=dict(
+            src_tgt_pos_emb_loss=False,
+            src_tgt_consistency_loss_weight=None,
+        ),
+        hydra_defaults=["single_image_pretraining_v3"]
+    )
+
+    mode_store(
+        name="single_image_pretraining_v5",
+        model=dict(
+            predict_only_pos_emb_from_lang=False,
+            inject_token_positional_information=False,
+            positional_information_pred_dim=768,
+            use_t5_text_encoder_for_token_pred=False,
+            token_modulator=dict(final_norm=False),
+        ),
+        inference=dict(
+            visualize_positional_control=False,
+        ),
+        hydra_defaults=["single_image_pretraining_v4"]
     )
 
     mode_store(

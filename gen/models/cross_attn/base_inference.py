@@ -329,11 +329,17 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
     bs_ = batch.input_ids.shape[0]
     b_ = 0
-    gt_info = Im.concat_vertical(*[Im.concat_vertical(orig_tgt_image.torch[b_], onehot_to_color(batch.one_hot_tgt_segmentation[b_])).write_text(text="Target", color=(164, 164, 128)) for b_ in range(bs_)])
-    if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels or self.cfg.model.modulate_src_tokens_with_tgt_pose or self.cfg.model.modulate_src_feature_map or self.cfg.model.encode_tgt_enc_norm:
+    gt_info = Im.concat_vertical(*[
+        Im.concat_vertical(
+            Im(orig_tgt_image.torch[b_]), 
+            Im(onehot_to_color(batch.one_hot_tgt_segmentation[b_])).write_text(text="Target", color=(164, 164, 128))
+        ) for b_ in range(bs_)
+    ])
+
+    if self.cfg.model.eschernet or self.cfg.model.add_grid_to_input_channels or self.cfg.model.modulate_src_tokens_with_tgt_pose or self.cfg.model.modulate_src_feature_map or self.cfg.model.encode_tgt_enc_norm or self.cfg.model.encode_src_twice:
         src_one_hot = integer_to_one_hot(batch.src_segmentation + 1, batch.src_segmentation.max() + 1)
-        src_seg = Im(onehot_to_color(src_one_hot[b_].squeeze(0)))
-        src_info = Im.concat_vertical(orig_src_image, src_seg).write_text("Source", color=(164, 164, 128))
+        src_seg = Im(onehot_to_color(src_one_hot[b_].squeeze(0))).write_text("Source", color=(164, 164, 128))
+        src_info = Im.concat_vertical(orig_src_image.resize(orig_tgt_image.height, orig_tgt_image.width), src_seg.resize(orig_tgt_image.height, orig_tgt_image.width))
         gt_info = Im.concat_horizontal(src_info, gt_info, spacing=20)
 
     ret["validation"] = gt_info
@@ -352,7 +358,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     if self.cfg.inference.compute_quantitative_token_metrics is False or self.cfg.trainer.custom_inference_every_n_steps is None:
         ret.update(get_metrics(self, batch, cond))
     try:
-        ret["data_viz"] = visualize_input_data(orig_batch.clone(), cfg=self.cfg, show_overlapping_masks=True, remove_invalid=False, return_img=True, cond=cond)
+        ret["data_viz"] = visualize_input_data(orig_batch.clone(), cfg=self.cfg, show_overlapping_masks=True, remove_invalid=False, return_img=True, cond=cond, tokenizer=self.tokenizer)
     except Exception as e:
         log_warn(f"Failed to visualize input data", main_process_only=False)
         traceback.print_exc()
@@ -374,10 +380,10 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         ret["loss_mask"] = Im.concat_horizontal(
             orig_src_image,
             *([Im(cond.encoder_input_pixel_values[0]).denormalize()] if self.cfg.model.mask_dropped_tokens else []),
-            Im(onehot_to_color(_orig_src_one_hot[0])).write_text("Before Dropout"),
-            Im(onehot_to_color(_first_src_one_hot__[0])).write_text("After Dropout"),
-            Im(_first_valid_seg).bool_to_rgb(),
-            Im(_diffusion_loss_mask.bool()).bool_to_rgb().resize(orig_src_image.height, orig_src_image.width, resampling_mode=InterpolationMode.NEAREST)
+            Im(onehot_to_color(_orig_src_one_hot[0])).write_text("Src Before Dropout", size=0.5),
+            Im(onehot_to_color(_first_src_one_hot__[0])).write_text("Src After Dropout", size=0.5),
+            Im(_first_valid_seg).bool_to_rgb().write_text(f"Unique: {torch.unique(_conditioned_src_seg).shape[0] - 1}", size=0.5),
+            *([Im(_diffusion_loss_mask.bool()).bool_to_rgb().resize(orig_src_image.height, orig_src_image.width, resampling_mode=InterpolationMode.NEAREST)] if self.cfg.model.break_a_scene_masked_loss else []),
         )
 
         if self.cfg.model.mask_dropped_tokens and self.cfg.model.encode_src_twice:
@@ -391,10 +397,10 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
                 ret["loss_mask"],
                 Im.concat_horizontal(
                     orig_src_image,
-                    *([Im(cond.encoder_input_pixel_values[1]).denormalize().write_text("2nd img")] if self.cfg.model.mask_dropped_tokens else []),
-                    Im(onehot_to_color(_orig_src_one_hot[0])).write_text("2nd img Before Dropout"),
-                    Im(onehot_to_color(_second_src_one_hot__[0])).write_text("2nd img After Dropout"),
-                    Im(_second_valid_seg).bool_to_rgb(),
+                    *([Im(cond.encoder_input_pixel_values[1]).denormalize().write_text("Tgt img")] if self.cfg.model.mask_dropped_tokens else []),
+                    Im(onehot_to_color(_orig_src_one_hot[0])).write_text("Tgt Before Dropout", size=0.5),
+                    Im(onehot_to_color(_second_src_one_hot__[0])).write_text("Tgt After Dropout", size=0.5),
+                    Im(_second_valid_seg).bool_to_rgb().write_text(f"Unique: {torch.unique(_second_src_seg).shape[0] - 1}", size=0.5),
                 )
             )
 
@@ -437,13 +443,10 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     _conditioned_src_seg[~torch.isin(_conditioned_src_seg, cond.mask_instance_idx)] = 255
     _conditioned_src_seg = integer_to_one_hot(_conditioned_src_seg)
     generated_images = Im.concat_vertical(
-        Im.concat_vertical(
-            prompt_image_, 
-            Im(onehot_to_color(
-                _conditioned_src_seg[i if use_idx else 0])
-            ).resize(Im(prompt_image_).height, Im(prompt_image_).width)
-        ).write_text(text=f"Gen {i}", color=(164, 164, 128)) for i, prompt_image_ in enumerate(prompt_image)
+        *(Im(prompt_image_).write_text(text=f"Gen {i}", color=(164, 164, 128)) for i, prompt_image_ in enumerate(prompt_image)),
+        Im(onehot_to_color(_conditioned_src_seg[i if use_idx else 0])).resize(Im(prompt_image[0]).height, Im(prompt_image[0]).width)
     )
+    
     ret["validation"] = Im.concat_horizontal(ret["validation"], generated_images)
 
     if self.cfg.inference.save_prompt_embeds:
@@ -461,10 +464,10 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     if self.cfg.model.only_encode_shared_tokens and (self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm):
         ret["view_pred"] = Im.new(64, 64)
         try:
-            _batch = repeat_batch(batch, 4)
+            _batch = repeat_batch(batch, 5)
             assert _batch.bs == 4
             _batch.force_encode_all_masks = torch.full((_batch.bs,), False, dtype=torch.bool)
-            _batch.force_encode_all_masks[[0, 3]] = True
+            _batch.force_encode_all_masks[[0, 3, 4]] = True
 
             with torch.cuda.amp.autocast():
                 _cond = self.get_standard_conditioning_for_inference(batch=_batch)
@@ -479,19 +482,24 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
             all_tgt_tokens = _cond.tgt_mask_tokens[_cond.tgt_mask_batch_idx == 3]
             _cond.encoder_hidden_states[3, :all_tgt_tokens.shape[0], :] = all_tgt_tokens
+
+            all_gt_src_tokens = _cond.gt_src_mask_token[_cond.mask_batch_idx == 4]
+            _cond.encoder_hidden_states[4, :all_gt_src_tokens.shape[0], :] = all_gt_src_tokens
             
             _prompt_images, _ = self.infer_batch(batch=_batch, cond=_cond, num_images_per_prompt=1)
+            _h, _w = _prompt_images[0].height, _prompt_images[0].width
 
             ret["view_pred"] = Im.concat_vertical(
                 Im.concat_horizontal(
+                    Im(_prompt_images[4]).write_text("Src Auto-Enc", size=0.5),
                     Im(_prompt_images[0]).write_text("Src Enc -> Tgt, All Tok", size=0.5),
                     Im(_prompt_images[1]).write_text("Src Enc -> Tgt, Shared Tok", size=0.5),
                     Im(_prompt_images[2]).write_text("GT Tgt Enc, Shared Tok", size=0.5),
                     Im(_prompt_images[3]).write_text("GT Tgt Enc, All Tok", size=0.5),
                 ),
                 Im.concat_horizontal(
-                    Im(orig_src_image.torch.cpu()).resize(orig_src_image.height, orig_src_image.width).write_text("Src Image", size=0.5),
-                    Im(orig_tgt_image.torch.cpu()).resize(orig_src_image.height, orig_src_image.width).write_text("GT Tgt Image", size=0.5),
+                    Im(orig_src_image.torch.cpu()).resize(_h, _w).write_text("Src Image", size=0.5),
+                    Im(orig_tgt_image.torch.cpu()).resize(_h, _w).write_text("GT Tgt Image", size=0.5),
                     spacing=(Im(_prompt_images[0]).width * 2)
                 )
             )
@@ -499,7 +507,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
             log_warn("Failed to visualize shared tokens", main_process_only=False)
             traceback.print_exc()
 
-    if self.cfg.model.inject_token_positional_information:
+    if self.cfg.inference.visualize_positional_control:
         ret["positional_control"] = Im.new(64, 64)
         try:
             log_info(f"Visualizing positional control", main_process_only=False)

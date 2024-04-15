@@ -178,11 +178,16 @@ class ModelConfig:
     tgt_positional_information_from_lang: bool = False
     pos_emb_dim: int = 192
     src_tgt_pos_emb_consistency_loss_weight: Optional[float] = None
+    src_tgt_pos_emb_loss: bool = False
     norm_vit_features: bool = False
     positional_information_pred_dim: Optional[int] = None
+    predict_only_pos_emb_from_lang: bool = True
     cosine_similarity_loss: bool = False
     cosine_loss_weight: Optional[float] = 1.0
     src_tgt_start_loss_step: Optional[int] = 1000
+    add_vgg_to_pos_emb: bool = False
+    use_cosine_similarity_src_tgt_token_consistency: bool = False
+    use_t5_text_encoder_for_token_pred: bool = True
     
 
 @dataclass
