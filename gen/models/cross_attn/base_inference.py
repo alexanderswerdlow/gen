@@ -465,7 +465,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         ret["view_pred"] = Im.new(64, 64)
         try:
             _batch = repeat_batch(batch, 5)
-            assert _batch.bs == 4
+            assert _batch.bs == 5
             _batch.force_encode_all_masks = torch.full((_batch.bs,), False, dtype=torch.bool)
             _batch.force_encode_all_masks[[0, 3, 4]] = True
 
@@ -508,13 +508,13 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
             traceback.print_exc()
 
     if self.cfg.inference.visualize_positional_control:
-        ret["positional_control"] = Im.new(64, 64)
+        ret["positional_control"] = Im.new(32, 32)
         try:
             log_info(f"Visualizing positional control", main_process_only=False)
             num_from_top = 3
             max_num_viz = 4
-            num_variations = 9
-
+            variations = torch.tensor([(0, -12), (0, -8), (0, -4), (-12, 0), (-8, 0), (-4, 0), (0, 0), (4, 0), (8, 0), (12, 0), (0, 4), (0, 8), (0, 12)])
+            num_variations = len(variations)
             _batch = repeat_batch(batch, num_variations)
             
             indices_ = batch.src_segmentation.view(batch.batch_size[0], -1)
@@ -539,33 +539,39 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
                     _gt_centroids = _cond.mask_token_centroids[instance_mask]
 
-                    variations = torch.tensor([(0, 0), (-4, 0), (-16, 0), (0, -8), (0, -16), (8, 0), (16, 0), (0, 8), (0, 16)])[:num_variations]
-
                     _gt_centroids = _gt_centroids + variations.to(_gt_centroids)
                     _gt_centroids = torch.clamp(_gt_centroids, 0, self.cfg.model.encoder_latent_dim - 1)
-                    
                     _cond.gt_src_mask_token_pos_emb[(_cond.mask_instance_idx == instance_idx)] = einops.rearrange(pos_emb[:, _gt_centroids[:, 0], _gt_centroids[:, 1]], "d tokens -> tokens d")
 
                     new_src_tokens = self.mapper.inject_positional_information_film(_cond.src_mask_tokens_before_specialization, _cond.gt_src_mask_token_pos_emb)
                     _cond.mask_tokens[:] = new_src_tokens
                     _cond = self.update_hidden_state_with_mask_tokens(_batch, _cond)
-
                     _prompt_images, _ = self.infer_batch(batch=_batch, cond=_cond, num_images_per_prompt=1)
 
                     ret["positional_control"] = Im.concat_vertical(
                         ret["positional_control"],
-                        Im.concat_vertical(
-                            Im.concat_horizontal(
-                                Im(_prompt_image).write_text(f"{(_variation.cpu().tolist())}", size=0.5) for _variation, _prompt_image in zip(variations, _prompt_images)
+                        Im.concat_horizontal(
+                            Im(orig_src_image.torch).resize(orig_tgt_image.height, orig_tgt_image.width).write_text("GT Tgt Image"),
+                            Im((batch.src_segmentation == instance_idx).squeeze(0)).resize(orig_tgt_image.height, orig_tgt_image.width).write_text(f"Gt Instance {instance_idx}", size=0.5),
+                        ).add_border(20, color=(128, 128, 128)),
+                        Im.concat_horizontal(
+                            Im.new(orig_tgt_image.width * 3, orig_tgt_image.width * 3, color=(0, 0, 0)),
+                            Im.concat_vertical(
+                                Im(_prompt_image).write_text(f"{(_variation.cpu().tolist())}", size=0.5) for _variation, _prompt_image in zip(variations[:3], _prompt_images[:3])
+                            )
+                        ),
+                        Im.concat_horizontal(
+                            Im(_prompt_image).write_text(f"{(_variation.cpu().tolist())}", size=0.5) for _variation, _prompt_image in zip(variations[3:10], _prompt_images[3:10])
+                        ),
+                        Im.concat_horizontal(
+                            Im.new(orig_tgt_image.width * 3, orig_tgt_image.width * 3, color=(0, 0, 0)),
+                            Im.concat_vertical(
+                                Im(_prompt_image).write_text(f"{(_variation.cpu().tolist())}", size=0.5) for _variation, _prompt_image in zip(variations[10:], _prompt_images[10:])
                             ),
-                            Im.concat_horizontal(
-                                Im(orig_src_image.torch).resize(orig_tgt_image.height, orig_tgt_image.width),
-                                Im((batch.src_segmentation == instance_idx).squeeze(0)).resize(orig_tgt_image.height, orig_tgt_image.width).write_text(f"Instance {instance_idx}", size=0.5),
-                            ),
-                        )
+                        ),
                     )
         except:
-            log_warn("Failed to visualize shared tokens", main_process_only=False)
+            log_warn("Failed to visualize pos interp", main_process_only=False)
             traceback.print_exc()
 
 
@@ -1000,3 +1006,13 @@ def interpolate_frames(
     ret['interp'].save(f"{batch.metadata['name'][0]}_interp")
 
     return ret
+
+
+@torch.no_grad()
+def susie_inference(
+    self: BaseMapper, 
+    batch: InputData, 
+    state: TrainingState, 
+):
+    prompt_image, cond = self.infer_batch(batch=batch, num_images_per_prompt=1)
+    return prompt_image[0]

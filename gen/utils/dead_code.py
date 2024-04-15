@@ -1066,3 +1066,11 @@ import antigravity
                     #         elif False:
                     # log_warn("We would have dropped all masks but instead we preserved the background", main_process_only=False)
                     # dropout_mask[background_mask_idx] = True
+                                # pos_emb = positionalencoding2d(self.cfg.model.pos_emb_dim - 4, latent_dim, latent_dim, device=self.device, dtype=self.dtype)
+            # pos_emb = einops.repeat(pos_emb, "d h w -> b (h w) d", b=batch.bs)
+            # feature_maps__ = torch.stack([pos_emb[batch_idx] for batch_idx, mask in zip(mask_batch_idx, feature_map_masks)])
+            # masked_feature_maps = feature_maps__.to(self.dtype) * feature_map_masks.to(self.dtype).unsqueeze(-1)
+            # mean_pooled_pos_enc = masked_feature_maps.sum(dim=1) / feature_map_masks.sum(dim=1).unsqueeze(-1)
+            # centroids_ = compute_centroids(einops.rearrange(feature_map_masks, 'b (h w) -> b h w', h=latent_dim)) 
+            # cond.mask_token_pos_emb = torch.cat((mean_pooled_pos_enc, centroids_), dim=-1)
+            # cond.mask_token_pos_emb = torch.cat((cond.mask_token_pos_emb, cond.mask_token_pos_emb.new_zeros((cond.mask_token_pos_emb.shape[0], self.cfg.model.pos_emb_dim - cond.mask_token_pos_emb.shape[1]))), dim=-1)

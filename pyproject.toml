@@ -1,3 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gen"
+version = "0.0.1"
+authors = [{ name="Alexander Swerdlow", email="aswerdlow1@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.10"
+
 [tool.black]
 line-length = 150
 target-version = ['py310']
+

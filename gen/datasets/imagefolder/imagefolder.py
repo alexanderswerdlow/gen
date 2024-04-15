@@ -1,6 +1,5 @@
 # Taken from : https://github.com/michaelnoi/scene_nvs/blob/main/scene_nvs/data/dataset.py
 from collections import defaultdict
-import autoroot
 
 import hashlib
 import json

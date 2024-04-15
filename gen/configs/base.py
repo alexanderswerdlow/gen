@@ -99,10 +99,21 @@ def get_tgt_transform(_, *, _root_: BaseConfig):
         return get_stable_diffusion_transforms_sd_images_variations_diffusers(resolution=_root_.model.decoder_resolution)
     else:
         return get_stable_diffusion_transforms(resolution=_root_.model.decoder_resolution)
+    
+def get_dtype(_, *, _root_: BaseConfig):
+    from accelerate.utils import PrecisionType
+    import torch
+    if _root_.trainer.mixed_precision == PrecisionType.BF16:
+        return torch.bfloat16
+    elif _root_.trainer.mixed_precision == PrecisionType.FP16:
+        return torch.float16
+    else:
+        return torch.float32
 
 OmegaConf.register_new_resolver("get_run_dir", get_run_dir)
 OmegaConf.register_new_resolver("get_src_transform", get_src_transform)
 OmegaConf.register_new_resolver("get_tgt_transform", get_tgt_transform)
+OmegaConf.register_new_resolver("get_dtype", get_dtype)
 OmegaConf.register_new_resolver("eval", eval)
 
 store(get_hydra_config())

@@ -1,4 +1,3 @@
-import autoroot
 import functools
 from typing import Callable, Optional
 

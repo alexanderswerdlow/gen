@@ -1,7 +1,7 @@
-from contextlib import nullcontext
 import dataclasses
 import gc
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -17,7 +17,8 @@ from accelerate import Accelerator
 from einx import add, rearrange, where
 from jaxtyping import Bool, Float, Integer
 from omegaconf import OmegaConf
-from peft import LoraConfig
+from peft import LoraConfig, get_peft_model
+from scipy.spatial.transform import Rotation
 from scipy.spatial.transform import Rotation as R
 from torch import FloatTensor, Tensor
 from transformers import AutoTokenizer, CLIPTokenizer
@@ -30,10 +31,12 @@ from diffusers.training_utils import EMAModel, cast_training_params
 from diffusers.utils.torch_utils import randn_tensor
 from gen.configs import BaseConfig
 from gen.models.cross_attn.break_a_scene import register_attention_control
-from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale, shift_scale_uncond_hidden_states)
+from gen.models.cross_attn.deprecated_configs import (attention_masking, forward_shift_scale, handle_attention_masking_dropout, init_shift_scale,
+                                                      shift_scale_uncond_hidden_states)
 from gen.models.cross_attn.eschernet import get_relative_pose
-from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, cosine_similarity_loss, evenly_weighted_mask_loss, get_gt_rot, src_tgt_feature_map_consistency_loss, src_tgt_token_consistency_loss, tgt_positional_information_loss,
-                                          token_cls_loss, token_rot_loss)
+from gen.models.cross_attn.losses import (break_a_scene_cross_attn_loss, break_a_scene_masked_loss, cosine_similarity_loss, evenly_weighted_mask_loss,
+                                          get_gt_rot, src_tgt_feature_map_consistency_loss, src_tgt_token_consistency_loss,
+                                          tgt_positional_information_loss, token_cls_loss, token_rot_loss)
 from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
 from gen.models.encoders.encoder import BaseModel
 from gen.models.utils import find_true_indices_batched, positionalencoding2d
@@ -45,7 +48,7 @@ from gen.utils.misc_utils import compute_centroids
 from gen.utils.tokenization_utils import _get_tokens, get_uncond_tokens
 from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
 from gen.utils.visualization_utils import get_dino_pca, viz_feats
-from scipy.spatial.transform import Rotation
+
 
 def print_trainable_parameters(model):
     """
@@ -150,7 +153,7 @@ class BaseMapper(Trainable):
         self.cfg: BaseConfig = cfg
 
         # dtype of most intermediate tensors and frozen weights. Notably, we always use FP32 for trainable params.
-        self.dtype = getattr(torch, cfg.trainer.dtype.split(".")[-1])
+        self.dtype = getattr(torch, cfg.trainer.dtype.split(".")[-1]) if isinstance(cfg.trainer.dtype, str) else cfg.trainer.dtype
 
         self.initialize_diffusers_models()
         self.initialize_custom_models()
@@ -198,7 +201,7 @@ class BaseMapper(Trainable):
 
             if self.cfg.model.clip_lora:
                 self.clip.requires_grad_(True)
-                from peft import inject_adapter_in_model, LoraConfig
+                from peft import LoraConfig, inject_adapter_in_model
                 module_regex = r".*blocks\.(20|21|22|23)\.mlp\.fc\d" if 'large' in self.cfg.model.encoder.model_name else r".*blocks\.(10|11)\.mlp\.fc\d"
                 lora_config = LoraConfig(r=self.cfg.model.clip_lora_rank, lora_alpha=self.cfg.model.clip_lora_alpha, lora_dropout=self.cfg.model.clip_lora_dropout, target_modules=module_regex)
                 self.clip = inject_adapter_in_model(lora_config, self.clip, adapter_name='lora')
@@ -236,12 +239,26 @@ class BaseMapper(Trainable):
             )
 
         if self.cfg.model.tgt_positional_information_from_lang and self.cfg.model.use_t5_text_encoder_for_token_pred:
-            from transformers import T5Tokenizer
-            from transformers import T5EncoderModel
+            from transformers import T5EncoderModel, T5Tokenizer
             self.tokenizer = T5Tokenizer.from_pretrained("google-t5/t5-small") 
             self.text_encoder = T5EncoderModel.from_pretrained("google-t5/t5-small")
-        
 
+        if self.cfg.model.text_encoder_lora:
+            from peft import LoraConfig
+            # TEXT_ENCODER_TARGET_MODULES = ["q_proj", "v_proj"]
+            TEXT_ENCODER_TARGET_MODULES = ["fc1", "fc2", "q_proj", "k_proj", "v_proj", "out_proj"]
+            self.text_encoder = self.text_encoder.to(self.dtype)
+            config = LoraConfig(
+                r=8,
+                lora_alpha=8,
+                target_modules=TEXT_ENCODER_TARGET_MODULES,
+                lora_dropout=0.0,
+                bias="none",
+                init_lora_weights=True,
+            )
+            self.text_encoder = get_peft_model(self.text_encoder, config)
+            cast_training_params(self.text_encoder, dtype=torch.float32)
+        
         unet_kwargs = dict()
         if self.cfg.model.gated_cross_attn:
             unet_kwargs["attention_type"] = "gated-cross-attn"
@@ -306,7 +323,7 @@ class BaseMapper(Trainable):
             self.unet.enable_gradient_checkpointing()
             if self.cfg.model.controlnet:
                 self.controlnet.enable_gradient_checkpointing()
-            if self.cfg.model.freeze_text_encoder is False and self.cfg.model.add_text_tokens:
+            if (self.cfg.model.freeze_text_encoder is False and self.cfg.model.add_text_tokens) or self.cfg.model.text_encoder_lora:
                 self.text_encoder.gradient_checkpointing_enable()
             
         if self.cfg.model.break_a_scene_cross_attn_loss:
@@ -456,7 +473,9 @@ class BaseMapper(Trainable):
                 m.fuser.train()
 
         if md.add_text_tokens or md.tgt_positional_information_from_lang:
-            if md.freeze_text_encoder:
+            if md.text_encoder_lora:
+                other.text_encoder.train()
+            elif md.freeze_text_encoder:
                 if set_grad:
                     other.text_encoder.to(device=_device, dtype=_dtype)
                     other.text_encoder.requires_grad_(False)
@@ -644,6 +663,8 @@ class BaseMapper(Trainable):
             self.ema_unet.step(self.unet.parameters())
 
     def process_input(self, batch: dict, state: TrainingState) -> InputData:
+        if "input_ids" in batch and isinstance(batch["input_ids"], list):
+            batch["input_ids"] = _get_tokens(self.tokenizer, batch["input_ids"])
         if not isinstance(batch, InputData):
             batch: InputData = InputData.from_dict(batch)
 
@@ -854,9 +875,11 @@ class BaseMapper(Trainable):
                             clip_feature_map[k] = self.clip.base_model.norm(clip_feature_map[k])
 
         if self.cfg.model.debug_feature_maps and batch.attach_debug_info:
-            from image_utils import Im
-            from torchvision.transforms.functional import InterpolationMode, resize
             import copy
+
+            from torchvision.transforms.functional import InterpolationMode, resize
+
+            from image_utils import Im
             orig_trained = copy.deepcopy(self.clip.state_dict())
             trained_viz = viz_feats(clip_feature_map, "trained_feature_map")
             self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, compile=False).to(self.dtype).to(self.device)
@@ -1064,14 +1087,6 @@ class BaseMapper(Trainable):
         k_features = flat_features[flat_mask]
 
         if self.cfg.model.inject_token_positional_information:
-            # pos_emb = positionalencoding2d(self.cfg.model.pos_emb_dim - 4, latent_dim, latent_dim, device=self.device, dtype=self.dtype)
-            # pos_emb = einops.repeat(pos_emb, "d h w -> b (h w) d", b=batch.bs)
-            # feature_maps__ = torch.stack([pos_emb[batch_idx] for batch_idx, mask in zip(mask_batch_idx, feature_map_masks)])
-            # masked_feature_maps = feature_maps__.to(self.dtype) * feature_map_masks.to(self.dtype).unsqueeze(-1)
-            # mean_pooled_pos_enc = masked_feature_maps.sum(dim=1) / feature_map_masks.sum(dim=1).unsqueeze(-1)
-            # centroids_ = compute_centroids(einops.rearrange(feature_map_masks, 'b (h w) -> b h w', h=latent_dim)) 
-            # cond.mask_token_pos_emb = torch.cat((mean_pooled_pos_enc, centroids_), dim=-1)
-            # cond.mask_token_pos_emb = torch.cat((cond.mask_token_pos_emb, cond.mask_token_pos_emb.new_zeros((cond.mask_token_pos_emb.shape[0], self.cfg.model.pos_emb_dim - cond.mask_token_pos_emb.shape[1]))), dim=-1)
             pos_emb = positionalencoding2d(self.cfg.model.pos_emb_dim, latent_dim, latent_dim, device=self.device, dtype=self.dtype)
             centroids_ = compute_centroids(einops.rearrange(feature_map_masks, 'b (h w) -> b h w', h=latent_dim))
             centroids_ = torch.clamp(torch.round(centroids_).to(torch.int64), 0, latent_dim - 1)

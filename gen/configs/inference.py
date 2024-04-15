@@ -8,7 +8,7 @@ from gen.datasets.run_dataloader import iterate_dataloader
 from gen.datasets.scannetpp.run_sam import scannet_run_sam
 from gen.utils.decoupled_utils import all_gather
 from gen.utils.trainer_utils import Trainable
-from gen.models.cross_attn.base_inference import run_qualitative_inference, compose_two_images, interpolate_latents
+from gen.models.cross_attn.base_inference import run_qualitative_inference, compose_two_images, interpolate_latents, susie_inference
 from functools import partial
 
 @dataclass
@@ -66,4 +66,11 @@ store_child_config(
     parent="basemapper",
     child="scannet_run_sam",
     dataloader_only_func = partial(scannet_run_sam)
+)
+store_child_config(
+    cls=InferenceConfig,
+    group="inference",
+    parent="basemapper",
+    child="susie_inference",
+    inference_func = partial(susie_inference)
 )

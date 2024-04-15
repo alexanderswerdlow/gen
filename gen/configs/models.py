@@ -188,6 +188,7 @@ class ModelConfig:
     add_vgg_to_pos_emb: bool = False
     use_cosine_similarity_src_tgt_token_consistency: bool = False
     use_t5_text_encoder_for_token_pred: bool = True
+    text_encoder_lora: bool = False
     
 
 @dataclass

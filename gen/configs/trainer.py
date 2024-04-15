@@ -99,7 +99,7 @@ class TrainerConfig:
 
     # Set in code
     num_gpus: Optional[int] = None
-    dtype: Optional[str] = None
+    dtype: Optional[torch.dtype] = "${get_dtype:trainer}"
     device: Optional[str] = None
     initial_learning_rate: Optional[float] = None
 

@@ -1842,6 +1842,14 @@ def get_experiments():
         hydra_defaults=["single_image_pretraining"]
     )
 
+    mode_store(
+        name="single_image_pretraining_v1_1",
+        model=dict(
+            mask_dropped_tokens=True,
+        ),
+        hydra_defaults=["single_image_pretraining_v1"]
+    )
+
     def get_large_train_aug():
         return builds(
             Augmentation,
@@ -1927,6 +1935,8 @@ def get_experiments():
             positional_information_pred_dim=768,
             use_t5_text_encoder_for_token_pred=False,
             token_modulator=dict(final_norm=False),
+            src_tgt_consistency_loss_weight=10,
+            text_encoder_lora=True,
         ),
         inference=dict(
             visualize_positional_control=False,

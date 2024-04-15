@@ -1,6 +1,6 @@
 # Taken from : https://github.com/michaelnoi/scene_nvs/blob/main/scene_nvs/data/dataset.py
-from collections import defaultdict
 import autoroot
+from collections import defaultdict
 
 import hashlib
 import json
@@ -319,11 +319,10 @@ app = typer.Typer(pretty_exceptions_show_locals=False)
 @app.command()
 def main(
     num_workers: int = 0,
-    batch_size: int = 1,
+    batch_size: int = 4,
     viz: bool = True,
     steps: Optional[int] = None,
     breakpoint_on_start: bool = False,
-    return_tensorclass: bool = True,
 ):
     with breakpoint_on_error():
         from gen.datasets.utils import get_stable_diffusion_transforms
@@ -340,7 +339,7 @@ def main(
             enable_rotate=False,
             reorder_segmentation=False,
             return_grid=False,
-            src_transforms=get_stable_diffusion_transforms(resolution=256),
+            src_transforms=get_stable_diffusion_transforms(resolution=518),
             tgt_transforms=get_stable_diffusion_transforms(resolution=256),
         )
         dataset = CalvinDataset(
@@ -351,13 +350,15 @@ def main(
             batch_size=batch_size,
             tokenizer=MockTokenizer(),
             augmentation=augmentation,
-            return_tensorclass=return_tensorclass,
+            return_tensorclass=False,
             use_cuda=False,
+            return_encoder_normalized_tgt=True,
         )
 
         subset_range = None
         dataloader = dataset.get_dataloader(pin_memory=False, subset_range=subset_range)
         for i, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
+            breakpoint()
             if breakpoint_on_start: breakpoint()
             if viz: visualize_input_data(batch, show_overlapping_masks=True, remove_invalid=False)
             if steps is not None and i >= steps - 1: break

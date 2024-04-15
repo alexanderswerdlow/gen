@@ -24,9 +24,9 @@ if TYPE_CHECKING:
 @tensorclass
 class InputData:
     tgt_pixel_values: Float[Tensor, "b c h w"]
-    tgt_segmentation: Integer[Tensor, "b h w"]
+    tgt_segmentation: Integer[Tensor, "b h w c"]
     src_pixel_values: Float[Tensor, "b c h w"]
-    src_segmentation: Integer[Tensor, "b h w"]
+    src_segmentation: Integer[Tensor, "b h w c"]
     input_ids: Integer[Tensor, "b l"]
     tgt_grid: Optional[Float[Tensor, "b h w 2"]] = None
     src_grid: Optional[Float[Tensor, "b h w 2"]] = None
@@ -53,7 +53,7 @@ class InputData:
     raw_dataset_image: Optional[Integer[Tensor, "b h w c"]] = None
     id: Optional[Integer[Tensor, "b"]] = None
     tgt_enc_norm_pixel_values: Optional[Float[Tensor, "b c h w"]] = None
-    tgt_enc_norm_segmentation: Optional[Integer[Tensor, "b h w"]] = None
+    tgt_enc_norm_segmentation: Optional[Integer[Tensor, "b h w c"]] = None
     tgt_enc_norm_valid: Optional[Bool[Tensor, "b classes"]] = None
     has_global_instance_ids: Optional[Bool[Tensor, "b"]] = None
 

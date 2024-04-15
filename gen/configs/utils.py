@@ -1,13 +1,17 @@
-from functools import partial
-from typing import Any, Optional
-from hydra_zen import builds, store, make_config
-from hydra_zen.wrapper import default_to_config
-from dataclasses import is_dataclass
-from omegaconf import OmegaConf
-import inspect
-from typing import Optional, get_type_hints
-from omegaconf import DictConfig, OmegaConf
+from __future__ import annotations
 
+import inspect
+from dataclasses import is_dataclass
+from functools import partial
+from typing import TYPE_CHECKING, Any, Optional, Union, get_type_hints
+
+from hydra import compose, initialize
+from hydra_zen import builds, make_config, store
+from hydra_zen.wrapper import default_to_config
+from omegaconf import OmegaConf
+
+if TYPE_CHECKING:
+    from gen.configs.base import BaseConfig
 
 def destructure(x):
     x = default_to_config(x)  # apply the default auto-config logic of `store`
@@ -69,3 +73,8 @@ def inherit_parent_args(cls):
     cls.__init__ = new_init
     return cls
 
+def get_cfg(overrides: Union[str, list[str]], handle_dtype: bool = True) -> BaseConfig:
+    with initialize(config_path=None, version_base=None):
+        cfg = compose(config_name="config", return_hydra_config=True, overrides=overrides)
+
+        return cfg

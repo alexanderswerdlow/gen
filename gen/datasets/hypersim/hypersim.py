@@ -1,5 +1,3 @@
-import autoroot
-
 import os
 import pickle
 import random

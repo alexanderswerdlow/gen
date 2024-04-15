@@ -1,5 +1,4 @@
 # Taken from : https://github.com/michaelnoi/scene_nvs/blob/main/scene_nvs/data/dataset.py
-import autoroot
 
 import hashlib
 import json

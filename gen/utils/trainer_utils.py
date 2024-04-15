@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
 
 
-def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, load_model: bool, load_accelerator_state: bool = False) -> int:
+def load_from_ckpt(cfg: BaseConfig, accelerator: Optional[Accelerator], model: nn.Module, load_model: bool, load_accelerator_state: bool = False) -> int:
     """
     Loads the model [or just returns the checkpoint global step]
     """
@@ -55,7 +55,7 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Accelerator, model: nn.Module, 
         # else:
         
         if load_model:
-            if path.parent.stem == "state" and load_accelerator_state:
+            if accelerator is not None and path.parent.stem == "state" and load_accelerator_state:
                 log_info("Loading accelerator state!")
                 accelerator.load_state(path.parent)
         

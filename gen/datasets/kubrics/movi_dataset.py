@@ -1,6 +1,3 @@
-from pickle import FALSE
-import autoroot
-
 import io
 import os
 from functools import cached_property
