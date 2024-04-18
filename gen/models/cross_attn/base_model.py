@@ -248,9 +248,10 @@ class BaseMapper(Trainable):
             # TEXT_ENCODER_TARGET_MODULES = ["q_proj", "v_proj"]
             TEXT_ENCODER_TARGET_MODULES = ["fc1", "fc2", "q_proj", "k_proj", "v_proj", "out_proj"]
             self.text_encoder = self.text_encoder.to(self.dtype)
+            self.text_encoder.enable_input_require_grads()
             config = LoraConfig(
-                r=8,
-                lora_alpha=8,
+                r=16,
+                lora_alpha=16,
                 target_modules=TEXT_ENCODER_TARGET_MODULES,
                 lora_dropout=0.0,
                 bias="none",
@@ -537,7 +538,6 @@ class BaseMapper(Trainable):
                 
                 other.mapper.predict_positional_information.train()
 
-            if md.predict_only_pos_emb_from_lang:
                 if set_grad:
                     other.mapper.positional_information_mlp.requires_grad_(True)
                     other.mapper.positional_information_mlp.to(device=_device, dtype=torch.float32)
@@ -1299,16 +1299,15 @@ class BaseMapper(Trainable):
 
             split_tokens = torch.split(output, (seq_lengths + num_text_tokens).tolist(), dim=0)
             new_tokens = [tokens[:-num_text_tokens] for i, tokens in enumerate(split_tokens)]
+            new_tokens = self.mapper.positional_information_mlp(torch.cat(new_tokens, dim=0))
 
             if self.cfg.model.predict_only_pos_emb_from_lang:
-                new_tokens = self.mapper.positional_information_mlp(torch.cat(new_tokens, dim=0))
-
                 if torch.isnan(new_tokens).any(): breakpoint()
 
                 cond.mask_token_pos_emb = new_tokens
                 cond.src_mask_token_pos_emb = cond.mask_token_pos_emb.clone()
             else:
-                cond.mask_tokens = cond.mask_tokens + torch.cat(new_tokens, dim=0)
+                cond.mask_tokens = cond.mask_tokens + new_tokens
             
         if self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm or self.cfg.model.modulate_src_feature_map:
             cond.src_mask_tokens = cond.mask_tokens.clone()

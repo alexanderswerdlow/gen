@@ -7,7 +7,6 @@ import contextlib
 import functools
 import glob
 import hashlib
-import importlib
 import io
 import os
 import pickle
@@ -30,8 +29,11 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 
-log_func = importlib.import_module("gen.utils.logging_utils").log_info if importlib.util.find_spec("gen") else print
-
+try:
+    from gen.utils.logging_utils import log_info
+    log_func = log_info
+except ImportError:
+    log_func = print
 
 def get_info():
     return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE).stdout.decode("utf-8")
@@ -107,7 +109,7 @@ def save_tensor_dict(tensor_dict: dict, path: str | Path | BytesIO):
 
 
 def load_tensor_dict(path: Path, object_keys=[]):
-    from jaxtyping import BFloat16
+    from jaxtyping import BFloat16 # TODO: Remove dependency
     tensor_dict = {}
     np_dict = np.load(path, allow_pickle=True)
     for k, v in np_dict.items():
@@ -418,7 +420,6 @@ def set_global_exists():
 
 def set_global_breakpoint():
     import builtins
-
     import ipdb
 
     builtins.breakpoint = _breakpoint

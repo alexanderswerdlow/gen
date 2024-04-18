@@ -428,6 +428,8 @@ class FeatureMapper(nn.Module):
             )
             if self.cfg.model.predict_only_pos_emb_from_lang:
                 self.positional_information_mlp = nn.Linear(self.cfg.model.positional_information_pred_dim, self.cfg.model.pos_emb_dim)
+            else:
+                self.positional_information_mlp = nn.Linear(self.cfg.model.positional_information_pred_dim, self.cfg.model.positional_information_pred_dim)
 
 class CrossAttn(nn.Module):
     def __init__(self, cfg: BaseConfig, input_dim: int, cross_attn_dim: int, output_dim: int):

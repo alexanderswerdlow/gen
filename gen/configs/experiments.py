@@ -1934,11 +1934,30 @@ def get_experiments():
             inject_token_positional_information=False,
             positional_information_pred_dim=768,
             use_t5_text_encoder_for_token_pred=False,
-            token_modulator=dict(final_norm=False),
             src_tgt_consistency_loss_weight=25,
             text_encoder_lora=True,
             freeze_unet=True,
             freeze_token_encoder=True,
+            token_modulator=dict(depth=8),
+        ),
+        inference=dict(
+            visualize_positional_control=False,
+        ),
+        hydra_defaults=["single_image_pretraining_v4"]
+    )
+
+    mode_store(
+        name="single_image_pretraining_v5_1",
+        model=dict(
+            predict_only_pos_emb_from_lang=False,
+            inject_token_positional_information=False,
+            positional_information_pred_dim=768,
+            use_t5_text_encoder_for_token_pred=False,
+            src_tgt_consistency_loss_weight=25,
+            text_encoder_lora=True,
+            freeze_unet=False,
+            freeze_token_encoder=False,
+            token_modulator=dict(depth=8),
         ),
         inference=dict(
             visualize_positional_control=False,
@@ -2052,6 +2071,35 @@ def get_experiments():
                 src_eq_tgt=False,
                 return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
                 augmentation=get_zoom_val_aug(),
+            ),
+            additional_train=None,
+            additional_val=None,
+        ),
+        hydra_defaults=[{"override /dataset": "calvin"}],
+    )
+
+    mode_store(
+        name="calvin_orig",
+        dataset=dict(
+            reset_val_dataset_every_epoch=False,
+            train=builds(
+                CalvinDataset,
+                populate_full_signature=True,
+                zen_partial=True,
+                num_workers=6,
+                batch_size=32,
+                src_eq_tgt=False,
+                return_encoder_normalized_tgt=True,
+                augmentation=get_val_aug(),
+            ),
+            val=builds(
+                CalvinDataset,
+                populate_full_signature=True,
+                zen_partial=True,
+                batch_size=1,
+                src_eq_tgt=False,
+                return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
+                augmentation=get_val_aug(),
             ),
             additional_train=None,
             additional_val=None,
