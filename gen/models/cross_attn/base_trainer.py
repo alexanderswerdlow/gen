@@ -19,6 +19,7 @@ from train import Trainer, get_named_params, validate_params
 
 
 class BaseTrainer(Trainer):
+
     @torch.no_grad()
     def validate_compose(self, state: TrainingState):
         assert self.cfg.dataset.reset_val_dataset_every_epoch
@@ -201,6 +202,7 @@ class BaseTrainer(Trainer):
             f"Finished validation at global step {state.global_step}, epoch {state.epoch}. Wandb URL: {self.cfg.get('wandb_url', None)}. Took: {__import__('time').time() - validation_start_time:.2f} seconds"
         )
 
+    @torch.no_grad()
     def after_backward(self, state: TrainingState):
         tr = self.cfg.trainer
         if check_every_n_steps(

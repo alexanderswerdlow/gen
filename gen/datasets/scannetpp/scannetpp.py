@@ -193,6 +193,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         return_only_instance_seg: bool = False,
         allow_instance_seg: bool = False,
         use_colmap_poses: bool = False,
+        return_video: bool = False,
         # TODO: All these params are not actually used but needed because of a quick with hydra_zen
         only_preprocess_seg: bool = False,
         use_new_seg: bool = False,
@@ -217,6 +218,17 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         return_different_views=None, # TODO: Needed for hydra
         bbox_area_threshold=None, # TODO: Needed for hydra
         bbox_overlap_threshold=None, # TODO: Needed for hydra
+        custom_data_root=None,
+        semantic_only=None,
+        ignore_stuff_in_offset=None,
+        small_instance_area=None,
+        small_instance_weight=None,
+        enable_orig_coco_augmentation=None,
+        enable_orig_coco_processing=None,
+        single_return=None,
+        merge_with_background=None,
+        return_multiple_frames=None,
+        frame_diff=None,
         **kwargs
     ):
         self.root: str = root
@@ -246,6 +258,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         self.return_only_instance_seg = return_only_instance_seg
         self.allow_instance_seg = allow_instance_seg
         self.use_colmap_poses = use_colmap_poses
+        self.return_video = return_video
 
         if self.return_raw_dataset_image and self.image_files is not None:
             return 
@@ -356,6 +369,7 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
         if self.return_raw_dataset_image:
             return self.get_raw_data(idx)
         else:
+            return self.get_paired_data(idx)
             for _ in range(60):
                 try:
                     return self.get_paired_data(idx)
@@ -468,8 +482,18 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
 
         src_pose[:3, 3] /= 10
         tgt_pose[:3, 3] /= 10
-
         ret = {}
+
+        if self.return_video:
+            src_dir = save_data_path / "rgb" / scene_id
+            src_files = sorted(list(src_dir.glob("*.jpg")))
+            m = 5
+            n = 10
+            import random
+            start_index = random.randint(0, len(src_files) - (n - 1) * m)
+            img_files = [src_files[start_index + i * m] for i in range(n)]
+            imgs = torch.cat([self.get_image(img_file) for img_file in img_files], dim=0)
+            src_img = torch.cat([src_img, imgs], dim=0)
         
         src_data, tgt_data = self.augmentation(
             src_data=Data(image=src_img.to(self.device), segmentation=src_seg.to(self.device)),
@@ -477,6 +501,12 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
             use_keypoints=False, 
             return_encoder_normalized_tgt=self.return_encoder_normalized_tgt
         )
+
+        if self.return_video:
+            imgs = src_data.image[1:]
+            ret['video_frames'] = imgs
+            src_data.image = src_data.image[:1]
+            breakpoint()
 
         if self.return_encoder_normalized_tgt:
             tgt_data, tgt_data_src_transform = tgt_data
@@ -528,6 +558,8 @@ class ScannetppIphoneDataset(AbstractDataset, Dataset):
             "valid": src_data.valid[..., 1:],
             **metadata
         })
+
+        if self.return_video: breakpoint()
 
         return ret
     
@@ -613,7 +645,7 @@ def main(
         dataset = ScannetppIphoneDataset(
             shuffle=True,
             cfg=None,
-            split=Split.TRAIN,
+            split=Split.VALIDATION,
             num_workers=num_workers,
             batch_size=batch_size,
             tokenizer=MockTokenizer(),
@@ -622,12 +654,14 @@ def main(
             scenes=scenes,
             sync_dataset_to_scratch=sync_dataset_to_scratch,
             return_raw_dataset_image=return_raw_dataset_image,
-            top_n_masks_only=128,
+            top_n_masks_only=255,
             num_overlapping_masks=1,
             use_segmentation=use_segmentation,
             use_cuda=False,
             no_filtering=no_filtering,
-            return_only_instance_seg=return_only_instance_seg
+            return_only_instance_seg=return_only_instance_seg,
+            distance_threshold = (0.3, 0.1, 0.12, 0.7),
+            return_video=True,
         )
 
         subset_range = None

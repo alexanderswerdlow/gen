@@ -117,7 +117,8 @@ class BaseModel(ABC, nn.Module):
 
         return image
 
-    @abstractproperty
+    @property
+    @abstractmethod
     def transform(self, *args):
         pass
 
@@ -165,6 +166,9 @@ class TimmModel(BaseModel):
 
     @functools.cached_property
     def transform(self):
+        return self.transforms()
+    
+    def transforms(self):
         pretrained_cfg = timm.get_pretrained_cfg(self.model_name, allow_unregistered=False)
         cfg = resolve_data_config(pretrained_cfg=pretrained_cfg.to_dict())
         if hasattr(self, "img_size") and self.img_size is not None:

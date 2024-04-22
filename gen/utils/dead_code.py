@@ -1074,3 +1074,15 @@ import antigravity
             # centroids_ = compute_centroids(einops.rearrange(feature_map_masks, 'b (h w) -> b h w', h=latent_dim)) 
             # cond.mask_token_pos_emb = torch.cat((mean_pooled_pos_enc, centroids_), dim=-1)
             # cond.mask_token_pos_emb = torch.cat((cond.mask_token_pos_emb, cond.mask_token_pos_emb.new_zeros((cond.mask_token_pos_emb.shape[0], self.cfg.model.pos_emb_dim - cond.mask_token_pos_emb.shape[1]))), dim=-1)
+                        # attn_loss += F.mse_loss(
+            #     asset_attn_mask.float(),
+            #     GT_masks[mask_id, 0].float(),
+            #     reduction="mean",
+            # )
+        #     if batch.state.true_step % 20 == 0:
+        #         imgs.append(Im(Im.concat_horizontal(Im(GT_masks[mask_id, 0].float()[None, ..., None]), Im(asset_attn_mask[None, ..., None])).torch[0, ..., None]).pil)
+
+        # if batch.state.true_step % 20 == 0:
+        #     Im.concat_vertical(*imgs).save(f'attn_{batch.state.true_step}_{batch_idx}.png')
+        #     Im(agg_attn.permute(2, 0, 1)[..., None]).normalize(normalize_min_max=True).save(f'all_attn_{batch.state.true_step}_{batch_idx}.png')
+        # imgs = []

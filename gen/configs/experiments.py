@@ -8,7 +8,7 @@ import torch
 from hydra_zen import builds
 
 from gen import (IMAGENET_PATH, MOVI_DATASET_PATH, MOVI_MEDIUM_PATH, MOVI_MEDIUM_SINGLE_OBJECT_PATH, MOVI_MEDIUM_TWO_OBJECTS_PATH,
-                 MOVI_OVERFIT_DATASET_PATH)
+                 MOVI_OVERFIT_DATASET_PATH, SCANNETPP_DATASET_PATH)
 from gen.configs.datasets import get_datasets
 from gen.configs.old_configs import get_deprecated_experiments
 from gen.configs.utils import mode_store
@@ -20,6 +20,7 @@ from gen.datasets.kubrics.movi_dataset import MoviDataset
 from gen.datasets.scannetpp.scannetpp import ScannetppIphoneDataset
 from gen.metrics.compute_token_features import compute_token_features
 from gen.models.cross_attn.base_inference import compose_two_images, interpolate_frames, interpolate_latents
+from gen.models.cross_attn.tta import tta_inference
 from gen.models.encoders.encoder import ResNetFeatureExtractor, ViTFeatureExtractor
 from functools import partial
 from gen.datasets.scannetpp.run_sam import scannet_run_sam
@@ -2173,4 +2174,85 @@ def get_experiments():
             ),
         ),
         hydra_defaults=["kubrics"],
+    )
+
+    mode_store(
+        name='tta',
+        run_inference=True,
+        debug=True,
+        inference=dict(
+            infer_train_dataset=True,
+            infer_val_dataset=False,
+        ),
+        model=dict(
+            break_a_scene_cross_attn_loss=False,
+            mask_dropped_tokens=False,
+            weighted_object_loss=True,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=1,
+                frame_diff=40,
+                subset_size=32,
+            ),
+            val=dict(
+                subset_size=32,
+                frame_diff=40,
+            )
+        ),
+        trainer=dict(
+            gradient_accumulation_steps=1,
+        ),
+        hydra_defaults=[{"override /inference": "tta_inference"}],
+    )
+
+    mode_store(
+        name='scannet_tta',
+        inference=dict(
+            infer_val_dataset=True,
+        ),
+        model=dict(
+            weighted_object_loss=False,
+            max_num_training_masks=32,
+            encode_src_twice=False,
+            encode_tgt_enc_norm=True,
+            only_encode_shared_tokens=False,
+        ),
+        hydra_defaults=["tta"],
+    )
+
+    mode_store(
+        name="scannetpp_orig",
+        dataset=dict(
+            train=builds(
+                ScannetppIphoneDataset,
+                zen_partial=True,
+                image_pairs_per_scene=16384,
+                top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                return_encoder_normalized_tgt=True,
+                src_eq_tgt=False,
+                distance_threshold=(0.3, 0.1, 0.12, 0.7),
+                num_overlapping_masks=1,
+                root=SCANNETPP_DATASET_PATH,
+                augmentation=get_val_aug(),
+            ),
+            val=builds(
+                ScannetppIphoneDataset,
+                image_pairs_per_scene=16384,
+                top_n_masks_only="${eval:'${model.segmentation_map_size}'}",
+                return_encoder_normalized_tgt="${dataset.train.return_encoder_normalized_tgt}",
+                src_eq_tgt=False,
+                distance_threshold=(0.3, 0.1, 0.12, 0.7),
+                num_overlapping_masks=1,
+                augmentation=get_val_aug(),
+                root=SCANNETPP_DATASET_PATH,
+                zen_partial=True,
+            ),
+            additional_train=None,
+            additional_val=None,
+        ),
+        hydra_defaults=[
+            "_self_",
+            {"override /dataset": "scannetpp"},
+        ],
     )

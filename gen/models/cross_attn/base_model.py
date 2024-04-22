@@ -1206,6 +1206,7 @@ class BaseMapper(Trainable):
            cond.tgt_mask_instance_idx = cond.mask_instance_idx[tgt_token_mask]
            if cond.mask_token_pos_emb is not None:
                cond.tgt_mask_token_pos_emb = cond.mask_token_pos_emb[tgt_token_mask]
+
            if cond.mask_token_centroids is not None:
                cond.tgt_mask_token_centroids = cond.mask_token_centroids[tgt_token_mask]
            cond.tgt_mask_dropout = cond.mask_dropout[torch.arange(cond.mask_dropout.shape[0], device=self.device) >= batch.bs]
@@ -1217,6 +1218,7 @@ class BaseMapper(Trainable):
            if cond.mask_token_pos_emb is not None:
                cond.mask_token_pos_emb = cond.mask_token_pos_emb[token_mask]
                cond.gt_src_mask_token_pos_emb = cond.mask_token_pos_emb.clone()
+
            if cond.mask_token_centroids is not None:
                cond.mask_token_centroids = cond.mask_token_centroids[token_mask]
            cond.mask_dropout = cond.mask_dropout[torch.arange(cond.mask_dropout.shape[0], device=self.device) < batch.bs]
@@ -1273,7 +1275,7 @@ class BaseMapper(Trainable):
                 new_tokens = [tokens[:-1] for i, tokens in enumerate(split_tokens)]
                 cond.mask_tokens = torch.cat(new_tokens, dim=0)[:, :orig_dim]
 
-        if self.cfg.model.tgt_positional_information_from_lang:
+        if self.cfg.model.tgt_positional_information_from_lang and batch.force_use_orig_src_tokens:
             self_attn_dim = self.cfg.model.positional_information_pred_dim
             with nullcontext() if self.cfg.model.text_encoder_lora else torch.no_grad():
                 text_encoding = self.text_encoder(input_ids=batch.input_ids[:, :24]).last_hidden_state
@@ -1331,6 +1333,9 @@ class BaseMapper(Trainable):
         if (self.cfg.model.encode_src_twice or self.cfg.model.encode_tgt_enc_norm) and self.cfg.model.layer_specialization:
             cond.tgt_mask_tokens = layer_specialization(cond.tgt_mask_tokens, self.cfg.model.num_conditioning_pairs)
             cond.src_mask_tokens = cond.mask_tokens.clone()
+
+        if batch.force_use_orig_src_tokens:
+            cond.mask_tokens = cond.gt_src_mask_token
 
         return cond
 
@@ -1495,7 +1500,7 @@ class BaseMapper(Trainable):
     def inverted_cosine(self, timesteps):
         return torch.arccos(torch.sqrt(timesteps))
 
-    def forward(self, batch: InputData, state: TrainingState):
+    def forward(self, batch: InputData, state: TrainingState, cond: Optional[ConditioningData] = None):
         assert batch.formatted_input_ids is None
 
         if self.cfg.model.predict_rotation_from_n_frames:
@@ -1513,14 +1518,13 @@ class BaseMapper(Trainable):
         else:
             timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (batch.bs,), device=self.device).long()
 
-        cond = self.get_hidden_state(batch, add_conditioning=True)
-
-        if self.training: self.dropout_cfg(cond)
+        if cond is None:
+            cond = self.get_hidden_state(batch, add_conditioning=True)
+            if self.training: self.dropout_cfg(cond)
 
         pred_data = None
         if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
             pred_data = TokenPredData()
-
             # We must call this before rotation/cls prediction to properly setup the GT and choose which mask tokens to predict
             # Make sure to also call token_rot_loss afterwards.
             if self.cfg.model.token_rot_pred_loss:

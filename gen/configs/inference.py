@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from gen.configs.utils import auto_store, store_child_config
 from gen.datasets.run_dataloader import iterate_dataloader
 from gen.datasets.scannetpp.run_sam import scannet_run_sam
+from gen.models.cross_attn.tta import tta_inference
 from gen.utils.decoupled_utils import all_gather
 from gen.utils.trainer_utils import Trainable
 from gen.models.cross_attn.base_inference import run_qualitative_inference, compose_two_images, interpolate_latents, susie_inference
@@ -43,6 +44,7 @@ class InferenceConfig:
     infer_train_dataset: bool = False
     dataloader_only_func: Callable[..., None] = iterate_dataloader
     gather_results: bool = True
+    tta: bool = False
 
 
 auto_store(InferenceConfig, name="basemapper")
@@ -73,4 +75,12 @@ store_child_config(
     parent="basemapper",
     child="susie_inference",
     inference_func = partial(susie_inference)
+)
+store_child_config(
+    cls=InferenceConfig,
+    group="inference",
+    parent="basemapper",
+    child="tta_inference",
+    inference_func = partial(tta_inference),
+    tta=True,
 )

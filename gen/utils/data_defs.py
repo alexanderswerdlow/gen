@@ -62,8 +62,9 @@ class InputData:
     force_forward_encoder_normalized_tgt: bool = False
     force_encode_all_masks: Optional[Bool[Tensor, "b"]] = None
     force_use_tgt_pos_emb: bool = False
+    force_use_orig_src_tokens: bool = False
+    force_repeat_cond_data: bool = False
     shared_src_tgt_instance_idxs: Optional[Integer[Tensor, "b max_instances"]] = None
-    
 
     @staticmethod
     def from_dict(batch: dict):

@@ -127,7 +127,7 @@ class Trainable(nn.Module, ABC):
     def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):
         ...
 
-    def run_inference(self, batch: dict, state: TrainingState) -> dict[str, Im]:
+    def run_inference(self, batch: dict, state: TrainingState, accelerator: Optional[Accelerator] = None) -> dict[str, Im]:
         ...
 
     def on_sync_gradients(self):

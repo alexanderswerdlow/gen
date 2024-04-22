@@ -66,10 +66,6 @@ Ideally, since we are using Hydra, we would use the submitit hydra plugin to lau
 
 Instead, we have `multirun.py` which generates a sequence of calls (through `os.system()`), each of which are a single training run. `launch_slurm.py` then runs a SLURM job.
 
-## Known issues
-
-Segmentation maps when cropping sometime have false where it should be true
-
 ## Misc
 
 To update submodules, run `git pull --recurse-submodules`
@@ -92,3 +88,8 @@ We use [hydra-zen](https://mit-ll-responsible-ai.github.io/hydra-zen/) which bui
 To modify the config from the command line, refer to this [Hydra guide](https://hydra.cc/docs/advanced/override_grammar/basic/).
 
 Many of the experiments make use of merging global configs to produce a final output. If you want to override the parent config for some module (i.e., set the config to the class defaults and ignore the parents), replace `dict(**kwargs)` with `builds(cls, populate_full_signature=True, zen_partial=True, **kwargs)`.
+
+## Known issues
+
+- Overriding datasets is a bit problematic as all datasets need all kwargs.
+- Segmentation maps when cropping sometimes have false where it should be true

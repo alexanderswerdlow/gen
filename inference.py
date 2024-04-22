@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from io import BytesIO
 import pickle
 from collections import defaultdict
@@ -27,15 +28,16 @@ import traceback
 
 tqdm.monitor_interval = 0 # May not be necessary
 
+
 def inference(cfg: BaseConfig, accelerator: Accelerator):
     model = get_model_from_cfg(cfg)
 
     if not (cfg.debug and cfg.trainer.ckpt is None): load_from_ckpt(cfg=cfg, accelerator=accelerator, model=model, load_model=True)
     model = accelerator.prepare(model)
 
-    if cfg.inference.infer_val_dataset: run_inference_split(cfg, accelerator, model, Split.VALIDATION, cfg.dataset.val)
-
-    if cfg.inference.infer_train_dataset: run_inference_split(cfg, accelerator, model, Split.TRAIN, cfg.dataset.train)
+    with nullcontext() if cfg.inference.tta else torch.no_grad():
+        if cfg.inference.infer_val_dataset: run_inference_split(cfg, accelerator, model, Split.VALIDATION, cfg.dataset.val)
+        if cfg.inference.infer_train_dataset: run_inference_split(cfg, accelerator, model, Split.TRAIN, cfg.dataset.train)
 
 
 def run_inference_split(cfg: BaseConfig, accelerator: Accelerator, model: Trainable, split: Split, dataset_cfg):
@@ -60,7 +62,6 @@ def flatten(list_of_lists):
     return list(chain.from_iterable(list_of_lists))
 
 
-@torch.no_grad()
 def run_inference_dataloader(
     accelerator: Optional[Accelerator],
     dataloader: DataLoader,
@@ -75,9 +76,10 @@ def run_inference_dataloader(
     
     output_path.mkdir(exist_ok=True, parents=True)
     log_debug(f"Setting inference mode.", main_process_only=False)
-    unwrap(model).set_inference_mode(**kwargs)
-
-    model.eval()
+    if cfg is None or cfg.inference.tta is False:
+        unwrap(model).set_inference_mode(**kwargs)
+        model.eval()
+    
     log_info(f"Running inference w/prefix: {prefix}, Dataloder size: {len(dataloader)}", main_process_only=True)
     
     outputs = []
@@ -93,7 +95,7 @@ def run_inference_dataloader(
         try:
             batch = unwrap(model).process_input(batch, state)
             batch = batch.to(accelerator.device)
-            output = unwrap(model).run_inference(batch=batch, state=inference_state)
+            output = unwrap(model).run_inference(batch=batch, state=inference_state, accelerator=accelerator)
             outputs.append(output)
         except Exception as e:
             if get_num_gpus() > 1 and state.global_step > 100:

@@ -46,28 +46,14 @@ def break_a_scene_cross_attn_loss(cfg: BaseConfig, batch: InputData, controller:
         # We may dropout masks so we need to map between dataset segmentation idx and the mask idx in the sentence
         segmentation_indices = cond.mask_instance_idx[cur_batch_mask]
         attn_masks = agg_attn[..., token_indices]
-        imgs = []
         for idx, mask_id in enumerate(segmentation_indices):
             asset_attn_mask = attn_masks[..., idx] / attn_masks[..., idx].max()
-
-            # attn_loss += F.mse_loss(
-            #     asset_attn_mask.float(),
-            #     GT_masks[mask_id, 0].float(),
-            #     reduction="mean",
-            # )
 
             # This loss seems to be better
             attn_loss += F.mse_loss(
                 (asset_attn_mask.reshape(-1).softmax(dim=0).reshape(16, 16) * GT_masks[mask_id, 0].float()).sum(),
                 torch.tensor(1.0).to(GT_masks.device),
             )
-
-        #     if batch.state.true_step % 20 == 0:
-        #         imgs.append(Im(Im.concat_horizontal(Im(GT_masks[mask_id, 0].float()[None, ..., None]), Im(asset_attn_mask[None, ..., None])).torch[0, ..., None]).pil)
-
-        # if batch.state.true_step % 20 == 0:
-        #     Im.concat_vertical(*imgs).save(f'attn_{batch.state.true_step}_{batch_idx}.png')
-        #     Im(agg_attn.permute(2, 0, 1)[..., None]).normalize(normalize_min_max=True).save(f'all_attn_{batch.state.true_step}_{batch_idx}.png')
 
     attn_loss = cfg.model.break_a_scene_cross_attn_loss_weight * (attn_loss / batch_size)
     controller.reset()
@@ -96,7 +82,7 @@ def evenly_weighted_mask_loss(
             losses.append(F.mse_loss(pred[b], target[b], reduction="mean"))
             continue
 
-        mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == b]
+        mask_idxs_for_batch = cond.mask_instance_idx[cond.mask_batch_idx == (0 if batch.force_repeat_cond_data else b)]
         object_masks = get_one_hot_channels(batch.tgt_segmentation[b], mask_idxs_for_batch)
 
         gt_masks = F.interpolate(rearrange("h w c -> c () h w", object_masks).float(), size=(cfg.model.decoder_latent_dim, cfg.model.decoder_latent_dim),  mode='bilinear', align_corners=False).squeeze(1)

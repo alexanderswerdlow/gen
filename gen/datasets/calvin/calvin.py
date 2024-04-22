@@ -81,6 +81,7 @@ class CalvinDataset(AbstractDataset, Dataset):
         tokenizer = None,
         specific_scenes: Optional[list[str]] = None,
         fake_return_n: Optional[int] = 10000,
+        frame_diff: int = 40,
         # TODO: All these params are not actually used but needed because of a quick with hydra_zen
         image_pairs_per_scene: int = 16384,
         distance_threshold: tuple[float] = (0.30, 0.1, 0.12, 0.8),
@@ -143,6 +144,7 @@ class CalvinDataset(AbstractDataset, Dataset):
         self.augmentation = augmentation
         self.tokenizer = tokenizer
         self.fake_return_n = fake_return_n
+        self.frame_diff = frame_diff
         
         self.scene_paths = [folder for folder in Path(self.root).iterdir() if folder.is_dir() and (folder / "metadata.json").exists()]
         self.scene_names = [scene.name for scene in self.scene_paths]
@@ -158,7 +160,7 @@ class CalvinDataset(AbstractDataset, Dataset):
                         frame_ids.add(end)
 
                     episode_numbers = sorted(int(e.split('_')[1]) for e in frame_ids)
-                    n = 40
+                    n = self.frame_diff
                     task['start_end_ids'] = [[f'episode_{i}', f'episode_{i + n}'] for i in episode_numbers if i + n in episode_numbers]
 
         print(f"Final num pairs: {sum(len(task['start_end_ids']) for scene in self.metadata for task in scene)} on {self.split.name.lower()}")

@@ -106,13 +106,14 @@ def infer_batch(
     batch: InputData,
     num_images_per_prompt: int = 1,
     cond: Optional[ConditioningData] = None,
+    allow_get_cond: bool = True,
     **kwargs,
 ) -> tuple[list[Any], dict, ConditioningData]:
     if batch.input_ids is not None:
         orig_input_ids = batch.input_ids.clone()
         batch.input_ids = orig_input_ids.clone()
 
-    if cond is None or len(cond.unet_kwargs) == 0:
+    if cond is None or len(cond.unet_kwargs) == 0 and allow_get_cond:
         with torch.cuda.amp.autocast():
             assert self.cfg.inference.empty_string_cfg
             cond = self.get_standard_conditioning_for_inference(batch=batch, cond=cond)
