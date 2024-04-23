@@ -14,15 +14,10 @@ from gen.models.dustr.geometry import depthmap_to_absolute_camera_coordinates
 from gen.models.dustr.marigold import NearFarMetricNormalizer
 from gen.utils.decoupled_utils import breakpoint_on_error
 
-data = np.load('/projects/katefgroup/share_alex/view1.npz')
-device = torch.device('cuda')
-dtype = torch.float32
-vae = AutoencoderKL.from_pretrained('prs-eth/marigold-v1-0', subfolder="vae").to(device=device, dtype=torch.float32)
-
 typer.main.get_command_name = lambda name: name
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
-def get_decoded_pcd(gt_points, valid_mask, min_max_quantile: float = 0.001, kwargs = None):
+def get_decoded_pcd(vae, gt_points, valid_mask, min_max_quantile: float = 0.001, kwargs = None):
     """
     Args:
         gt_points: [B, 3, H, W]
@@ -33,6 +28,9 @@ def get_decoded_pcd(gt_points, valid_mask, min_max_quantile: float = 0.001, kwar
         final_mask: [B, H, W]
     """
     b, _, h, w = gt_points.shape
+
+    assert gt_points.dtype == torch.float32
+    assert valid_mask.dtype == torch.bool
 
     if kwargs is None:
         kwargs = dict(valid_mask=valid_mask, clip=True, per_axis_quantile=True)
@@ -47,18 +45,23 @@ def get_decoded_pcd(gt_points, valid_mask, min_max_quantile: float = 0.001, kwar
             decoded_points = vae.decode(latents.to(torch.float32), return_dict=False)[0]
             decoded_points, outside_range_post = normalizer.denormalize(decoded_points)
 
-        outside_range_post = outside_range_post.to(device=device)
-        _mask = torch.from_numpy(rearrange('b h w -> (b h w)', valid_mask)).to(device)
-        _final_mask = ((~outside_range_pre) & _mask) & (~outside_range_post)
+        outside_range_post = outside_range_post.to(device=gt_points.device)
+        _mask = torch.from_numpy(rearrange('b h w -> (b h w)', valid_mask)).to(gt_points)
+        updated_mask = ((~outside_range_pre) & _mask) & (~outside_range_post)
 
-        _final_mask = rearrange('(b h w) -> b h w', _final_mask, b=b, h=h, w=w)
+        updated_mask = rearrange('(b h w) -> b h w', updated_mask, b=b, h=h, w=w)
 
-    return decoded_points, _final_mask
+    return decoded_points, updated_mask
 
 @app.command()
 def main():
     v = viz.Visualizer()
     output_strings = []
+
+    device = torch.device('cuda')
+    dtype = torch.float32
+    vae = AutoencoderKL.from_pretrained('prs-eth/marigold-v1-0', subfolder="vae").to(device=device, dtype=torch.float32)
+    data = np.load('/projects/katefgroup/share_alex/view1.npz')
 
     for i, _args in enumerate(itertools.product(
         [ dict(per_axis_quantile=True), dict(per_axis_quantile=False), ], # 
@@ -80,7 +83,7 @@ def main():
         gt_points = rearrange('b h w xyz -> b xyz h w', torch.from_numpy(_orig).to(device=device, dtype=torch.float32))
 
         _min_max_quantile = __args.pop('min_max_quantile')
-        decoded_points, final_mask = get_decoded_pcd(gt_points, data['valid_mask'], _min_max_quantile, __args)
+        decoded_points, final_mask = get_decoded_pcd(vae, gt_points, data['valid_mask'], _min_max_quantile, __args)
 
         final_mask = rearrange('b h w -> (b h w)', final_mask)
         _gt = rearrange('b xyz h w -> (b h w) xyz', gt_points)
