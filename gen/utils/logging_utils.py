@@ -11,6 +11,7 @@ def set_logger(name: str):
 
     logger = logging.getLogger(name if is_main_process() else name + f"_rank_{get_rank()}")
     logger.handlers = []
+    logger.propagate = False
 
     console_handler = RichHandler()
     console_handler.setLevel(logging.DEBUG)
@@ -47,7 +48,10 @@ def get_logger_(main_process_only: bool) -> logging.Logger:
         if logger is not None:
             return logger
         else:
-            return logging.getLogger(__name__ if not main_process_only else __name__ + f"_rank_{get_rank()}")
+            new_logger_name = __name__ if not main_process_only else __name__ + f"_rank_{get_rank()}"
+            new_logger = logging.getLogger(new_logger_name)
+            new_logger.propagate = False
+            return new_logger
     else:
         return Dummy()
 
