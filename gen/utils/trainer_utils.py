@@ -209,14 +209,6 @@ def linear_warmup(current_step: int, warmup_steps: int, final_value: float, init
         return final_value
 
 if __name__ == "__main__":
-    # assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10)
-    # assert not check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=0, epoch=0), 10, run_first=True)
-    # assert check_every_n_steps(TrainingState(epoch_step=0, num_epoch_steps=0, global_step=10, epoch=0), 10)
-
-    # assert check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=0), 1)
-    # assert not check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=0), 1, run_first=True)
-    # assert check_every_n_epochs(TrainingState(epoch_step=9, num_epoch_steps=10, global_step=0, epoch=5), 5)
-
     for i in range(50000):
         if check_every_n_steps(TrainingState(epoch_step=i, num_epoch_steps=10, global_step=i, epoch=0, true_step=i), 500, decay_steps=True):
             print(i)

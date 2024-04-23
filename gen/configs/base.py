@@ -94,11 +94,8 @@ def get_src_transform(_, *, _root_: BaseConfig):
     return model.transform
 
 def get_tgt_transform(_, *, _root_: BaseConfig):
-    from gen.datasets.utils import get_stable_diffusion_transforms, get_stable_diffusion_transforms_sd_images_variations_diffusers
-    if _root_.model.pretrained_model_name_or_path == "lambdalabs/sd-image-variations-diffusers":
-        return get_stable_diffusion_transforms_sd_images_variations_diffusers(resolution=_root_.model.decoder_resolution)
-    else:
-        return get_stable_diffusion_transforms(resolution=_root_.model.decoder_resolution)
+    from gen.datasets.utils import get_stable_diffusion_transforms
+    return get_stable_diffusion_transforms(resolution=_root_.model.decoder_resolution)
     
 def get_dtype(_, *, _root_: BaseConfig):
     from accelerate.utils import PrecisionType

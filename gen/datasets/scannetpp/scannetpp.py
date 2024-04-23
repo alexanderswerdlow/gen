@@ -27,9 +27,6 @@ from gen.configs.utils import inherit_parent_args
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
 from gen.datasets.run_dataloader import MockTokenizer
-from gen.datasets.scannetpp.colmap import read_cameras_text, read_images_text
-from gen.datasets.scannetpp.run_sam_dask import get_to_process
-from gen.datasets.scannetpp.scene_data import test_scenes, train_scenes, val_scenes
 from gen.utils.data_defs import visualize_input_data
 from gen.utils.decoupled_utils import breakpoint_on_error, hash_str_as_int, sanitize_filename, to_numpy
 from gen.utils.file_utils import get_available_path, sync_data
