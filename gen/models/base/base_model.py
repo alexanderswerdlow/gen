@@ -201,8 +201,48 @@ class BaseMapper(Trainable):
         return torch.arccos(torch.sqrt(timesteps))
 
     def forward(self, batch: InputData, state: TrainingState, cond: Optional[ConditioningData] = None):
-        breakpoint()
+        viz = False
 
+        if viz:
+            breakpoint()
+            from gen.models.dustr.geometry import depthmap_to_absolute_camera_coordinates
+            data = np.load('/projects/katefgroup/share_alex/view1.npz')
+            depthmap = data['depthmap'].squeeze(0)
+            camera_intrinsics = np.zeros((3, 3))
+            _camera_intrinsics = data['camera_intrinsics'].squeeze(0)
+            camera_intrinsics[0, 0] = _camera_intrinsics[0, 1]
+            camera_intrinsics[1, 1] = _camera_intrinsics[1, 0]
+            camera_intrinsics[:2, 2] = _camera_intrinsics[:2, 2]
+            camera_pose = data['camera_pose'].squeeze(0)
+
+            # depthmap_to_absolute_camera_coordinates(depthmap, camera_intrinsics, camera_pose)
+            gt_points = rearrange('b h w xyz -> b xyz h w', torch.from_numpy(data['pts3d']).to(device=self.device, dtype=torch.float32))
+
+            min_val = gt_points.min()
+            max_val = gt_points.max()
+            gt_points = 2 * (gt_points - min_val) / (max_val - min_val) - 1
+
+            latents = self.vae.encode(gt_points).latent_dist.sample() * self.vae.config.scaling_factor
+            latents = (1 / self.vae.config.scaling_factor) * latents # Obviously this is a no-op
+            with torch.no_grad():
+                decoded_points = self.vae.decode(latents, return_dict=False)[0]
+
+            import pyviz3d.visualizer as viz
+            v = viz.Visualizer()
+
+            def unnorm(arr):
+                return (((arr + 1) / 2) * (max_val - min_val)) + min_val
+            
+            _gt = rearrange('b xyz h w -> (b h w) xyz', unnorm(gt_points).float().cpu().numpy()) / 100
+            _gt_colors = np.ones_like(_gt) * np.array([0, 255, 0])
+
+            _dec = rearrange('b xyz h w -> (b h w) xyz', unnorm(decoded_points).float().cpu().numpy()) / 100
+            _dec_colors = np.ones_like(_dec) * np.array([255, 0, 0])
+
+            v.add_points("GT PCD",  _gt, _gt_colors, point_size=0.2)
+            v.add_points("Decoded PCD", _dec, _dec_colors, point_size=100)
+            v.save('output/sensor')
+        
         batch.src_dec_rgb = torch.clamp(batch.src_dec_rgb, -1, 1)
         batch.tgt_dec_rgb = torch.clamp(batch.tgt_dec_rgb, -1, 1)
 
