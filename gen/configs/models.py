@@ -51,15 +51,10 @@ class ModelConfig:
     fused_mlp: bool = True
     fused_bias_fc: bool = True
 
-    token_head_dim: int = "${model.encoder_dim}"
     lr_finetune_version: int = 0
-    num_layer_queries: int = 1
 
-   
-    predict_rotation_from_n_frames: Optional[int] = None
     diffusion_timestep_range: Optional[tuple[int, int]] = None
     diffusion_loss_weight: float = 1.0
-    token_cls_loss_weight: float = 0.1
     disable_unet_during_training: bool = False
     
     add_grid_to_input_channels: bool = False
@@ -69,16 +64,11 @@ class ModelConfig:
     clip_lora_rank: int = 16
     clip_lora_alpha: int = 8
     clip_lora_dropout: float = 0.1
+    debug_feature_maps: bool = False
+    feature_map_keys: Optional[tuple[str]] = None  # Use multiple feature maps for attention pooling
+    finetune_unet_with_different_lrs: bool = False
 
 
-@dataclass
-class ControlNetConfig(ModelConfig):
-    model_type: ModelType = ModelType.CONTROLNET
-    controlnet_model_name_or_path: Optional[str] = None
-    tokenizer_name: Optional[str] = None
-
-
-auto_store(ControlNetConfig, name="controlnet")
 auto_store(
     ModelConfig,
     model_type=ModelType.BASE_MAPPER,

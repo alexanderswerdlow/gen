@@ -11,7 +11,6 @@ from einx import mean, rearrange, softmax
 from image_utils import ChannelRange, Im, onehot_to_color
 from PIL import Image
 from torchvision import utils
-from gen import GSO_PCD_PATH
 
 from gen.datasets.abstract_dataset import Split
 from gen.utils.trainer_utils import TrainingState

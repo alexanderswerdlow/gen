@@ -67,8 +67,8 @@ class Augmentation:
         center_crop: bool = True,
         enable_square_crop: bool = True,
         enable_rand_augment: bool = False,
-        enable_random_resize_crop: bool = True,
-        enable_horizontal_flip: bool = True,
+        enable_random_resize_crop: bool = False,
+        enable_horizontal_flip: bool = False,
         enable_rotate: bool = False,
         enable_zoom_crop: bool = False,
         reorder_segmentation: bool = False,
@@ -171,10 +171,13 @@ class Augmentation:
             tgt_params = self.tgt_transform.forward_parameters(batch_shape=tgt_data.image.shape)
             tgt_data = process(aug=self.tgt_transform, params=tgt_params, input_data=tgt_data, return_grid=self.return_grid, use_keypoints=use_keypoints)
 
+        if return_encoder_normalized_tgt:
+            src_data_dec_transform = apply_normalization_transforms(src_data.clone(), self.tgt_transforms, initial_h, initial_w)
+
         src_data = apply_normalization_transforms(src_data, self.src_transforms, initial_h, initial_w)
 
         if return_encoder_normalized_tgt:
-            tgt_data_src_transform = apply_normalization_transforms(tgt_data.clone(), self.src_transforms, initial_h, initial_w)
+            tgt_data_enc_transform = apply_normalization_transforms(tgt_data.clone(), self.src_transforms, initial_h, initial_w)
 
         tgt_data = apply_normalization_transforms(tgt_data, self.tgt_transforms, initial_h, initial_w)
         
@@ -189,7 +192,8 @@ class Augmentation:
             tgt_data.grid = None
 
         if return_encoder_normalized_tgt:
-            tgt_data = (tgt_data, tgt_data_src_transform)
+            src_data = (src_data, src_data_dec_transform)
+            tgt_data = (tgt_data, tgt_data_enc_transform)
 
         return src_data, tgt_data
     
@@ -214,7 +218,7 @@ def crop_to_square(*args, center=True):
         start_x = random.randint(0, width - min_dim)
         start_y = random.randint(0, height - min_dim)
     
-    return [tensor[..., start_y:start_y+min_dim, start_x:start_x+min_dim] for tensor in args]
+    return [tensor[..., start_y:start_y+min_dim, start_x:start_x+min_dim] if tensor is not None else tensor for tensor in args]
 
 def reorder_segmentation(tensor):
     # Re-order segmentation channels (except background). This is because during cropping, large segmentation masks may no longer be in view.

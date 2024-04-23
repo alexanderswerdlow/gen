@@ -10,7 +10,6 @@ from accelerate.utils.dataclasses import DynamoBackend, LoggerType
 from gen.configs.utils import auto_store
 import torch
 from torch.optim import Optimizer
-from importlib.util import find_spec
 
 if TYPE_CHECKING:
     from train import Trainer

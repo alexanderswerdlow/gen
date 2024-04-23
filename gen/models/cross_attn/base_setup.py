@@ -1,0 +1,327 @@
+
+from __future__ import annotations
+
+import dataclasses
+import gc
+import math
+from contextlib import nullcontext
+from dataclasses import dataclass, field
+from functools import cached_property
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional, Union
+
+from diffusers.models.autoencoders.autoencoder_kl import AutoencoderKL
+from diffusers.models.unet_2d_condition import UNet2DConditionModel
+from diffusers.pipelines.controlnet.pipeline_controlnet import StableDiffusionControlNetPipeline
+from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+import einops
+import hydra
+import numpy as np
+import torch
+import torch.nn.functional as F
+import torch.utils.checkpoint
+from accelerate import Accelerator
+from einx import add, rearrange, where
+from jaxtyping import Bool, Float, Integer
+from omegaconf import OmegaConf
+from peft import LoraConfig, get_peft_model
+from transformers import AutoTokenizer, CLIPTokenizer
+from transformers.models.clip.modeling_clip import CLIPTextModel
+
+from diffusers.models.attention import BasicTransformerBlock
+from diffusers.training_utils import EMAModel, cast_training_params
+from diffusers.utils.torch_utils import randn_tensor
+from gen.configs import BaseConfig
+from gen.models.cross_attn.modules import FeatureMapper, TokenMapper
+from gen.models.cross_attn.pipeline_stable_diffusion import StableDiffusionPipeline
+from gen.models.encoders.encoder import BaseModel
+from gen.utils.decoupled_utils import get_modules, to_numpy
+from gen.utils.diffusers_utils import load_stable_diffusion_model
+from gen.utils.logging_utils import log_debug, log_error, log_info, log_warn
+from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
+from gen.utils.visualization_utils import get_dino_pca, viz_feats
+
+if TYPE_CHECKING:
+    from gen.models.cross_attn.base_model import BaseMapper
+
+def initialize_custom_models(self: BaseMapper):
+    if self.cfg.model.mask_token_conditioning:
+        self.mapper = FeatureMapper(cfg=self.cfg).to(self.cfg.trainer.device)
+        if self.cfg.model.modulate_src_feature_map:
+            from gen.models.encoders.vision_transformer import vit_base_patch14_dinov2
+        
+        if self.cfg.model.custom_dino_v2:
+            self.clip = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg')
+            self.clip = torch.compile(self.clip)
+        else:
+            self.clip = hydra.utils.instantiate(self.cfg.model.encoder, compile=False)
+        self.clip.to(self.dtype)
+
+        if self.cfg.model.clip_lora:
+            self.clip.requires_grad_(True)
+            from peft import LoraConfig, inject_adapter_in_model
+            module_regex = r".*blocks\.(20|21|22|23)\.mlp\.fc\d" if 'large' in self.cfg.model.encoder.model_name else r".*blocks\.(10|11)\.mlp\.fc\d"
+            lora_config = LoraConfig(r=self.cfg.model.clip_lora_rank, lora_alpha=self.cfg.model.clip_lora_alpha, lora_dropout=self.cfg.model.clip_lora_dropout, target_modules=module_regex)
+            self.clip = inject_adapter_in_model(lora_config, self.clip, adapter_name='lora')
+            # self.clip = torch.compile(self.clip, mode="max-autotune-no-cudagraphs", fullgraph=True)
+
+    if self.cfg.model.token_cls_pred_loss or self.cfg.model.token_rot_pred_loss:
+        self.token_mapper = TokenMapper(cfg=self.cfg).to(self.cfg.trainer.device)
+
+def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
+    # Load the tokenizer
+    tokenizer_encoder_name = "CompVis/stable-diffusion-v1-4" if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.pretrained_model_name_or_path
+    revision = None if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.revision
+    self.tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_encoder_name, subfolder="tokenizer", revision=revision, use_fast=False
+    )
+
+    # Load scheduler and models
+    self.noise_scheduler: DDPMScheduler = DDPMScheduler.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="scheduler")
+    self.rotation_scheduler = DDPMScheduler(
+        num_train_timesteps=self.cfg.model.rotation_diffusion_timestep,
+        beta_schedule="squaredcos_cap_v2",
+        prediction_type=self.cfg.model.rotation_diffusion_parameterization,
+    )
+    
+    unet_kwargs = dict()
+    if self.cfg.model.unet:
+        self.vae: AutoencoderKL = AutoencoderKL.from_pretrained(
+            self.cfg.model.pretrained_model_name_or_path, subfolder="vae", revision=self.cfg.model.revision, variant=self.cfg.model.variant
+        )
+        if self.cfg.model.autoencoder_slicing:
+            self.vae.enable_slicing()
+        self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
+            self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
+        )
+
+        if self.cfg.model.add_grid_to_input_channels:
+            new_dim = self.unet.conv_in.in_channels + 2
+            conv_in_updated = torch.nn.Conv2d(
+                new_dim, self.unet.conv_in.out_channels, kernel_size=self.unet.conv_in.kernel_size, padding=self.unet.conv_in.padding
+            )
+            conv_in_updated.requires_grad_(False)
+            self.unet.conv_in.requires_grad_(False)
+            torch.nn.init.zeros_(conv_in_updated.weight)
+            conv_in_updated.weight[:,:4,:,:].copy_(self.unet.conv_in.weight)
+            conv_in_updated.bias.copy_(self.unet.conv_in.bias)
+            self.unet.conv_in = conv_in_updated
+
+        if self.cfg.model.ema and not self.cfg.model.freeze_unet:
+            self.ema_unet = EMAModel(self.unet.parameters(), model_cls=UNet2DConditionModel, model_config=self.unet.config)
+            log_warn("Using EMA for U-Net. Inference has not het been handled properly.")
+    else:
+        self.unet = Dummy() # For rotation denoising only
+        
+def add_unet_adapters(self):
+    assert not (self.cfg.model.freeze_unet is False and (self.cfg.model.unfreeze_unet_after_n_steps is not None or self.cfg.model.unet_lora))
+    if self.cfg.model.unet_lora:
+        unet_lora_config = LoraConfig(
+            r=self.cfg.model.lora_rank,
+            lora_alpha=self.cfg.model.lora_rank,
+            init_lora_weights="gaussian",
+            target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+        )
+        self.unet.add_adapter(unet_lora_config)
+        cast_training_params(self.unet, dtype=torch.float32)
+
+    if self.cfg.trainer.enable_xformers_memory_efficient_attention:
+        self.unet.enable_xformers_memory_efficient_attention()
+        if self.cfg.model.controlnet:
+            self.controlnet.enable_xformers_memory_efficient_attention()
+
+    if self.cfg.trainer.gradient_checkpointing:
+        if hasattr(self.clip, "base_model"):
+            self.clip.base_model.set_grad_checkpointing()
+            log_info("Setting CLIP Gradient checkpointing")
+        elif hasattr(self.clip, "model"):
+            self.clip.model.set_grad_checkpointing()
+            log_info("Setting CLIP Gradient checkpointing")
+
+        self.unet.enable_gradient_checkpointing()
+        if self.cfg.model.controlnet:
+            self.controlnet.enable_gradient_checkpointing()
+        if (self.cfg.model.freeze_text_encoder is False and self.cfg.model.add_text_tokens) or self.cfg.model.text_encoder_lora:
+            self.text_encoder.gradient_checkpointing_enable()
+        
+    if self.cfg.model.break_a_scene_cross_attn_loss:
+        from gen.models.cross_attn.break_a_scene import AttentionStore
+
+        self.controller = AttentionStore()
+        register_attention_control(self.controller, self.unet)
+
+    elif self.cfg.model.layer_specialization or self.cfg.model.eschernet:
+        from gen.models.cross_attn.attn_proc import register_layerwise_attention
+
+        num_cross_attn_layers = register_layerwise_attention(self.unet)
+        if self.cfg.model.layer_specialization and (not self.cfg.model.custom_conditioning_map):
+            assert num_cross_attn_layers == (2 * self.cfg.model.num_conditioning_pairs * (2 if self.cfg.model.gated_cross_attn else 1))
+
+    if self.cfg.model.per_layer_queries:
+        assert self.cfg.model.layer_specialization
+
+@staticmethod
+def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
+    """
+    Set training mode for the proper models and freeze/unfreeze them.
+
+    We set the weights to weight_dtype only if they are frozen. Otherwise, they are left in FP32.
+
+    We have the set_grad param as changing requires_grad after can cause issues. 
+    
+    For example, we want to first freeze the U-Net then add the LoRA adapter. We also see this error:
+    `element 0 of tensors does not require grad and does not have a grad_fn`
+    """
+    md = cfg.model
+    _dtype = dtype
+    _device = device
+    other = unwrap(_other)
+
+    if hasattr(other, "controller"):
+        other.controller.reset()
+
+    if hasattr(other, "pipeline"):  # After validation, we need to clear this
+        del other.pipeline
+        torch.cuda.empty_cache()
+        gc.collect()
+        log_debug("Cleared pipeline", main_process_only=False)
+
+    if set_grad is False and cfg.trainer.inference_train_switch is False:
+        return
+
+    if set_grad and md.unet:
+        other.vae.to(device=_device, dtype=_dtype)
+        other.vae.requires_grad_(False)
+
+    if md.use_dataset_segmentation is False:
+        other.hqsam.eval()
+        if set_grad:
+            other.hqsam.requires_grad_(False)
+
+    if md.mask_token_conditioning:
+        if md.freeze_clip:
+            if set_grad:
+                other.clip.to(device=_device, dtype=_dtype)
+                other.clip.requires_grad_(False)
+            other.clip.eval()
+            log_warn("CLIP is frozen for debugging")
+        else:
+            if set_grad:
+                other.clip.requires_grad_(True)
+            other.clip.train()
+            log_warn("CLIP is unfrozen")
+
+        if md.clip_lora:
+            if set_grad:
+                for k, p in other.clip.named_parameters():
+                    if "lora" in k:
+                        log_warn(f"Unfreezing {k}, converting to {torch.float32}")
+                        p.requires_grad = True
+
+    if md.unfreeze_last_n_clip_layers is not None and md.clip_lora is False:
+        log_warn(f"Unfreezing last {md.unfreeze_last_n_clip_layers} CLIP layers")
+        if hasattr(other.clip, "base_model"):
+            model_ = other.clip.base_model
+        elif hasattr(other.clip, "model"):
+            model_ = other.clip.model
+
+        for block in model_.blocks[-md.unfreeze_last_n_clip_layers :]:
+            if set_grad:
+                block.requires_grad_(True)
+            block.train()
+
+    if md.freeze_unet:
+        if set_grad:
+            other.unet.to(device=_device, dtype=_dtype)
+            other.unet.requires_grad_(False)
+        other.unet.eval()
+
+        if md.unfreeze_single_unet_layer:
+            for m in get_modules(other.unet, BasicTransformerBlock)[:1]:
+                if set_grad:
+                    m.requires_grad_(True)
+                    m.to(dtype=torch.float32)
+                m.train()
+    else:
+        if set_grad:
+            other.unet.requires_grad_(True)
+            if cfg.model.ema:
+                other.ema_unet.requires_grad_(True)
+        other.unet.train()
+        if cfg.model.ema:
+            other.ema_unet.train()
+
+def set_inference_mode(self: BaseModel, init_pipeline: bool = True):
+    if init_pipeline and self.cfg.model.unet and getattr(self, "pipeline", None) is None:
+        self.pipeline: Union[StableDiffusionControlNetPipeline, StableDiffusionPipeline] = load_stable_diffusion_model(
+            cfg=self.cfg,
+            device=self.device,
+            tokenizer=self.tokenizer,
+            text_encoder=self.text_encoder if self.cfg.model.add_text_tokens else None,
+            unet=self.unet,
+            vae=self.vae,
+            model=self,
+            torch_dtype=self.dtype,
+        )
+
+    if self.cfg.model.break_a_scene_cross_attn_loss:
+        self.controller.reset()
+
+def get_custom_params(self: BaseMapper):
+    """
+    Returns all params directly managed by the top-level model.
+    Other params may be nested [e.g., in diffusers]
+    """
+    params = {}
+    
+    # Add clip parameters
+    params.update({k:p for k,p in self.clip.named_parameters() if p.requires_grad})
+
+    return params
+
+def get_unet_params(self: BaseMapper):
+    is_unet_trainable = self.cfg.model.unet and (not self.cfg.model.freeze_unet or self.cfg.model.unet_lora)
+    return {k:v for k,v in self.unet.named_parameters() if v.requires_grad} if is_unet_trainable else dict()
+
+def get_param_groups(self: BaseMapper):
+    if self.cfg.model.finetune_unet_with_different_lrs:
+        unet_params = self.get_unet_params()
+        custom_params = self.get_custom_params()
+
+        def get_params(params, keys):
+            group = {k: v for k, v in params.items() if all([key in k for key in keys])}
+            for k, p in group.items():
+                del params[k]
+            return group
+
+        if self.cfg.model.lr_finetune_version == 0:
+            return [  # Order matters here
+                {"params": get_params(custom_params, ("token_predictor",)).values(), "lr": self.cfg.trainer.learning_rate},
+                {"params": get_params(unet_params, ("attn2",)).values(), "lr": self.cfg.trainer.learning_rate / 10},
+                {"params": custom_params.values(), "lr": self.cfg.trainer.learning_rate / 10},
+                {"params": unet_params.values(), "lr": self.cfg.trainer.learning_rate / 100},
+            ]
+    else:
+        return None
+
+def checkpoint(self, accelerator: Accelerator, state: TrainingState, path: Path):
+    # TODO: save_state/load_state saves everything from prepare() regardless of whether it's frozen
+    # This is very inefficient but simpler for now.
+    accelerator.save_state(path / "state", safe_serialization=False)
+    if hasattr(self, 'mapper'):
+        accelerator.save_model(self.mapper, save_directory=path / "model", safe_serialization=False)
+    if self.cfg.model.unet_lora:
+        from peft.utils import get_peft_model_state_dict
+
+        unet_lora_state_dict = get_peft_model_state_dict(self.unet)
+        cls = StableDiffusionControlNetPipeline if self.cfg.model.controlnet else StableDiffusionPipeline
+        cls.save_lora_weights(
+            save_directory=path / "pipeline",
+            unet_lora_layers=unet_lora_state_dict,
+            safe_serialization=True,
+        )
+
+    extra_pkl = {"cfg": OmegaConf.to_container(self.cfg, resolve=True)}
+
+    torch.save(extra_pkl, path / "data.pkl")
+    log_info(f"Saved state to {path}")

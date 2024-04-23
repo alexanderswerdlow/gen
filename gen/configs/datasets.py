@@ -7,6 +7,7 @@ from hydra_zen import builds
 from gen.configs.utils import auto_store, mode_store, store_child_config
 from gen.datasets.abstract_dataset import AbstractDataset
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
+from gen.datasets.misc.imagefolder import ImagefolderDataset
 
 
 @dataclass
@@ -65,16 +66,13 @@ auto_store(DatasetConfig,
 
 def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
-        name="movi",
+        name="test",
         dataset=dict(
-            train=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False), multi_camera_format=False),
-            val=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False), multi_camera_format=False),
-        ),
-        model=dict(
-            segmentation_map_size=24,
+            train=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),
+            val=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),
         ),
         hydra_defaults=[
             "_self_",
-            {"override /dataset": "movi_e"},
+            {"override /dataset": "imagefolder"},
         ],
     )
