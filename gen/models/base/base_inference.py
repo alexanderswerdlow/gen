@@ -18,7 +18,7 @@ from dataclasses import asdict, fields
 from torchvision.transforms.functional import InterpolationMode, resize
 
 if TYPE_CHECKING:
-    from gen.models.cross_attn.base_model import BaseMapper, ConditioningData, InputData
+    from gen.models.base.base_model import BaseMapper, ConditioningData, InputData
 
 
 @torch.no_grad()
@@ -64,7 +64,7 @@ def infer_batch(
     if self.cfg.trainer.profile_memory or self.cfg.trainer.fast_eval:
         kwargs["num_inference_steps"] = 1 # Required otherwise the profiler will create traces that are too large
 
-    if self.cfg.model.add_grid_to_input_channels:
+    if self.cfg.model.add_unet_input_channels:
         kwargs["concat_latent_along_channel_dim"] = get_tgt_grid(self.cfg, batch)
 
     if self.cfg.model.add_text_tokens is False:

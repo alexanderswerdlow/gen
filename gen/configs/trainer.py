@@ -13,11 +13,11 @@ from torch.optim import Optimizer
 
 if TYPE_CHECKING:
     from train import Trainer
-    from gen.models.cross_attn.base_trainer import BaseTrainer
+    from gen.models.base.base_trainer import BaseTrainer
 
 @dataclass
 class TrainerConfig:
-    trainer_cls: str = "gen.models.cross_attn.base_trainer.BaseTrainer"
+    trainer_cls: str = "gen.models.base.base_trainer.BaseTrainer"
     name: ClassVar[str] = "trainer"
     log_with: Optional[LoggerType] = LoggerType.WANDB
     tracker_project_name: str = "controlnet"  # wandb project name

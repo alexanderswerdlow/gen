@@ -23,21 +23,18 @@ class ImagefolderDataset(AbstractDataset, Dataset):
     def __init__(
         self,
         *,
-        root: Path,
+        root: Optional[Path] = None,
         augmentation: Optional[Augmentation] = None,
-        src_eq_tgt: bool = False,
         tokenizer = None,
         **kwargs
     ):
         self.root = root
+        self.augmentation = augmentation
+        self.tokenizer = tokenizer
         self.pairs = [x.name for x in root.iterdir() if x.is_dir()]
         self.saved_scene_frames = defaultdict(list)
         for scene in self.pairs:
             self.saved_scene_frames[scene] = sorted([int(x.stem) for x in (root / scene).iterdir()])
-
-        self.src_eq_tgt = src_eq_tgt
-        self.augmentation = augmentation
-        self.tokenizer = tokenizer
 
     def __len__(self) -> int:
         return len(self.saved_scene_frames)

@@ -23,7 +23,7 @@ class BaseTrainer(Trainer):
     @torch.no_grad()
     def validate_compose(self, state: TrainingState):
         assert self.cfg.dataset.reset_val_dataset_every_epoch
-        from gen.models.cross_attn.base_inference import compose_two_images
+        from gen.models.base.base_inference import compose_two_images
         set_inference_func(unwrap(self.model), partial(compose_two_images))
         self.val_dataset_holder.batch_size = 2
         self.validate(state=state)
@@ -88,7 +88,7 @@ class BaseTrainer(Trainer):
         start_time = time()
 
         log_info(f"Starting base model validation at global step {state.global_step}, epoch {state.epoch}")
-        from gen.models.cross_attn.base_inference import run_qualitative_inference, run_quantitative_inference
+        from gen.models.base.base_inference import run_qualitative_inference, run_quantitative_inference
 
         unwrap(self.model).run_inference = types.MethodType(run_quantitative_inference, unwrap(self.model))
 
@@ -143,40 +143,12 @@ class BaseTrainer(Trainer):
         import gc; gc.collect()
         torch.cuda.empty_cache()
 
-        from gen.models.cross_attn.base_model import BaseMapper
+        from gen.models.base.base_model import BaseMapper
         BaseMapper.set_training_mode(cfg=self.cfg, _other=self.model, device=self.accelerator.device, dtype=self.dtype, set_grad=False)
         validate_params(self.models, self.dtype)
         
         log_info(f"Finished base model validation at global step {state.global_step}, epoch {state.epoch}. Took: {time() - start_time:.2f} seconds")
-
-    def unfreeze_unet(self, state: TrainingState):
-        log_warn(f"Unfreezing UNet at {state.global_step} steps")
-        model_: Trainable = unwrap(self.model)
-        model_.unfreeze_unet()
-        self.models.append(model_)
-        del self.optimizer
-        optimizer_class = self.cfg.trainer.optimizer_cls
-        self.optimizer = optimizer_class(
-            get_named_params(self.models).values(),
-            lr=self.cfg.trainer.finetune_learning_rate,
-            betas=(self.cfg.trainer.adam_beta1, self.cfg.trainer.adam_beta2),
-            weight_decay=self.cfg.trainer.weight_decay,
-            eps=self.cfg.trainer.adam_epsilon,
-        )
-        del self.lr_scheduler
-        self.lr_scheduler = get_scheduler(
-            self.cfg.trainer.lr_scheduler,
-            optimizer=self.optimizer,
-            num_warmup_steps=self.cfg.trainer.lr_warmup_steps * self.cfg.trainer.num_gpus,
-            num_training_steps=self.cfg.trainer.max_train_steps * self.cfg.trainer.num_gpus,
-            num_cycles=self.cfg.trainer.lr_num_cycles,
-            power=self.cfg.trainer.lr_power,
-        )
-        self.optimizer, self.lr_scheduler, self.model = self.accelerator.prepare(self.optimizer, self.lr_scheduler, model_)
-        validate_params(self.models, self.dtype)
-        if is_main_process():
-            summary(unwrap(self.model), col_names=("trainable", "num_params"), depth=4)
-
+        
     @torch.no_grad()
     def validate(self, state: TrainingState):
         # TODO: Cleanup all the validation code once we figure out the possible memory leak.
@@ -195,7 +167,7 @@ class BaseTrainer(Trainer):
             self.validate_train_dataloader(state)
         
         self.model.train()
-        from gen.models.cross_attn.base_model import BaseMapper
+        from gen.models.base.base_model import BaseMapper
         BaseMapper.set_training_mode(cfg=self.cfg, _other=self.model, device=self.accelerator.device, dtype=self.dtype, set_grad=False)
 
         log_info(
@@ -222,6 +194,3 @@ class BaseTrainer(Trainer):
 
         if check_every_n_steps(state, tr.custom_inference_every_n_steps, run_first=tr.eval_on_start, all_processes=True):
             self.base_model_validate(state)
-
-        if self.cfg.model.unfreeze_unet_after_n_steps and state.global_step == self.cfg.model.unfreeze_unet_after_n_steps:
-            self.unfreeze_unet(state)

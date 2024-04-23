@@ -66,7 +66,7 @@ auto_store(DatasetConfig,
 
 def get_datasets():  # TODO: These do not need to be global configs
     mode_store(
-        name="test",
+        name="example",
         dataset=dict(
             train=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),
             val=dict(augmentation=dict(enable_horizontal_flip=False, enable_random_resize_crop=False)),

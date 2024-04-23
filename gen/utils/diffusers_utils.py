@@ -1,7 +1,7 @@
 from typing import Optional, Union
 
 import torch
-from gen.models.cross_attn.pipeline_stable_diffusion import StableDiffusionPipeline
+from gen.models.base.pipeline_stable_diffusion import StableDiffusionPipeline
 from diffusers import (
     AutoencoderKL,
     DDIMScheduler,

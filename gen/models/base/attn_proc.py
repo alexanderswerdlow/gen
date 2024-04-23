@@ -9,9 +9,9 @@ from diffusers.models.attention_processor import Attention
 from diffusers.utils import USE_PEFT_BACKEND
 from einx import rearrange, mean
 
-from gen.models.cross_attn.base_model import AttentionMetadata
-from gen.models.cross_attn.deprecated_configs import handle_attn_proc_cross_attn_masking
-from gen.models.cross_attn.eschernet import cape_embed_4dof, cape_embed_6dof
+from gen.models.base.base_model import AttentionMetadata
+from gen.models.base.deprecated_configs import handle_attn_proc_cross_attn_masking
+from gen.models.base.eschernet import cape_embed_4dof, cape_embed_6dof
 from gen.models.utils import positionalencoding2d
 
 def register_layerwise_attention(unet):

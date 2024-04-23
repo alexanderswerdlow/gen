@@ -9,7 +9,7 @@ from gen.configs.models import ModelType
 import types
 
 def get_model_from_cfg(cfg: BaseConfig):
-    from gen.models.cross_attn.base_model import BaseMapper
+    from gen.models.base.base_model import BaseMapper
 
     match cfg.model.model_type:
         case ModelType.BASE_MAPPER:

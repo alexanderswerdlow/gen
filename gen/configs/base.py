@@ -24,7 +24,7 @@ from gen.utils.logging_utils import log_info
 defaults = [
     "_self_",
     {"trainer": "base"},
-    {"dataset": "coco_captions"},
+    {"dataset": "imagefolder"},
     {"model": "basemapper"},
     {"inference": "basemapper"},
 ]
@@ -143,39 +143,12 @@ exp_store(
         reset_val_dataset_every_epoch=True,
     ),
     inference=dict(
-        empty_string_cfg=True,
         guidance_scale=7.5,
-        use_custom_pipeline=False,
-        num_masks_to_remove=4,
-        num_images_per_prompt=2,
-        infer_new_prompts=True,
-        save_prompt_embeds=True,
         use_ddim=True,
         max_batch_size=4,
-        vary_cfg_plot=True,
-        visualize_attention_map=True,
-        visualize_rotation_denoising=True,
-    ),
-    model=dict(
-        use_dataset_segmentation=True,
-        freeze_text_encoder=True,
-        decoder_transformer=dict(add_self_attn=False, depth=2),
-        freeze_mapper=False,
-        freeze_unet=True,
-        pretrained_model_name_or_path="stabilityai/stable-diffusion-2-1-base",
-        token_embedding_dim=1024,
-        break_a_scene_masked_loss=True,
-        training_mask_dropout=0.15,
-        training_cfg_dropout=0.12,
-        training_layer_dropout=0.15,
-        unfreeze_last_n_clip_layers=None,
-        layer_specialization=True,
-        token_modulator=dict(add_self_attn=True, add_cross_attn=False, depth=4, embed_dim=2048, drop_rate=0.1),
     ),
     hydra_defaults=[
         "_self_",
-        {"override /dataset": "movi_e"},
-        {"override /model": "basemapper"},
     ],
 )
 

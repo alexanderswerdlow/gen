@@ -6,7 +6,7 @@ from typing import Any, Callable, ClassVar, Dict, List, Optional, Union
 
 from gen.configs.utils import auto_store, store_child_config
 from gen.datasets.run_dataloader import iterate_dataloader
-from gen.models.cross_attn.base_inference import run_qualitative_inference
+from gen.models.base.base_inference import run_qualitative_inference
 from gen.utils.trainer_utils import Trainable
 
 

@@ -9,7 +9,7 @@ from gen.utils.decoupled_utils import get_time_sync
 from gen.utils.trainer_utils import TrainingState
 
 if TYPE_CHECKING:
-    from gen.models.cross_attn.base_model import BaseMapper, InputData
+    from gen.models.base.base_model import BaseMapper, InputData
 
 @torch.no_grad()
 def compute_token_features(self: BaseMapper, batch: InputData, state: TrainingState):

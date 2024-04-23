@@ -10,10 +10,10 @@ os.environ["IMAGE_UTILS_DISABLE_WARNINGS"] = "1"
 
 REPO_DIR = Path(__file__).parent.parent
 PROJECTS_PREFIX = str(os.getenv("PROJECTS_PREFIX", ""))
-
 CHECKPOINT_DIR = Path(os.getenv("CHECKPOINT_DIR", "checkpoints"))
+GLOBAL_CACHE_PATH = Path(os.getenv("GLOBAL_CACHE_PATH", "/home/aswerdlo/data/cache"))
+SCRATCH_CACHE_PATH = Path(os.getenv("SCRATCH_CACHE_PATH", "/scratch/aswerdlo/cache"))
 
-COCO_CAPTIONS_FILES = os.getenv("COCO_CAPTIONS_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/aswerdlo/mscoco/{{00000..00059}}.tar")
 COCO_DATASET_PATH = Path(os.getenv("COCO_DATASET_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/datasets/coco"))
 SCRATCH_COCO_PATH = Path(os.getenv("SCRATCH_COCO_PATH", "/scratch/aswerdlo/coco"))
 COCO_CUSTOM_PATH = Path(os.getenv("COCO_CUSTOM_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/aswerdlo/datasets/coco/annotations"))
@@ -23,5 +23,4 @@ if SCRATCH_COCO_PATH.exists():
     COCO_CUSTOM_PATH = SCRATCH_COCO_PATH / "annotations"
     log_info(f"Using scratch coco path: {COCO_DATASET_PATH}")
 
-GLOBAL_CACHE_PATH = Path(os.getenv("GLOBAL_CACHE_PATH", "/home/aswerdlo/data/cache"))
-SCRATCH_CACHE_PATH = Path(os.getenv("SCRATCH_CACHE_PATH", "/scratch/aswerdlo/cache"))
+

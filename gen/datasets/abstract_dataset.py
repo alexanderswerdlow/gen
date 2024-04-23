@@ -54,7 +54,6 @@ class _RepeatSampler(object):
     def __len__(self):
         return 1000000000
 
-
 class FastDataLoader(torch.utils.data.dataloader.DataLoader):
 
     def __init__(self, *args, **kwargs):
