@@ -216,6 +216,17 @@ def depthmap_to_absolute_camera_coordinates(depthmap, camera_intrinsics, camera_
     X_world = np.einsum("ik, vuk -> vui", R_cam2world, X_cam) + t_cam2world[None, None, :]
     return X_world, valid_mask
 
+def pts3d_to_depthmap(pts3d, camera_intrinsics, camera_pose, **kw):
+    """
+    Args:
+        - pts3d (3xHxW array):
+        - camera_intrinsics: a 3x3 matrix
+        - camera_pose: a 4x3 or 4x4 cam2world matrix
+    Returns:
+       depth (HxWx3 array)
+    """
+    pass
+
 
 def colmap_to_opencv_intrinsics(K):
     """

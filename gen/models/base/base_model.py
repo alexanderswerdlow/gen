@@ -20,7 +20,7 @@ from gen.utils.data_defs import InputData, get_dropout_grid, get_tgt_grid
 from gen.utils.logging_utils import log_debug, log_error, log_info, log_warn
 from gen.utils.trainer_utils import Trainable, TrainingState, unwrap
 from gen.utils.visualization_utils import get_dino_pca, viz_feats
-    
+
 class BaseMapper(Trainable):
     def __init__(self, cfg: BaseConfig):
         super().__init__()
@@ -201,46 +201,6 @@ class BaseMapper(Trainable):
         return torch.arccos(torch.sqrt(timesteps))
 
     def forward(self, batch: InputData, state: TrainingState, cond: Optional[ConditioningData] = None):
-        viz = True
-
-        if viz:
-            breakpoint()
-            from gen.models.dustr.geometry import depthmap_to_absolute_camera_coordinates
-            from gen.models.dustr.marigold import NearFarMetricNormalizer
-            
-            data = np.load('/projects/katefgroup/share_alex/view1.npz')
-            depthmap = data['depthmap'].squeeze(0)
-            camera_intrinsics = np.zeros((3, 3))
-            _camera_intrinsics = data['camera_intrinsics'].squeeze(0)
-            camera_intrinsics[0, 0] = _camera_intrinsics[0, 1]
-            camera_intrinsics[1, 1] = _camera_intrinsics[1, 0]
-            camera_intrinsics[:2, 2] = _camera_intrinsics[:2, 2]
-            camera_pose = data['camera_pose'].squeeze(0)
-            # depthmap_to_absolute_camera_coordinates(depthmap, camera_intrinsics, camera_pose)
-
-            gt_points = rearrange('b h w xyz -> b xyz h w', torch.from_numpy(data['pts3d']).to(device=self.device, dtype=torch.float32))
-            normalizer = NearFarMetricNormalizer()
-
-            latents = self.vae.encode(normalizer(gt_points)).latent_dist.sample() * self.vae.config.scaling_factor
-            latents = (1 / self.vae.config.scaling_factor) * latents # Obviously this is a no-op
-            with torch.no_grad():
-                decoded_points = self.vae.decode(latents, return_dict=False)[0]
-
-            import pyviz3d.visualizer as viz
-
-            v = viz.Visualizer()
-            out = normalizer.denormalize(decoded_points)
-
-            _gt = rearrange('b xyz h w -> (b h w) xyz', gt_points.float().cpu().numpy()) / 100
-            _gt_colors = np.ones_like(_gt) * np.array([0, 255, 0])
-
-            _dec = rearrange('b xyz h w -> (b h w) xyz', out.float().cpu().numpy()) / 100
-            _dec_colors = np.ones_like(_dec) * np.array([255, 0, 0])
-
-            v.add_points("GT PCD",  _gt, _gt_colors, point_size=1)
-            v.add_points("Decoded PCD", _dec, _dec_colors, point_size=1)
-            v.save('output/sensor')
-        
         batch.src_dec_rgb = torch.clamp(batch.src_dec_rgb, -1, 1)
         batch.tgt_dec_rgb = torch.clamp(batch.tgt_dec_rgb, -1, 1)
 
