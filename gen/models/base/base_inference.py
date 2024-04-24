@@ -64,16 +64,9 @@ def infer_batch(
     if self.cfg.trainer.profile_memory or self.cfg.trainer.fast_eval:
         kwargs["num_inference_steps"] = 1 # Required otherwise the profiler will create traces that are too large
 
-    if self.cfg.model.add_text_tokens is False:
-        negative_prompt_embeds = self.uncond_hidden_states
-        prompt_embeds = cond.unet_kwargs['prompt_embeds']
-        kwargs["negative_prompt_embeds"] = negative_prompt_embeds.repeat(prompt_embeds.shape[0], 1, prompt_embeds.shape[-1] // negative_prompt_embeds.shape[-1])
-
     needs_autocast = self.cfg.model.freeze_unet is False or self.cfg.model.unfreeze_single_unet_layer or self.cfg.model.unfreeze_gated_cross_attn
     with torch.cuda.amp.autocast(dtype=self.dtype) if needs_autocast else nullcontext():
         images = self.pipeline(**cond.unet_kwargs, **kwargs).images
-
-    batch.formatted_input_ids = None
 
     if (
         "cross_attention_kwargs" in cond.unet_kwargs

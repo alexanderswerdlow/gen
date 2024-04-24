@@ -14,11 +14,10 @@ def encode_xyz(gt_points, init_valid_mask, vae, min_max_quantile: float = 0.1, k
     return latents, post_enc_valid_mask, normalizer
 
 def decode_xyz(pred_latents, post_enc_valid_mask, vae, normalizer):
-    pred_latents = (1 / vae.config.scaling_factor) * pred_latents # Obviously this is a no-op
+    pred_latents = (1 / vae.config.scaling_factor) * pred_latents
     with torch.no_grad():
         with torch.autocast(device_type="cuda", dtype=torch.float32):
             decoded_points = vae.decode(pred_latents.to(torch.float32), return_dict=False)[0]
-            b, _, h, w = decoded_points.shape
             decoded_points, outside_range_post = normalizer.denormalize(decoded_points)
 
         outside_range_post = outside_range_post.to(device=pred_latents.device)

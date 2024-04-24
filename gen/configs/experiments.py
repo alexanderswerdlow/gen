@@ -67,7 +67,7 @@ def get_experiments():
 
 
     mode_store(
-        name="demo_v1",
+        name="exp_v0",
         debug=True,
         model=dict(
             freeze_unet=True,
@@ -77,12 +77,10 @@ def get_experiments():
         ),
         dataset=dict(
             train=dict(
-                batch_size=2,
-                num_workers=0,
+                batch_size=16,
             ),
             val=dict(
                 batch_size=1,
-                num_workers=0,
             ),
         ),
         hydra_defaults=[

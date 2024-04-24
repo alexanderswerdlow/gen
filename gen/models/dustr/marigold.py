@@ -77,12 +77,12 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
         return depth_norm_linear, outside_range
 
 
-    def scale_back(self, depth_norm):
+    def scale_back(self, depth_norm, warn: bool = False):
         shape = depth_norm.shape
         depth_norm = rearrange(depth_norm, 'b xyz h w -> (b h w) xyz')
         depth_linear = (depth_norm / 2 + 0.5)
 
-        if depth_linear.min() <= (0 - 1e-8) or depth_linear.max() >= (1 + 1e-8):
+        if warn and (depth_linear.min() <= (0 - 1e-8) or depth_linear.max() >= (1 + 1e-8)):
             print(f"Warning: depth_linear out of range: {depth_linear.min():.3f}, {depth_linear.max():.3f}")
 
         outside_range = ((depth_linear < 0) | (depth_linear > 1)).any(dim=-1)

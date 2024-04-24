@@ -184,8 +184,10 @@ class BaseMapper(Trainable):
                 input_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', batch.src_xyz, batch.tgt_xyz)
                 input_valid = rearrange('b h w, b h w -> (b + b) h w', batch.src_xyz_valid, batch.tgt_xyz_valid)
                 xyz_latents, xyz_valid, normalizer = encode_xyz(input_xyz, input_valid, self.vae)
+                
                 cond.xyz_normalizer = normalizer
                 cond.xyz_valid = xyz_valid
+                cond.gt_xyz = input_xyz
 
                 rgb_latents = latents
                 latents = xyz_latents
@@ -231,7 +233,10 @@ class BaseMapper(Trainable):
             losses["diffusion_loss"] = mse_loss * self.cfg.model.diffusion_loss_weight
 
         if self.cfg.model.duplicate_unet_input_channels:
-            out = decode_xyz(model_pred, cond.xyz_valid, self.vae, cond.xyz_normalizer)
-            breakpoint()
+            pred_xyz, pred_mask = decode_xyz(model_pred, cond.xyz_valid, self.vae, cond.xyz_normalizer)
+            pred_mask = rearrange('b h w -> (b h w)', pred_mask)
+            pred_xyz = rearrange('b h w xyz -> (b h w) xyz', pred_xyz)
+            gt_xyz = rearrange('b h w xyz -> (b h w) xyz', cond.gt_xyz)
+            losses['metric_valid_xyz_mse'] = F.mse_loss(pred_xyz[pred_mask], gt_xyz[pred_mask], reduction="mean")
 
         return losses
