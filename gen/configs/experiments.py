@@ -77,7 +77,7 @@ def get_experiments():
         ),
         dataset=dict(
             train=dict(
-                batch_size=16,
+                batch_size=2,
             ),
             val=dict(
                 batch_size=1,
