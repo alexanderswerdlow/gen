@@ -46,7 +46,7 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
         clip = clip if clip is not None else self.clip
 
         shape = depth_linear.shape
-        depth_linear = rearrange(depth_linear, 'b xyz h w -> (b h w) xyz')
+        depth_linear = rearrange(depth_linear, 'b h w xyz -> (b h w) xyz')
         if valid_mask is not None:
             valid_mask = rearrange(valid_mask, '... -> (...)')
         else:
@@ -71,7 +71,8 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
                 depth_norm_linear, self.norm_min, self.norm_max
             )
 
-        depth_norm_linear = rearrange(depth_norm_linear, '(b h w) xyz -> b xyz h w', b=shape[0], h=shape[2], w=shape[3])
+        depth_norm_linear = rearrange(depth_norm_linear, '(b h w) xyz -> b xyz h w', b=shape[0], h=shape[1], w=shape[2])
+        outside_range = rearrange(outside_range, '(b h w) -> b h w', b=shape[0], h=shape[1], w=shape[2])
 
         return depth_norm_linear, outside_range
 
@@ -90,7 +91,8 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
             self._max - self._min
         ) + self._min
 
-        depth_linear = rearrange(depth_linear, '(b h w) xyz -> b xyz h w', b=shape[0], h=shape[2], w=shape[3])
+        depth_linear = rearrange(depth_linear, '(b h w) xyz -> b h w xyz', b=shape[0], h=shape[2], w=shape[3])
+        outside_range = rearrange(outside_range, '(b h w) -> b h w', b=shape[0], h=shape[2], w=shape[3])
 
         return depth_linear, outside_range
 

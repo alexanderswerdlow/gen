@@ -39,8 +39,8 @@ class TrainerConfig:
     scale_lr_batch_size: bool = False
     scale_lr_gpus_grad_accum: bool = True
     optimizer_cls: Optimizer = torch.optim.AdamW
-    use_fused_adam: bool = True
-    use_8bit_adam: bool = False
+    use_fused_adam: bool = False
+    use_8bit_adam: bool = True
     momentum: Optional[float] = None
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 500

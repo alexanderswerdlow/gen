@@ -35,6 +35,7 @@ class ModelConfig:
     unfreeze_single_unet_layer: bool = False # Lets us debug on a 12GB GPU
     unet_lora: bool = False  # Perform low-rank adaptation on the main U-Net
     unet_lora_rank: int = 4
+    use_dora: bool = True
 
     freeze_enc: bool = True  # We freeze the CLIP Vision encoder by default
     unfreeze_last_n_enc_layers: Optional[int] = None  # Unfreeze specific clip layers
@@ -46,15 +47,12 @@ class ModelConfig:
     autoencoder_slicing: bool = True
     encoder_latent_dim: int = 16 # resolution // patch_size
 
-    
-
     lr_finetune_version: int = 0
     finetune_unet_with_different_lrs: bool = False
 
     diffusion_timestep_range: Optional[tuple[int, int]] = None
     diffusion_loss_weight: float = 1.0
     disable_unet_during_training: bool = False
-    add_unet_input_channels: bool = False
     use_sd_15_tokenizer_encoder: bool = False
 
     enc_lora: bool = False  # Perform low-rank adaptation on the main U-Net
@@ -68,6 +66,9 @@ class ModelConfig:
     
     fused_mlp: bool = True
     fused_bias_fc: bool = True
+
+    duplicate_unet_input_channels: bool = False
+    dual_attention: bool = False
 
 
 auto_store(

@@ -21,7 +21,8 @@ from transformers import AutoTokenizer, CLIPTokenizer
 
 from diffusers.models.attention import BasicTransformerBlock
 from diffusers.training_utils import EMAModel, cast_training_params
-from gen.models.base.base_defs import Dummy
+from gen.models.base.attn_proc import register_custom_attention
+from gen.models.base.base_defs import AttentionConfig, Dummy
 from gen.models.base.pipeline_stable_diffusion import StableDiffusionPipeline
 from gen.models.encoders.encoder import BaseModel
 from gen.utils.decoupled_utils import get_modules
@@ -71,20 +72,40 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
         if self.cfg.model.autoencoder_slicing:
             self.vae.enable_slicing()
 
+        if self.cfg.model.dual_attention:
+            unet_kwargs["attention_config"] = AttentionConfig(dual_self_attention=True, dual_cross_attention=True)
+            unet_kwargs["strict_load"] = False
+
         self.unet = UNet2DConditionModel.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
         )
-        if self.cfg.model.add_unet_input_channels:
-            new_dim = self.unet.conv_in.in_channels + 2
-            conv_in_updated = torch.nn.Conv2d(
-                new_dim, self.unet.conv_in.out_channels, kernel_size=self.unet.conv_in.kernel_size, padding=self.unet.conv_in.padding
-            )
+
+        if self.cfg.model.duplicate_unet_input_channels:
+            new_dim = self.unet.conv_in.in_channels * 2
+            conv_in_updated = torch.nn.Conv2d(new_dim, self.unet.conv_in.out_channels, kernel_size=self.unet.conv_in.kernel_size, padding=self.unet.conv_in.padding)
             conv_in_updated.requires_grad_(False)
             self.unet.conv_in.requires_grad_(False)
-            torch.nn.init.zeros_(conv_in_updated.weight)
-            conv_in_updated.weight[:,:4,:,:].copy_(self.unet.conv_in.weight)
+            conv_in_updated.weight[:,:4,:,:].copy_(self.unet.conv_in.weight / 2)
+            conv_in_updated.weight[:,4:8,:,:].copy_(self.unet.conv_in.weight / 2)
             conv_in_updated.bias.copy_(self.unet.conv_in.bias)
             self.unet.conv_in = conv_in_updated
+            self.unet.conv_in.requires_grad_(True)
+
+        if self.cfg.model.dual_attention:
+            from accelerate.utils import set_module_tensor_to_device
+            param_names = ["to_k", "to_q", "to_v", "to_out.0"]
+            for k, v in self.unet.named_parameters():
+                for name in param_names:
+                    if k.rsplit('.', 1)[0].endswith(name):
+                        if 'v2_' in k:
+                            orig_weight_name = k.replace("v2_", "")
+                            set_module_tensor_to_device(self.unet, k, self.device, value=self.unet.state_dict()[orig_weight_name])
+                            print(f"Setting {k} to {orig_weight_name}")
+
+                if 'v_1_to_v_2' in k or 'v_2_to_v_1' in k:
+                    param = 0.02 * torch.randn(v.shape, device=self.device) if 'weight' in k else torch.zeros(v.shape, device=self.device)
+                    set_module_tensor_to_device(self.unet, k, self.device, value=param)
+                    print(f"Setting {k} to random")
 
         if self.cfg.model.ema and not self.cfg.model.freeze_unet:
             self.ema_unet = EMAModel(self.unet.parameters(), model_cls=UNet2DConditionModel, model_config=self.unet.config)
@@ -92,13 +113,14 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
     else:
         self.unet = Dummy() # For rotation denoising only
 
-def add_unet_adapters(self):
+def add_unet_adapters(self: BaseModel):
     assert not (self.cfg.model.freeze_unet is False and self.cfg.model.unet_lora)
     if self.cfg.model.unet_lora:
         from peft import LoraConfig
         unet_lora_config = LoraConfig(
             r=self.cfg.model.unet_lora_rank,
             lora_alpha=self.cfg.model.unet_lora_rank,
+            use_dora=self.cfg.model.use_dora,
             init_lora_weights="gaussian",
             target_modules=["to_k", "to_q", "to_v", "to_out.0"],
         )
@@ -109,6 +131,9 @@ def add_unet_adapters(self):
         self.unet.enable_xformers_memory_efficient_attention()
         if self.cfg.model.controlnet:
             self.controlnet.enable_xformers_memory_efficient_attention()
+
+    if self.cfg.model.dual_attention:
+        register_custom_attention(self.unet)
 
     if self.cfg.trainer.gradient_checkpointing:
         if hasattr(self.clip, "base_model"):
@@ -196,11 +221,18 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
                     m.requires_grad_(True)
                     m.to(dtype=torch.float32)
                 m.train()
+
+        if md.duplicate_unet_input_channels:
+            other.unet.conv_in.requires_grad_(True)
+            other.unet.conv_in.to(dtype=torch.float32)
+            other.unet.conv_in.train()
+
     else:
         if set_grad:
             other.unet.requires_grad_(True)
             if cfg.model.ema:
                 other.ema_unet.requires_grad_(True)
+
         other.unet.train()
         if cfg.model.ema:
             other.ema_unet.train()

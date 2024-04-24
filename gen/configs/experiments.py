@@ -64,3 +64,29 @@ def get_experiments():
             ),
         ),
     )
+
+
+    mode_store(
+        name="demo_v1",
+        debug=True,
+        model=dict(
+            freeze_unet=True,
+            pretrained_model_name_or_path="stabilityai/stable-diffusion-2",
+            duplicate_unet_input_channels=True,
+            dual_attention=True,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=2,
+                num_workers=0,
+            ),
+            val=dict(
+                batch_size=1,
+                num_workers=0,
+            ),
+        ),
+        hydra_defaults=[
+            "_self_",
+            {"override /dataset": "co3d"},
+        ],
+    )

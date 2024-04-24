@@ -30,10 +30,20 @@ class InputData:
 
     id: Integer[Tensor, "b"]
 
+    src_dec_depth: Optional[Float[Tensor, "b h w"]] = None
+    tgt_dec_depth: Optional[Float[Tensor, "b h w"]] = None
+
+    src_xyz: Optional[Float[Tensor, "b h w 3"]] = None
+    tgt_xyz: Optional[Float[Tensor, "b h w 3"]] = None
+
+    src_xyz_valid: Optional[Bool[Tensor, "b h w"]] = None
+    tgt_xyz_valid: Optional[Bool[Tensor, "b h w"]] = None
+    
     metadata: Optional[dict] = None
     state: Optional[TrainingState] = None
     dtype: Optional[torch.dtype]  = None
     num_frames: Optional[int] = None
+    attach_debug_info: bool = False
 
     @staticmethod
     def from_dict(batch: dict):

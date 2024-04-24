@@ -7,6 +7,7 @@ from hydra_zen import builds
 from gen.configs.utils import auto_store, mode_store, store_child_config
 from gen.datasets.abstract_dataset import AbstractDataset
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
+from gen.datasets.dustr.co3d import Co3d
 from gen.datasets.misc.imagefolder import ImagefolderDataset
 
 
@@ -62,6 +63,18 @@ auto_store(DatasetConfig,
         augmentation=augmentation,
     ), 
     name="imagefolder"
+)
+
+auto_store(DatasetConfig, 
+    train=get_dataset(
+        Co3d,
+        augmentation=None,
+    ), 
+    val=get_dataset(
+        Co3d,
+        augmentation=None,
+    ), 
+    name="co3d"
 )
 
 def get_datasets():  # TODO: These do not need to be global configs

@@ -64,9 +64,6 @@ def infer_batch(
     if self.cfg.trainer.profile_memory or self.cfg.trainer.fast_eval:
         kwargs["num_inference_steps"] = 1 # Required otherwise the profiler will create traces that are too large
 
-    if self.cfg.model.add_unet_input_channels:
-        kwargs["concat_latent_along_channel_dim"] = get_tgt_grid(self.cfg, batch)
-
     if self.cfg.model.add_text_tokens is False:
         negative_prompt_embeds = self.uncond_hidden_states
         prompt_embeds = cond.unet_kwargs['prompt_embeds']
