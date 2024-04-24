@@ -134,7 +134,6 @@ exp_store(
         gradient_checkpointing=True,
         compile=False,
         validate_training_dataset=True,
-        inference_train_switch=False,
     ),
     dataset=dict(
         num_validation_images=1,

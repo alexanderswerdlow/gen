@@ -69,6 +69,7 @@ class ModelConfig:
 
     duplicate_unet_input_channels: bool = False
     dual_attention: bool = False
+    enable_encoder: bool = False
 
 
 auto_store(

@@ -88,7 +88,6 @@ class TrainerConfig:
     fast_eval: bool = False
     eval_decay_steps: bool = True
     cudnn_benchmark: bool = True
-    inference_train_switch: bool = True
     init_pipeline_inference: bool = True
     backward_pass: bool = True
     fsdp: bool = False

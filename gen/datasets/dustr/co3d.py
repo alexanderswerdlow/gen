@@ -57,8 +57,6 @@ class Co3d(AbstractDataset, Dataset):
             "tgt_enc_rgb": right["img"],
             "src_dec_rgb": left["img"],
             "tgt_dec_rgb": right["img"],
-            "src_dec_depth": left["depthmap"],
-            "tgt_dec_depth": right["depthmap"],
             "src_xyz": left_pts3d,
             "tgt_xyz": right_pts3d,
             "src_xyz_valid": left_pts3d_valid,

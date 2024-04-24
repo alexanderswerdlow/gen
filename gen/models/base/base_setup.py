@@ -39,23 +39,25 @@ if TYPE_CHECKING:
 
 def initialize_custom_models(self: BaseMapper):
     if self.cfg.model.stock_dino_v2:
-        self.clip = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg')
-        self.clip = torch.compile(self.clip)
-    else:
-        self.clip = hydra.utils.instantiate(self.cfg.model.encoder, compile=False)
+        self.encoder = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg')
+        self.encoder = torch.compile(self.encoder)
+    elif self.cfg.model.enable_encoder:
+        self.encoder = hydra.utils.instantiate(self.cfg.model.encoder, compile=False)
     
-    self.clip.to(self.dtype)
+    if self.cfg.model.stock_dino_v2 or self.cfg.model.enable_encoder:
+        self.encoder.to(self.dtype)
+
     if self.cfg.model.enc_lora:
-        self.clip.requires_grad_(True)
+        self.encoder.requires_grad_(True)
         from peft import LoraConfig, inject_adapter_in_model
         module_regex = r".*blocks\.(20|21|22|23)\.mlp\.fc\d" if 'large' in self.cfg.model.encoder.model_name else r".*blocks\.(10|11)\.mlp\.fc\d"
         lora_config = LoraConfig(r=self.cfg.model.enc_lora_rank, lora_alpha=self.cfg.model.enc_lora_alpha, lora_dropout=self.cfg.model.enc_lora_dropout, target_modules=module_regex)
-        self.clip = inject_adapter_in_model(lora_config, self.clip, adapter_name='lora')
-        # self.clip = torch.compile(self.clip, mode="max-autotune-no-cudagraphs", fullgraph=True)
+        self.encoder = inject_adapter_in_model(lora_config, self.encoder, adapter_name='lora')
+        # self.encoder = torch.compile(self.encoder, mode="max-autotune-no-cudagraphs", fullgraph=True)
 
 def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMScheduler, AutoencoderKL, UNet2DConditionModel]:
     # Load the tokenizer
-    tokenizer_encoder_name = "CompVis/stable-diffusion-v1-4" if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.pretrained_model_name_or_path
+    tokenizer_encoder_name = "runwayml/stable-diffusion-v1-5" if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.pretrained_model_name_or_path
     revision = None if self.cfg.model.use_sd_15_tokenizer_encoder else self.cfg.model.revision
     self.tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_encoder_name, subfolder="tokenizer", revision=revision, use_fast=False
@@ -136,12 +138,13 @@ def add_unet_adapters(self: BaseModel):
         register_custom_attention(self.unet)
 
     if self.cfg.trainer.gradient_checkpointing:
-        if hasattr(self.clip, "base_model"):
-            self.clip.base_model.set_grad_checkpointing()
-            log_info("Setting CLIP Gradient checkpointing")
-        elif hasattr(self.clip, "model"):
-            self.clip.model.set_grad_checkpointing()
-            log_info("Setting CLIP Gradient checkpointing")
+        if self.cfg.model.enable_encoder:
+            if hasattr(self.encoder, "base_model"):
+                self.encoder.base_model.set_grad_checkpointing()
+                log_info("Setting CLIP Gradient checkpointing")
+            elif hasattr(self.encoder, "model"):
+                self.encoder.model.set_grad_checkpointing()
+                log_info("Setting CLIP Gradient checkpointing")
 
         self.unet.enable_gradient_checkpointing()
 
@@ -171,24 +174,22 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
         gc.collect()
         log_debug("Cleared pipeline", main_process_only=False)
 
-    if set_grad is False and cfg.trainer.inference_train_switch is False:
-        return
-
     if set_grad and md.unet:
         other.vae.to(device=_device, dtype=_dtype)
         other.vae.requires_grad_(False)
 
-    if md.freeze_enc:
-        if set_grad:
-            other.clip.to(device=_device, dtype=_dtype)
-            other.clip.requires_grad_(False)
-        other.clip.eval()
-        log_warn("CLIP is frozen for debugging")
-    else:
-        if set_grad:
-            other.clip.requires_grad_(True)
-        other.clip.train()
-        log_warn("CLIP is unfrozen")
+    if md.enable_encoder:
+        if md.freeze_enc:
+            if set_grad:
+                other.encoder.to(device=_device, dtype=_dtype)
+                other.encoder.requires_grad_(False)
+            other.encoder.eval()
+            log_warn("CLIP is frozen for debugging")
+        else:
+            if set_grad:
+                other.encoder.requires_grad_(True)
+            other.encoder.train()
+            log_warn("CLIP is unfrozen")
 
     if md.enc_lora:
         if set_grad:
@@ -227,6 +228,13 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
             other.unet.conv_in.to(dtype=torch.float32)
             other.unet.conv_in.train()
 
+        if md.dual_attention:
+            for m in get_modules(other.unet, BasicTransformerBlock):
+                if set_grad:
+                    m.requires_grad_(True)
+                    m.to(dtype=torch.float32)
+                m.train()
+
     else:
         if set_grad:
             other.unet.requires_grad_(True)
@@ -250,9 +258,6 @@ def set_inference_mode(self: BaseModel, init_pipeline: bool = True):
             torch_dtype=self.dtype,
         )
 
-    if self.cfg.model.break_a_scene_cross_attn_loss:
-        self.controller.reset()
-
 
 def get_custom_params(self: BaseMapper):
     """
@@ -261,8 +266,8 @@ def get_custom_params(self: BaseMapper):
     """
     params = {}
     
-    # Add clip parameters
-    params.update({k:p for k,p in self.clip.named_parameters() if p.requires_grad})
+    if self.cfg.model.enable_encoder:
+        params.update({k:p for k,p in self.encoder.named_parameters() if p.requires_grad})
 
     return params
 

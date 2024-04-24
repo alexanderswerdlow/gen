@@ -65,7 +65,6 @@ def get_experiments():
         ),
     )
 
-
     mode_store(
         name="exp_v0",
         debug=True,
@@ -77,11 +76,15 @@ def get_experiments():
         ),
         dataset=dict(
             train=dict(
-                batch_size=2,
+                batch_size=8,
             ),
             val=dict(
                 batch_size=1,
             ),
+        ),
+        trainer=dict(
+            gradient_accumulation_steps=4,
+            fsdp=True,
         ),
         hydra_defaults=[
             "_self_",

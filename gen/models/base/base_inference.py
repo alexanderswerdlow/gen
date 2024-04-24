@@ -6,16 +6,11 @@ from typing import TYPE_CHECKING, Any, Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
-import einops
 from einx import mean, rearrange, softmax
-from image_utils import ChannelRange, Im, onehot_to_color
-from PIL import Image
-from torchvision import utils
+from torchvision.transforms.functional import InterpolationMode, resize
 
 from gen.datasets.abstract_dataset import Split
 from gen.utils.trainer_utils import TrainingState
-from dataclasses import asdict, fields
-from torchvision.transforms.functional import InterpolationMode, resize
 
 if TYPE_CHECKING:
     from gen.models.base.base_model import BaseMapper, ConditioningData, InputData
@@ -79,6 +74,5 @@ def infer_batch(
 
 
 @torch.no_grad()
-def run_qualitative_inference(self: BaseMapper, batch: InputData, state: TrainingState):
-    pass
-    return ret
+def run_qualitative_inference(self: BaseMapper, batch: InputData, state: TrainingState, accelerator: Optional[Any] = None) -> dict:
+    return {}

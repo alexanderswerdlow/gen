@@ -42,7 +42,7 @@ class BaseMapper(Trainable):
         if self.cfg.trainer.compile:
             log_info("Using torch.compile()...")
             if hasattr(self, "clip"):
-                self.clip = torch.compile(self.clip, mode="reduce-overhead", fullgraph=True)
+                self.encoder = torch.compile(self.encoder, mode="reduce-overhead", fullgraph=True)
         
             # TODO: Compile currently doesn't work with flash-attn apparently
             # self.unet.to(memory_format=torch.channels_last)
@@ -91,23 +91,23 @@ class BaseMapper(Trainable):
 
         elif self.cfg.model.stock_dino_v2:
             with torch.no_grad():
-                enc_feature_map = {f'blocks.{i}':v for i,v in enumerate(self.clip.get_intermediate_layers(x=enc_input, n=24 if 'large' in self.cfg.model.encoder.model_name else 12, norm=True))}
+                enc_feature_map = {f'blocks.{i}':v for i,v in enumerate(self.encoder.get_intermediate_layers(x=enc_input, n=24 if 'large' in self.cfg.model.encoder.model_name else 12, norm=True))}
         else:
             with torch.no_grad() if self.cfg.model.freeze_enc and self.cfg.model.unfreeze_last_n_enc_layers is None else nullcontext():
-                enc_feature_map = self.clip.forward_model(enc_input)  # b (h w) d
+                enc_feature_map = self.encoder.forward_model(enc_input)  # b (h w) d
                 if self.cfg.model.norm_vit_features:
                     for k in enc_feature_map.keys():
                         if "blocks" in k:
-                            enc_feature_map[k] = self.clip.base_model.norm(enc_feature_map[k])
+                            enc_feature_map[k] = self.encoder.base_model.norm(enc_feature_map[k])
 
         if self.cfg.model.debug_feature_maps and batch.attach_debug_info:            
-            orig_trained = copy.deepcopy(self.clip.state_dict())
+            orig_trained = copy.deepcopy(self.encoder.state_dict())
             trained_viz = viz_feats(enc_feature_map, "trained_feature_map")
-            self.clip: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, compile=False).to(self.dtype).to(self.device)
-            enc_feature_map = self.clip.forward_model(enc_input)
+            self.encoder: BaseModel = hydra.utils.instantiate(self.cfg.model.encoder, compile=False).to(self.dtype).to(self.device)
+            enc_feature_map = self.encoder.forward_model(enc_input)
             stock_viz = viz_feats(enc_feature_map, "stock_feature_map")
             Im.concat_vertical(stock_viz, trained_viz).save(batch.metadata['name'][0])
-            self.clip.load_state_dict(orig_trained)
+            self.encoder.load_state_dict(orig_trained)
 
         if isinstance(enc_feature_map, dict):
             for k in enc_feature_map.keys():
@@ -237,6 +237,11 @@ class BaseMapper(Trainable):
             pred_mask = rearrange('b h w -> (b h w)', pred_mask)
             pred_xyz = rearrange('b h w xyz -> (b h w) xyz', pred_xyz)
             gt_xyz = rearrange('b h w xyz -> (b h w) xyz', cond.gt_xyz)
-            losses['metric_valid_xyz_mse'] = F.mse_loss(pred_xyz[pred_mask], gt_xyz[pred_mask], reduction="mean")
+
+            gt_min, gt_max = gt_xyz.min(dim=0)[0], gt_xyz.max(dim=0)[0]
+            pred_xyz = (pred_xyz - gt_min) / (gt_max - gt_min)
+            gt_xyz = (gt_xyz - gt_min) / (gt_max - gt_min)
+
+            losses['metric_valid_norm_xyz_mse'] = F.mse_loss(pred_xyz[pred_mask], gt_xyz[pred_mask], reduction="mean")
 
         return losses
