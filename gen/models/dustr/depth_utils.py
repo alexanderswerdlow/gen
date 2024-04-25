@@ -1,9 +1,21 @@
-from einx import rearrange
-from gen.models.dustr.marigold import NearFarMetricNormalizer
-import torch
-import numpy as np
 
-def xyz_to_depth(pcd, camera_intrinsics, camera_pose):
+from __future__ import annotations
+
+import gc
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import numpy as np
+import torch
+from einx import rearrange
+
+from gen.models.dustr.marigold import NearFarMetricNormalizer
+
+if TYPE_CHECKING:
+    from gen.configs.base import BaseConfig
+    from gen.utils.data_defs import InputData
+
+def xyz_to_depth(pcd, camera_intrinsics, camera_pose, simple: bool = False):
     if isinstance(pcd, torch.Tensor):
         pcd = pcd.float().cpu().numpy()
 
@@ -34,28 +46,34 @@ def xyz_to_depth(pcd, camera_intrinsics, camera_pose):
     valid_v = np.clip(valid_v, 0, H - 1)
 
     depthmap[valid_v, valid_u] = valid_z
+
+    if simple:
+        depthmap = np.sqrt(np.sum(np.power(pcd - camera_pose[None, None, :3, 3], 2), axis=-1))
+
     return depthmap
 
-def encode_xyz(gt_points, init_valid_mask, vae, min_max_quantile: float = 0.1, kwargs = None):
-    if kwargs is None:
-        kwargs = dict(valid_mask=init_valid_mask, clip=True, per_axis_quantile=True)
+@torch.no_grad()
+def encode_xyz(cfg: BaseConfig, gt_points, init_valid_mask, vae, min_max_quantile: float = 0.1, kwargs = None):
+    _kwargs = dict(valid_mask=init_valid_mask, clip=True, per_axis_quantile=True)
+    _kwargs.update(kwargs or {})
 
     normalizer = NearFarMetricNormalizer(min_max_quantile=min_max_quantile)
-    pre_enc, post_enc_valid_mask = normalizer(gt_points, **kwargs)
+    pre_enc, post_enc_valid_mask = normalizer(gt_points, **_kwargs)
     post_enc_valid_mask = (~post_enc_valid_mask & init_valid_mask).to(torch.bool)
-    latents = vae.encode(pre_enc).latent_dist.sample() * vae.config.scaling_factor
+    with torch.autocast(device_type="cuda", enabled=cfg.model.force_fp32_pcd_vae is False):
+        latents = vae.encode(pre_enc).latent_dist.sample() * vae.config.scaling_factor
 
     return latents, post_enc_valid_mask, normalizer
 
-def decode_xyz(pred_latents, post_enc_valid_mask, vae, normalizer):
+@torch.no_grad()
+def decode_xyz(cfg: BaseConfig, pred_latents, post_enc_valid_mask, vae, normalizer):
     pred_latents = (1 / vae.config.scaling_factor) * pred_latents
-    with torch.no_grad():
-        with torch.autocast(device_type="cuda", dtype=torch.float32):
-            decoded_points = vae.decode(pred_latents.to(torch.float32), return_dict=False)[0]
-            decoded_points, outside_range_post = normalizer.denormalize(decoded_points)
+    with torch.autocast(device_type="cuda", enabled=cfg.model.force_fp32_pcd_vae is False):
+        decoded_points = vae.decode(pred_latents.to(torch.float32), return_dict=False)[0]
+        decoded_points, outside_range_post = normalizer.denormalize(decoded_points)
 
-        outside_range_post = outside_range_post.to(device=pred_latents.device)
-        final_mask = post_enc_valid_mask & (~outside_range_post)
+    outside_range_post = outside_range_post.to(device=pred_latents.device)
+    final_mask = post_enc_valid_mask & (~outside_range_post)
 
     return decoded_points, final_mask
 

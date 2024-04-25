@@ -59,13 +59,7 @@ def load_stable_diffusion_model(
     # We do not set enable_xformers_memory_efficient_attention because we generally use a custom attention processor
 
     if cfg.inference.use_ddim:
-        scheduler = DDIMScheduler(
-            beta_start=0.00085,
-            beta_end=0.012,
-            beta_schedule="scaled_linear",
-            clip_sample=False,
-            set_alpha_to_one=False,
-        )
+        scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
     else:
         scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
 

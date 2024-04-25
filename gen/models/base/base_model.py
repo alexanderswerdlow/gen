@@ -15,6 +15,7 @@ from gen.configs import BaseConfig
 from gen.models.base.base_defs import AttentionMetadata, ConditioningData
 from gen.models.base.base_setup import (add_unet_adapters, checkpoint, initialize_custom_models, initialize_diffusers_models, set_inference_mode,
                                         set_training_mode)
+from gen.models.base.losses import get_dustr_loss, transform_coordinate_space
 from gen.models.dustr.depth_utils import decode_xyz, encode_xyz
 from gen.models.encoders.encoder import BaseModel
 from gen.utils.data_defs import InputData
@@ -173,7 +174,7 @@ class BaseMapper(Trainable):
             cond = self.get_hidden_state(batch)
             if self.training: self.dropout_cfg(cond)
 
-        pred_data = None
+        cond.timesteps = timesteps
         encoder_hidden_states = cond.encoder_hidden_states
         
         model_pred, target = None, None
@@ -183,10 +184,16 @@ class BaseMapper(Trainable):
                 latents = self.vae.encode(rgb_to_encode).latent_dist.sample() # Convert images to latent space
                 latents = latents * self.vae.config.scaling_factor
 
-            if self.cfg.model.duplicate_unet_input_channels:
-                input_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', batch.src_xyz, batch.tgt_xyz)
+            if self.cfg.model.duplicate_unet_input_channels:    
+                if self.cfg.model.predict_depth:
+                    input_src, input_tgt = batch.src_dec_depth, batch.tgt_dec_depth
+                    input_src, input_tgt = rearrange('b h w, b h w -> b h w 3, b h w 3', input_src, input_tgt)
+                else:
+                    input_src, input_tgt = transform_coordinate_space(batch, batch.src_xyz, batch.tgt_xyz)
+            
+                input_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', input_src, input_tgt)
                 input_valid = rearrange('b h w, b h w -> (b + b) h w', batch.src_xyz_valid, batch.tgt_xyz_valid)
-                xyz_latents, xyz_valid, normalizer = encode_xyz(input_xyz, input_valid, self.vae)
+                xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
                 
                 cond.xyz_normalizer = normalizer
                 cond.xyz_valid = xyz_valid
@@ -226,20 +233,46 @@ class BaseMapper(Trainable):
         
         losses = dict()
         if self.cfg.model.unet and model_pred is not None and target is not None:
-            mse_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+            if self.cfg.model.snr_gamma is None:
+                if self.cfg.model.use_valid_xyz_loss_mask:
+                    loss_mask = F.max_pool2d(rearrange('b h w -> b 4 h w', cond.xyz_valid.float()), kernel_size=self.cfg.model.decoder_resolution // self.cfg.model.decoder_latent_dim) > 0.5
+                    mse_loss = F.mse_loss(model_pred.float()[loss_mask], target.float()[loss_mask], reduction="mean")
+                else:
+                    mse_loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+            else:
+                # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
+                # Since we predict the noise instead of x_0, the original formulation is slightly changed.
+                # This is discussed in Section 4.2 of the same paper.
+                from diffusers.training_utils import compute_snr
+                snr = compute_snr(self.noise_scheduler, cond.timesteps)
+                mse_loss_weights = torch.stack([snr, self.cfgl.model.snr_gamma * torch.ones_like(cond.timesteps)], dim=1).min(
+                    dim=1
+                )[0]
+                if self.noise_scheduler.config.prediction_type == "epsilon":
+                    mse_loss_weights = mse_loss_weights / snr
+                elif self.noise_scheduler.config.prediction_type == "v_prediction":
+                    mse_loss_weights = mse_loss_weights / (snr + 1)
+
+                mse_loss = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+                mse_loss = mse_loss.mean(dim=list(range(1, len(mse_loss.shape)))) * mse_loss_weights
+                mse_loss = mse_loss.mean()
+            
             losses.update({"metric_diffusion_mse": mse_loss})
             losses["diffusion_loss"] = mse_loss * self.cfg.model.diffusion_loss_weight
 
         if self.cfg.model.duplicate_unet_input_channels:
-            pred_xyz, pred_mask = decode_xyz(model_pred, cond.xyz_valid, self.vae, cond.xyz_normalizer)
-            pred_mask = rearrange('b h w -> (b h w)', pred_mask)
-            pred_xyz = rearrange('b h w xyz -> (b h w) xyz', pred_xyz)
-            gt_xyz = rearrange('b h w xyz -> (b h w) xyz', cond.gt_xyz)
+            pred_xyz, pred_mask = decode_xyz(self.cfg, model_pred, cond.xyz_valid, self.vae, cond.xyz_normalizer)
 
-            gt_min, gt_max = gt_xyz.min(dim=0)[0], gt_xyz.max(dim=0)[0]
-            pred_xyz = (pred_xyz - gt_min) / (gt_max - gt_min)
-            gt_xyz = (gt_xyz - gt_min) / (gt_max - gt_min)
+            def get_norm_pts(_gt, _pred, _mask):
+                _mask = rearrange('b h w -> (b h w)', _mask)
+                _pred = rearrange('b h w xyz -> (b h w) xyz', _pred)
+                _gt = rearrange('b h w xyz -> (b h w) xyz', _gt)
+                gt_min, gt_max = _gt.min(dim=0)[0], _gt.max(dim=0)[0]
+                _pred = (_pred - gt_min) / (gt_max - gt_min)
+                _gt = (_gt - gt_min) / (gt_max - gt_min)
+                return _gt[_mask], _pred[_mask]
 
-            losses['metric_valid_norm_xyz_mse'] = F.mse_loss(pred_xyz[pred_mask], gt_xyz[pred_mask], reduction="mean")
+            losses['metric_valid_norm_xyz_mse'] = F.mse_loss(*get_norm_pts(cond.gt_xyz, pred_xyz, pred_mask), reduction="mean")
+            losses['metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, pred_mask)
 
         return losses

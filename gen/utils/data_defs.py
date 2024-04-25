@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from einops import rearrange, repeat
+from einx import rearrange
 from jaxtyping import Bool, Float, Integer
 from tensordict import tensorclass
 from torch import Tensor
@@ -14,6 +14,7 @@ from torch import Tensor
 from image_utils import Im, hist
 from torchvision.transforms.functional import InterpolationMode, resize
 
+from gen.models.dustr.depth_utils import xyz_to_depth
 from gen.utils.visualization_utils import get_dino_pca
 
 if TYPE_CHECKING:
@@ -64,6 +65,7 @@ class InputData:
     def bs(self):
         return self.batch_size[0]
 
+
 def visualize_input_data(
         batch: InputData, 
         name: Optional[str] = None, 
@@ -95,6 +97,27 @@ def visualize_input_data(
         tgt_ = tgt_rgb[b]
         output_img = Im.concat_horizontal(src_, tgt_)
 
+        def get_depth(_gt_depth, _intrinsics = None, _extrinsics = None, is_xyz: bool = True):
+            if is_xyz:
+                _gt_depth = xyz_to_depth(_gt_depth, _intrinsics, _extrinsics, simple=True)
+            _min, _max = _gt_depth.min(), _gt_depth.max()
+            _gt_depth = (_gt_depth - _min) / (_max - _min)
+            return _gt_depth
+
+        _func = lambda x: rearrange('h w -> () h w 3', x)
+
+        output_img = Im.concat_vertical(
+            output_img,
+            Im.concat_horizontal(
+                Im(_func(get_depth(batch.src_xyz[b], batch.src_intrinsics[b], batch.src_extrinsics[b]))).bool_to_rgb(),
+                Im(_func(get_depth(batch.tgt_xyz[b], batch.tgt_intrinsics[b], batch.tgt_extrinsics[b]))).bool_to_rgb(),
+            ),
+            Im.concat_horizontal(
+                Im(_func(get_depth(batch.src_dec_depth[b], is_xyz=False))).bool_to_rgb(),
+                Im(_func(get_depth(batch.tgt_dec_depth[b], is_xyz=False))).bool_to_rgb(),
+            )
+        )
+
         if cond is not None:
             def get_pca_img(_feat_map):
                 try:
@@ -114,7 +137,7 @@ def visualize_input_data(
             if cond.src_feature_map is not None:
                 for j in range(cond.src_feature_map.shape[1]):
                     _feats = cond.src_feature_map[b, j]
-                    feature_img = get_pca_img(rearrange(_feats.permute(2, 0, 1), "d h w -> (h w) d"))
+                    feature_img = get_pca_img(rearrange("d h w -> (h w) d", _feats.permute(2, 0, 1)))
                     output_img = Im.concat_horizontal(output_img, Im(feature_img).scale(10, resampling_mode=InterpolationMode.NEAREST))
 
             if cond.src_orig_feature_map is not None:

@@ -145,7 +145,7 @@ class BaseTrainer(Trainer):
 
         from gen.models.base.base_model import BaseMapper
         BaseMapper.set_training_mode(cfg=self.cfg, _other=self.model, device=self.accelerator.device, dtype=self.dtype, set_grad=False)
-        validate_params(self.models, self.dtype)
+        validate_params(self.cfg, self.models, self.dtype)
         
         log_info(f"Finished base model validation at global step {state.global_step}, epoch {state.epoch}. Took: {time() - start_time:.2f} seconds")
         

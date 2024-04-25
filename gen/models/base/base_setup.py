@@ -173,10 +173,12 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
         torch.cuda.empty_cache()
         gc.collect()
         log_debug("Cleared pipeline", main_process_only=False)
-
-    if set_grad and md.unet:
-        other.vae.to(device=_device, dtype=_dtype)
-        other.vae.requires_grad_(False)
+    
+    if hasattr(other, "vae"):
+        if set_grad:
+            other.vae.to(device=_device, dtype=torch.float32 if md.force_fp32_pcd_vae else _dtype)
+            other.vae.requires_grad_(False)
+        other.vae.eval()
 
     if md.enable_encoder:
         if md.freeze_enc:
@@ -224,9 +226,12 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
                 m.train()
 
         if md.duplicate_unet_input_channels:
-            other.unet.conv_in.requires_grad_(True)
-            other.unet.conv_in.to(dtype=torch.float32)
-            other.unet.conv_in.train()
+            modules_to_unfreeze = [other.unet.conv_in, other.unet.conv_out, other.unet.conv_norm_out]
+            for m in modules_to_unfreeze:
+                if set_grad:
+                    m.requires_grad_(True)
+                    m.to(dtype=torch.float32)
+                m.train()
 
         if md.dual_attention:
             for m in get_modules(other.unet, BasicTransformerBlock):

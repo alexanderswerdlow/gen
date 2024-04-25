@@ -101,5 +101,7 @@ class TrainerConfig:
     device: Optional[str] = None
     initial_learning_rate: Optional[float] = None
 
+    param_dtype_exception_prefixes: Optional[list[str]] = None
+
 
 auto_store(TrainerConfig, name="base")

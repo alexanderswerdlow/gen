@@ -47,25 +47,22 @@ class Co3d(AbstractDataset, Dataset):
     def get_paired_data(self, idx: int):
         metadata = self.get_metadata(idx)
         left, right = self.dataset[idx]
-        
-        left_pts3d, left_pts3d_valid = depthmap_to_absolute_camera_coordinates(left["depthmap"], left['camera_intrinsics'], left['camera_pose'])
-        right_pts3d, right_pts3d_valid = depthmap_to_absolute_camera_coordinates(right["depthmap"], right['camera_intrinsics'], right['camera_pose'])
-
+                
         ret = {}
         ret.update({
             "src_enc_rgb": left["img"],
-            "tgt_enc_rgb": right["img"],
             "src_dec_rgb": left["img"],
-            "tgt_dec_rgb": right["img"],
-            "src_xyz": left_pts3d,
-            "tgt_xyz": right_pts3d,
-            "src_xyz_valid": left_pts3d_valid,
-            "tgt_xyz_valid": right_pts3d_valid,
+            "src_xyz": left["pts3d"],
+            "src_xyz_valid": left["valid_mask"],
             "src_intrinsics": left['camera_intrinsics'],
-            "tgt_intrinsics": right['camera_intrinsics'],
             "src_extrinsics": left['camera_pose'],
-            "tgt_extrinsics": right['camera_pose'],
             "src_dec_depth": left["depthmap"],
+            "tgt_enc_rgb": right["img"],
+            "tgt_dec_rgb": right["img"],
+            "tgt_xyz": right["pts3d"],
+            "tgt_xyz_valid": right["valid_mask"],
+            "tgt_intrinsics": right['camera_intrinsics'],
+            "tgt_extrinsics": right['camera_pose'],
             "tgt_dec_depth": right["depthmap"],
             **metadata
         })

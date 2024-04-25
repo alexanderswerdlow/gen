@@ -58,7 +58,7 @@ def get_named_params(models: tuple[Union[nn.Module, dict]], requires_grad=True):
     )
 
 
-def validate_params(models: Iterable[nn.Module], dtype: torch.dtype):
+def validate_params(cfg: BaseConfig, models: Iterable[nn.Module], dtype: torch.dtype):
     # In general, we want all trainable params in FP32 and all non-trainable params possibly in BF16
     num_requires_grad, num_no_grad = 0, 0
     for k, p in get_named_params(models, requires_grad=False).items():
@@ -66,9 +66,11 @@ def validate_params(models: Iterable[nn.Module], dtype: torch.dtype):
             assert p.dtype == torch.float32, f"Param {k} is trainable but not in {torch.float32}"
             num_requires_grad += 1
         elif not p.requires_grad:
-            assert p.dtype == dtype, f"Param {k} is non-trainable but not in {dtype}"
             num_no_grad += 1
-
+            if any(k.startswith(prefix) for prefix in cfg.trainer.param_dtype_exception_prefixes):
+                continue
+            assert p.dtype == dtype, f"Param {k} is non-trainable but not in {dtype}"
+            
     log_info(f"Found {num_requires_grad} trainable {torch.float32} and {num_no_grad} non-trainable {dtype} params.")
 
 class Trainer:
@@ -119,7 +121,7 @@ class Trainer:
                 if (param_groups_ := unwrap(self.model).get_param_groups()) is not None:
                     assert len([p for d_ in param_groups_ for p in list(d_["params"])]) == len(get_named_params(self.models).values())
 
-        validate_params(self.models, self.dtype)
+        validate_params(self.cfg, self.models, self.dtype)
 
     def init_dataloader(self):
         log_info("Creating train_dataset + self.train_dataloader")

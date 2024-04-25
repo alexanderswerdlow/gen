@@ -70,6 +70,10 @@ class ModelConfig:
     duplicate_unet_input_channels: bool = False
     dual_attention: bool = False
     enable_encoder: bool = False
+    force_fp32_pcd_vae: bool = False
+    snr_gamma: Optional[float] = None
+    predict_depth: bool = False
+    use_valid_xyz_loss_mask: bool = False
 
 
 auto_store(
