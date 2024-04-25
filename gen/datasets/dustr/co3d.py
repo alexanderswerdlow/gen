@@ -1,12 +1,10 @@
 import autoroot
 
 import sys
-from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import numpy as np
-import simplejpeg
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as tvf
@@ -14,14 +12,14 @@ import typer
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from gen import DUSTR_REPO_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
+from gen.models.dustr.depth_utils import xyz_to_depth
 from gen.models.dustr.geometry import depthmap_to_absolute_camera_coordinates
 from gen.utils.data_defs import visualize_input_data
 from gen.utils.decoupled_utils import breakpoint_on_error, hash_str_as_int
-
-sys.path.append("/home/aswerdlo/repos/dust3r")
 
 @inherit_parent_args
 class Co3d(AbstractDataset, Dataset):
@@ -31,12 +29,14 @@ class Co3d(AbstractDataset, Dataset):
         root: Optional[Path] = None,
         augmentation: Optional[Augmentation] = None,
         tokenizer = None,
+        resolution: int = 512,
         **kwargs
     ):
-        
+        sys.path.append(str(DUSTR_REPO_PATH))
         from dust3r.datasets.co3d import Co3d as DustrCo3d
         ColorJitter = tvf.Compose([tvf.ColorJitter(0.5, 0.5, 0.5, 0.1), tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-        self.dataset = DustrCo3d(transform=ColorJitter, split='train', ROOT='/home/aswerdlo/repos/dust3r/data/co3d_subset_processed', aug_crop=16, mask_bg='rand', resolution=[(512, 512)])
+        _split = 'train' if self.split == Split.TRAIN else 'test'
+        self.dataset = DustrCo3d(transform=ColorJitter, split=_split, ROOT=str(DUSTR_REPO_PATH / 'data/co3d_subset_processed'), aug_crop=16, mask_bg='rand', resolution=[(resolution, resolution)])
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -61,6 +61,12 @@ class Co3d(AbstractDataset, Dataset):
             "tgt_xyz": right_pts3d,
             "src_xyz_valid": left_pts3d_valid,
             "tgt_xyz_valid": right_pts3d_valid,
+            "src_intrinsics": left['camera_intrinsics'],
+            "tgt_intrinsics": right['camera_intrinsics'],
+            "src_extrinsics": left['camera_pose'],
+            "tgt_extrinsics": right['camera_pose'],
+            "src_dec_depth": left["depthmap"],
+            "tgt_dec_depth": right["depthmap"],
             **metadata
         })
 
@@ -97,7 +103,6 @@ app = typer.Typer(pretty_exceptions_show_locals=False)
 
 @app.command()
 def main(
-    root: Path,
     num_workers: int = 0,
     batch_size: int = 1,
     viz: bool = True,
@@ -109,7 +114,6 @@ def main(
         from gen.datasets.utils import get_stable_diffusion_transforms
         from image_utils import library_ops
         dataset = Co3d(
-            root=root,
             shuffle=True,
             cfg=None,
             split=Split.TRAIN,

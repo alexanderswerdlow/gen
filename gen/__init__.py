@@ -18,6 +18,8 @@ COCO_DATASET_PATH = Path(os.getenv("COCO_DATASET_PATH", f"{PROJECTS_PREFIX}/proj
 SCRATCH_COCO_PATH = Path(os.getenv("SCRATCH_COCO_PATH", "/scratch/aswerdlo/coco"))
 COCO_CUSTOM_PATH = Path(os.getenv("COCO_CUSTOM_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/aswerdlo/datasets/coco/annotations"))
 
+DUSTR_REPO_PATH = Path(os.getenv("DUSTR_REPO_PATH", Path.home() / "repos" / "dust3r"))
+
 if SCRATCH_COCO_PATH.exists(): 
     COCO_DATASET_PATH = SCRATCH_COCO_PATH
     COCO_CUSTOM_PATH = SCRATCH_COCO_PATH / "annotations"

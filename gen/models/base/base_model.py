@@ -5,7 +5,6 @@ from typing import Any, Optional, Union
 
 import einops
 import hydra
-import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
@@ -54,7 +53,7 @@ class BaseMapper(Trainable):
     def initialize_diffusers_models(self): initialize_diffusers_models(self)
     def initialize_custom_models(self): initialize_custom_models(self)
     def add_unet_adapters(self): add_unet_adapters(self)
-    def checkpoint(self, **kwargs): checkpoint(self, **kwargs)
+    def checkpoint(self, *args, **kwargs): checkpoint(self, *args, **kwargs)
     def set_training_mode(self, **kwargs): set_training_mode(**kwargs)
     def set_inference_mode(self, **kwargs): set_inference_mode(self, **kwargs)
 
@@ -136,7 +135,6 @@ class BaseMapper(Trainable):
     def get_hidden_state(
         self,
         batch: InputData,
-        add_conditioning: bool = True,
         cond: Optional[ConditioningData] = None,  # We can optionally specify mask tokens to use [e.g., for composing during inference]
     ) -> ConditioningData:
         if cond is None:
@@ -145,12 +143,16 @@ class BaseMapper(Trainable):
         if len(cond.unet_kwargs) == 0:
             cond.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=AttentionMetadata())
         
-        cond.encoder_hidden_states = torch.zeros((batch.bs, self.cfg.model.num_decoder_cross_attn_tokens, self.cfg.model.token_embedding_dim), dtype=self.dtype, device=self.device)
+        cond.encoder_hidden_states = self.uncond_hidden_states[None].repeat(batch.bs, 1, 1)
 
         return cond
 
     def dropout_cfg(self, cond: ConditioningData):
         pass
+    
+    @property
+    def uncond_hidden_states(self):
+        return torch.zeros((self.cfg.model.num_decoder_cross_attn_tokens, self.cfg.model.token_embedding_dim), dtype=self.dtype, device=self.device)
 
     def inverted_cosine(self, timesteps):
         return torch.arccos(torch.sqrt(timesteps))
@@ -168,7 +170,7 @@ class BaseMapper(Trainable):
             timesteps = einops.repeat(timesteps, 'b -> (n b)', n=2)
 
         if cond is None:
-            cond = self.get_hidden_state(batch, add_conditioning=True)
+            cond = self.get_hidden_state(batch)
             if self.training: self.dropout_cfg(cond)
 
         pred_data = None
@@ -176,9 +178,10 @@ class BaseMapper(Trainable):
         
         model_pred, target = None, None
         if self.cfg.model.unet and self.cfg.model.disable_unet_during_training is False:
-            rgb_to_encode = torch.cat([batch.src_dec_rgb, batch.tgt_dec_rgb], dim=0).to(dtype=self.dtype)
-            latents = self.vae.encode(rgb_to_encode).latent_dist.sample() # Convert images to latent space
-            latents = latents * self.vae.config.scaling_factor
+            with torch.no_grad() if self.cfg.model.duplicate_unet_input_channels else nullcontext():
+                rgb_to_encode = torch.cat([batch.src_dec_rgb, batch.tgt_dec_rgb], dim=0).to(dtype=self.dtype)
+                latents = self.vae.encode(rgb_to_encode).latent_dist.sample() # Convert images to latent space
+                latents = latents * self.vae.config.scaling_factor
 
             if self.cfg.model.duplicate_unet_input_channels:
                 input_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', batch.src_xyz, batch.tgt_xyz)
@@ -196,11 +199,6 @@ class BaseMapper(Trainable):
 
             # Add noise to the latents according to the noise magnitude at each timestep
             noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
-
-            attn_meta = cond.unet_kwargs.get('cross_attention_kwargs', {}).get('attn_meta', None)
-            if attn_meta is None:
-                if 'cross_attention_kwargs' in cond.unet_kwargs and 'attn_meta' in cond.unet_kwargs['cross_attention_kwargs']:
-                    del cond.unet_kwargs['cross_attention_kwargs']['attn_meta']
 
             if self.cfg.model.duplicate_unet_input_channels:
                 noisy_latents = torch.cat([rgb_latents, noisy_latents], dim=1)

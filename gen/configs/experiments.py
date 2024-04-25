@@ -73,21 +73,46 @@ def get_experiments():
             pretrained_model_name_or_path="stabilityai/stable-diffusion-2",
             duplicate_unet_input_channels=True,
             dual_attention=True,
+            token_embedding_dim=1024,
+            decoder_resolution=256,
         ),
         dataset=dict(
             train=dict(
-                batch_size=8,
+                batch_size=36,
+                resolution="${model.decoder_resolution}",
             ),
             val=dict(
-                batch_size=1,
+                batch_size=32,
+                subset_size="${eval:'${dataset.val.batch_size} * 8'}",
+                resolution="${model.decoder_resolution}",
             ),
         ),
         trainer=dict(
             gradient_accumulation_steps=4,
+            ckpt_steps=2000,
+            eval_steps=2000,
             fsdp=True,
+        ),
+        inference=dict(
+            guidance_scale=1
         ),
         hydra_defaults=[
             "_self_",
             {"override /dataset": "co3d"},
         ],
+    )
+
+    mode_store(
+        name="high_res",
+        model=dict(
+            decoder_resolution=512,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=10,
+            ),
+            val=dict(
+                batch_size=10,
+            ),
+        ),
     )

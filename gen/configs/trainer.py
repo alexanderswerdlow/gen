@@ -30,7 +30,10 @@ class TrainerConfig:
     num_train_epochs: int = 10
     max_train_steps: Optional[int] = None # Global step
 
-    checkpointing_steps: Optional[int] = 10000
+    eval_steps: Optional[int] = 100
+    eval_epochs: Optional[int] = None
+    eval_on_start: bool = True
+    ckpt_steps: Optional[int] = 10000
     checkpoints_total_limit: Optional[int] = None
     ckpt: Optional[str] = None
     resume: bool = False
@@ -52,9 +55,6 @@ class TrainerConfig:
     adam_epsilon: float = 1e-08
     max_grad_norm: float = 1.0
     set_grads_to_none: bool = True
-    eval_every_n_steps: Optional[int] = 100
-    eval_every_n_epochs: Optional[int] = None
-    eval_on_start: bool = True
     enable_xformers_memory_efficient_attention: bool = True
     compile: bool = False
     profiler_active_steps: int = 2

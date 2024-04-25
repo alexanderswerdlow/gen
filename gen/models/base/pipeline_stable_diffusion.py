@@ -976,6 +976,9 @@ class StableDiffusionPipeline(
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
+                if kwargs.get("concat_rgb", None) is not None:
+                    latent_model_input = torch.cat([kwargs["concat_rgb"], latent_model_input], dim=1) 
+
                 # predict the noise residual
                 noise_pred = self.unet(
                     latent_model_input,

@@ -258,8 +258,8 @@ class Trainer:
     def after_backward(self, state: TrainingState):
         tr = self.cfg.trainer
         if check_every_n_steps(
-            state, tr.eval_every_n_steps, run_first=tr.eval_on_start, all_processes=True, decay_steps=tr.eval_decay_steps
-        ) or check_every_n_epochs(state, tr.eval_every_n_epochs, all_processes=True):
+            state, tr.eval_steps, run_first=tr.eval_on_start, all_processes=True, decay_steps=tr.eval_decay_steps
+        ) or check_every_n_epochs(state, tr.eval_epochs, all_processes=True):
             self.validate(state)
 
     def train(self):
@@ -382,7 +382,7 @@ class Trainer:
                     
                     self.after_backward(state)
 
-                    if check_every_n_steps(state, tr.checkpointing_steps, run_first=False, all_processes=False):
+                    if check_every_n_steps(state, tr.ckpt_steps, run_first=False, all_processes=False):
                         self.checkpoint(state)
 
                     progress_bar.update(1)

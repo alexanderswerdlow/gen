@@ -102,12 +102,12 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
                         if 'v2_' in k:
                             orig_weight_name = k.replace("v2_", "")
                             set_module_tensor_to_device(self.unet, k, self.device, value=self.unet.state_dict()[orig_weight_name])
-                            print(f"Setting {k} to {orig_weight_name}")
+                            log_info(f"Setting {k} to {orig_weight_name}")
 
                 if 'v_1_to_v_2' in k or 'v_2_to_v_1' in k:
                     param = 0.02 * torch.randn(v.shape, device=self.device) if 'weight' in k else torch.zeros(v.shape, device=self.device)
                     set_module_tensor_to_device(self.unet, k, self.device, value=param)
-                    print(f"Setting {k} to random")
+                    log_info(f"Initializing {k}")
 
         if self.cfg.model.ema and not self.cfg.model.freeze_unet:
             self.ema_unet = EMAModel(self.unet.parameters(), model_cls=UNet2DConditionModel, model_config=self.unet.config)

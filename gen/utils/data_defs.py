@@ -38,6 +38,12 @@ class InputData:
 
     src_xyz_valid: Optional[Bool[Tensor, "b h w"]] = None
     tgt_xyz_valid: Optional[Bool[Tensor, "b h w"]] = None
+
+    src_intrinsics: Optional[Float[Tensor, "b 3 3"]] = None
+    tgt_intrinsics: Optional[Float[Tensor, "b 3 3"]] = None
+
+    src_extrinsics: Optional[Float[Tensor, "b 4 4"]] = None
+    tgt_extrinsics: Optional[Float[Tensor, "b 4 4"]] = None
     
     metadata: Optional[dict] = None
     state: Optional[TrainingState] = None
