@@ -10,8 +10,8 @@ from einx import mean, rearrange, softmax
 
 from gen.datasets.abstract_dataset import Split
 from gen.datasets.utils import get_stable_diffusion_transforms
-from gen.models.base.losses import get_dustr_loss
-from gen.models.dustr.depth_utils import encode_xyz, decode_xyz, xyz_to_depth
+from gen.models.base.losses import get_dustr_loss, transform_coordinate_space
+from gen.models.dustr.depth_utils import encode_xyz, decode_xyz, xyz_to_depth, fill_invalid_regions
 from gen.models.dustr.marigold import NearFarMetricNormalizer
 from gen.utils.data_defs import undo_normalization_given_transforms
 from gen.utils.trainer_utils import TrainingState
@@ -19,6 +19,8 @@ from image_utils import Im
 
 if TYPE_CHECKING:
     from gen.models.base.base_model import BaseMapper, ConditioningData, InputData
+    from gen.configs.base import BaseConfig
+
 
 
 @torch.no_grad()
@@ -63,16 +65,17 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
     pred_latents, cond = self.infer_batch(batch, concat_rgb=latents, num_images_per_prompt=1, output_type='latent')
 
-    cond.gt_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', batch.src_xyz, batch.tgt_xyz)
-    cond.xyz_valid = rearrange('b h w, b h w -> (b + b) h w', batch.src_xyz_valid, batch.tgt_xyz_valid)
-    cond.xyz_normalizer = NearFarMetricNormalizer(min_max_quantile=0.1)
-    cond.xyz_normalizer(cond.gt_xyz)
+    input_src, input_tgt = transform_coordinate_space(batch, batch.src_xyz, batch.tgt_xyz)
+    input_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', input_src, input_tgt)
+    input_valid = rearrange('b h w, b h w -> (b + b) h w', batch.src_xyz_valid, batch.tgt_xyz_valid)
+    _, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
+    pred_xyz, pred_xyz_mask = decode_xyz(self.cfg, pred_latents, xyz_valid, self.vae, normalizer)
 
-    pred_xyz, pred_mask = decode_xyz(self.cfg, pred_latents, cond.xyz_valid, self.vae, cond.xyz_normalizer)
+    ret['wandb_metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, pred_xyz_mask)
     
-    _pred_mask = rearrange('b h w -> (b h w)', pred_mask)
+    _pred_mask = rearrange('b h w -> (b h w)', pred_xyz_mask)
     _pred_xyz = rearrange('b h w xyz -> (b h w) xyz', pred_xyz)
-    _gt_xyz = rearrange('b h w xyz -> (b h w) xyz', cond.gt_xyz)
+    _gt_xyz = rearrange('b h w xyz -> (b h w) xyz', input_xyz)
 
     gt_min, gt_max = _gt_xyz.min(dim=0)[0], _gt_xyz.max(dim=0)[0]
     _pred_xyz = (_pred_xyz - gt_min) / (gt_max - gt_min)
@@ -104,8 +107,15 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
             return _gt_depth, _pred_depth_gt_norm, _pred_depth_norm
         
-        left_gt_depth, left_pred_depth, left_pred_depth_norm = get_depth(batch.src_xyz, pred_src_xyz, batch.src_intrinsics, batch.src_extrinsics)
-        right_gt_depth, right_pred_depth, right_pred_depth_norm = get_depth(batch.tgt_xyz, pred_tgt_xyz, batch.tgt_intrinsics, batch.tgt_extrinsics)
+        left_gt_depth, left_pred_depth, left_pred_depth_norm = get_depth(fill_invalid_regions(batch.src_xyz, batch.src_xyz_valid), pred_src_xyz, batch.src_intrinsics, batch.src_extrinsics)
+        right_gt_depth, right_pred_depth, right_pred_depth_norm = get_depth(fill_invalid_regions(batch.tgt_xyz, batch.tgt_xyz_valid), pred_tgt_xyz, batch.tgt_intrinsics, batch.tgt_extrinsics)
+        left_gt_orig_depth, right_gt_orig_depth = batch.src_dec_depth[b], batch.tgt_dec_depth[b]
+
+        # norm from 0 to 1
+        _left_min, _left_max = left_gt_orig_depth.min(), left_gt_orig_depth.max()
+        _right_min, _right_max = right_gt_orig_depth.min(), right_gt_orig_depth.max()
+        left_gt_orig_depth = (left_gt_orig_depth - _left_min) / (_left_max - _left_min)
+        right_gt_orig_depth = (right_gt_orig_depth - _right_min) / (_right_max - _right_min)
 
         _func = lambda x: rearrange('h w -> () h w 3', x)
 
@@ -113,28 +123,33 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
             Im.concat_horizontal(
                 Im.concat_vertical(
                     src_rgb[[b]],
-                    Im(_func(left_gt_depth)).bool_to_rgb().write_text("GT"),
+                    Im(_func(left_gt_depth)).bool_to_rgb().write_text("GT PCD"),
+                    Im(_func(left_gt_orig_depth)).bool_to_rgb().write_text("GT Stock Depth"),
                     Im(_func(left_pred_depth)).bool_to_rgb().write_text("Pred"),
-                    Im(_func(left_pred_depth_norm)).bool_to_rgb().write_text("Pred"),
+                    Im(_func(left_pred_depth_norm)).bool_to_rgb().write_text("Pred Norm"),
                 ),
                 Im.concat_vertical(
                     tgt_rgb[[b]],
-                    Im(_func(right_gt_depth)).bool_to_rgb().write_text("GT"),
+                    Im(_func(right_gt_depth)).bool_to_rgb().write_text("GT PCD"),
+                    Im(_func(right_gt_orig_depth)).bool_to_rgb().write_text("GT Stock Depth"),
                     Im(_func(right_pred_depth)).bool_to_rgb().write_text("Pred"),
-                    Im(_func(right_pred_depth_norm)).bool_to_rgb().write_text("Pred")
+                    Im(_func(right_pred_depth_norm)).bool_to_rgb().write_text("Pred Norm")
                 ),
             )
         )
 
-    ret['wandb_metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, pred_mask)
     ret['wandb_metric_decoding_only_l2_scale_shift_inv'] = get_dustr_loss(batch, *autoencode_gt_xyz(self.cfg, batch, self.vae), transform_coordinates=True)
+    ret['wandb_metric_decoding_only_holes_filled_l2_scale_shift_inv'] = get_dustr_loss(batch, *autoencode_gt_xyz(self.cfg, batch, self.vae, fill_holes=True), transform_coordinates=True)
     ret['imgs'] = Im.concat_horizontal(*imgs)
-        
+
     return ret
                     
-def autoencode_gt_xyz(cfg, batch, vae):
+def autoencode_gt_xyz(cfg: BaseConfig, batch: InputData, vae, fill_holes=False):
     input_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', batch.src_xyz, batch.tgt_xyz)
     input_valid = rearrange('b h w, b h w -> (b + b) h w', batch.src_xyz_valid, batch.tgt_xyz_valid)
+
+    if fill_holes:
+        input_xyz = fill_invalid_regions(input_xyz, input_valid)
 
     xyz_latents, xyz_valid, normalizer = encode_xyz(cfg, input_xyz, input_valid, vae)
     pred_xyz, pred_xyz_mask = decode_xyz(cfg, xyz_latents, xyz_valid, vae, normalizer)

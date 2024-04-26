@@ -21,6 +21,7 @@ from gen.models.dustr.geometry import depthmap_to_absolute_camera_coordinates
 from gen.utils.data_defs import visualize_input_data
 from gen.utils.decoupled_utils import breakpoint_on_error, hash_str_as_int
 
+
 @inherit_parent_args
 class Co3d(AbstractDataset, Dataset):
     def __init__(
@@ -30,13 +31,16 @@ class Co3d(AbstractDataset, Dataset):
         augmentation: Optional[Augmentation] = None,
         tokenizer = None,
         resolution: int = 512,
+        fill_invalid_regions: bool = False,
         **kwargs
     ):
+        self.fill_invalid_regions = fill_invalid_regions
+
         sys.path.append(str(DUSTR_REPO_PATH))
         from dust3r.datasets.co3d import Co3d as DustrCo3d
         ColorJitter = tvf.Compose([tvf.ColorJitter(0.5, 0.5, 0.5, 0.1), tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
         _split = 'train' if self.split == Split.TRAIN else 'test'
-        self.dataset = DustrCo3d(transform=ColorJitter, split=_split, ROOT=str(DUSTR_REPO_PATH / 'data/co3d_subset_processed'), aug_crop=16, mask_bg='rand', resolution=[(resolution, resolution)])
+        self.dataset = DustrCo3d(transform=ColorJitter, split=_split, ROOT=str(DUSTR_REPO_PATH / 'data/co3d_subset_processed'), aug_crop=16, mask_bg='rand', resolution=[(resolution, resolution)], fill_invalid_regions=fill_invalid_regions)
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -47,7 +51,6 @@ class Co3d(AbstractDataset, Dataset):
     def get_paired_data(self, idx: int):
         metadata = self.get_metadata(idx)
         left, right = self.dataset[idx]
-                
         ret = {}
         ret.update({
             "src_enc_rgb": left["img"],
@@ -66,7 +69,6 @@ class Co3d(AbstractDataset, Dataset):
             "tgt_dec_depth": right["depthmap"],
             **metadata
         })
-
         return ret
     
     def get_metadata(self, idx):
@@ -119,6 +121,7 @@ def main(
             augmentation=None,
             return_tensorclass=return_tensorclass,
             use_cuda=False,
+            fill_invalid_regions=True,
         )
 
         subset_range = None

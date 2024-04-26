@@ -73,22 +73,27 @@ def get_experiments():
             decoder_resolution=256,
             decoder_latent_dim=32,
             force_fp32_pcd_vae=True,
+            fill_invalid_regions=True,
+            use_valid_xyz_loss_mask=True,
+            snr_gamma=5.0
         ),
         dataset=dict(
             train=dict(
                 batch_size=36,
                 resolution="${model.decoder_resolution}",
+                fill_invalid_regions=True,
             ),
             val=dict(
                 batch_size=32,
                 subset_size="${eval:'${dataset.val.batch_size} * 8'}",
                 resolution="${model.decoder_resolution}",
+                fill_invalid_regions=True,
             ),
         ),
         trainer=dict(
             gradient_accumulation_steps=4,
             ckpt_steps=2000,
-            eval_steps=2000,
+            eval_steps=1000,
             fsdp=True,
             param_dtype_exception_prefixes=["vae."],
         ),

@@ -16,7 +16,7 @@ from gen.models.base.base_defs import AttentionMetadata, ConditioningData
 from gen.models.base.base_setup import (add_unet_adapters, checkpoint, initialize_custom_models, initialize_diffusers_models, set_inference_mode,
                                         set_training_mode)
 from gen.models.base.losses import get_dustr_loss, transform_coordinate_space
-from gen.models.dustr.depth_utils import decode_xyz, encode_xyz
+from gen.models.dustr.depth_utils import decode_xyz, encode_xyz, fill_invalid_regions, xyz_to_depth
 from gen.models.encoders.encoder import BaseModel
 from gen.utils.data_defs import InputData
 from gen.utils.logging_utils import log_debug, log_error, log_info, log_warn
@@ -184,15 +184,19 @@ class BaseMapper(Trainable):
                 latents = self.vae.encode(rgb_to_encode).latent_dist.sample() # Convert images to latent space
                 latents = latents * self.vae.config.scaling_factor
 
-            if self.cfg.model.duplicate_unet_input_channels:    
+            if self.cfg.model.duplicate_unet_input_channels:
                 if self.cfg.model.predict_depth:
                     input_src, input_tgt = batch.src_dec_depth, batch.tgt_dec_depth
                     input_src, input_tgt = rearrange('b h w, b h w -> b h w 3, b h w 3', input_src, input_tgt)
                 else:
                     input_src, input_tgt = transform_coordinate_space(batch, batch.src_xyz, batch.tgt_xyz)
-            
+
                 input_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', input_src, input_tgt)
                 input_valid = rearrange('b h w, b h w -> (b + b) h w', batch.src_xyz_valid, batch.tgt_xyz_valid)
+
+                if self.cfg.model.fill_invalid_regions:
+                    input_xyz = fill_invalid_regions(input_xyz, input_valid)
+
                 xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
                 
                 cond.xyz_normalizer = normalizer
@@ -219,8 +223,22 @@ class BaseMapper(Trainable):
                 target = self.noise_scheduler.get_velocity(latents, noise, timesteps)
             else:
                 raise ValueError(f"Unknown prediction type {self.noise_scheduler.config.prediction_type}")
+            
+        if self.cfg.model.unfreeze_vae_decoder:
+            xyz_latents = (1 / self.vae.config.scaling_factor) * xyz_latents
+            with torch.autocast(device_type="cuda", enabled=self.cfg.model.force_fp32_pcd_vae is False):
+                gt_decoder_xyz = self.vae.decode(xyz_latents.to(torch.float32).detach(), return_dict=False)[0]
+                gt_decoder_xyz, gt_decoder_valid = normalizer.denormalize(gt_decoder_xyz)
+                cond.gt_decoder_xyz = gt_decoder_xyz
+                cond.gt_decoder_valid = gt_decoder_valid
         
-        return self.compute_losses(batch=batch, cond=cond, model_pred=model_pred, target=target, state=state)
+        return self.compute_losses(
+            batch=batch,
+            cond=cond,
+            model_pred=model_pred,
+            target=target,
+            state=state
+        )
 
     def compute_losses(
             self,
@@ -245,7 +263,7 @@ class BaseMapper(Trainable):
                 # This is discussed in Section 4.2 of the same paper.
                 from diffusers.training_utils import compute_snr
                 snr = compute_snr(self.noise_scheduler, cond.timesteps)
-                mse_loss_weights = torch.stack([snr, self.cfgl.model.snr_gamma * torch.ones_like(cond.timesteps)], dim=1).min(
+                mse_loss_weights = torch.stack([snr, self.cfg.model.snr_gamma * torch.ones_like(cond.timesteps)], dim=1).min(
                     dim=1
                 )[0]
                 if self.noise_scheduler.config.prediction_type == "epsilon":
@@ -260,8 +278,13 @@ class BaseMapper(Trainable):
             losses.update({"metric_diffusion_mse": mse_loss})
             losses["diffusion_loss"] = mse_loss * self.cfg.model.diffusion_loss_weight
 
-        if self.cfg.model.duplicate_unet_input_channels:
+        if self.cfg.model.unfreeze_vae_decoder:
+            # losses['l2_scale_shift_inv_decoder_loss_v2'] = get_dustr_loss(batch, cond.gt_decoder_xyz, cond.gt_decoder_valid)
+            losses['vae_decoder_mse_loss'] = 1e-3 * F.mse_loss(cond.gt_decoder_xyz.float()[cond.gt_decoder_valid], cond.gt_xyz.float()[cond.gt_decoder_valid], reduction="mean")
+
+        if self.cfg.model.duplicate_unet_input_channels and False:
             pred_xyz, pred_mask = decode_xyz(self.cfg, model_pred, cond.xyz_valid, self.vae, cond.xyz_normalizer)
+            losses['metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, pred_mask)
 
             def get_norm_pts(_gt, _pred, _mask):
                 _mask = rearrange('b h w -> (b h w)', _mask)
@@ -273,6 +296,5 @@ class BaseMapper(Trainable):
                 return _gt[_mask], _pred[_mask]
 
             losses['metric_valid_norm_xyz_mse'] = F.mse_loss(*get_norm_pts(cond.gt_xyz, pred_xyz, pred_mask), reduction="mean")
-            losses['metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, pred_mask)
 
         return losses

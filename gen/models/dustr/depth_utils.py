@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from einx import rearrange
 
 from gen.models.dustr.marigold import NearFarMetricNormalizer
@@ -51,6 +52,30 @@ def xyz_to_depth(pcd, camera_intrinsics, camera_pose, simple: bool = False):
         depthmap = np.sqrt(np.sum(np.power(pcd - camera_pose[None, None, :3, 3], 2), axis=-1))
 
     return depthmap
+
+def fill_invalid_regions(input_xyz, input_valid):
+    B, H, W, C = input_xyz.shape
+
+    x = rearrange('b h w c -> b c h w', input_xyz.clone())
+    x[rearrange('b h w -> b 3 h w', ~input_valid)] = 0
+    
+    n = 8
+    scales = [x]
+    for scale in range(1, n + 1):
+        downsampled_size = (H // (2 ** scale), W // (2 ** scale))
+        downsampled = F.interpolate(x, size=downsampled_size, mode='nearest')
+        scales.append(F.interpolate(downsampled, size=(H, W), mode='nearest'))
+
+    result = x.clone()
+    
+    zero_mask = rearrange('b h w -> b 3 h w', ~input_valid)
+    for scale_img in scales:
+        replace_mask = zero_mask & (scale_img != 0)
+        result[replace_mask] = scale_img[replace_mask]
+        zero_mask = zero_mask & (scale_img == 0)
+    
+    result = rearrange('b c h w -> b h w c', result)
+    return result
 
 @torch.no_grad()
 def encode_xyz(cfg: BaseConfig, gt_points, init_valid_mask, vae, min_max_quantile: float = 0.1, kwargs = None):

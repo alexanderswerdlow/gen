@@ -71,9 +71,11 @@ class ModelConfig:
     dual_attention: bool = False
     enable_encoder: bool = False
     force_fp32_pcd_vae: bool = False
-    snr_gamma: Optional[float] = None
+    snr_gamma: Optional[float] = None # Use 5.0 if enabled
     predict_depth: bool = False
     use_valid_xyz_loss_mask: bool = False
+    fill_invalid_regions: bool = False
+    unfreeze_vae_decoder: bool = False
 
 
 auto_store(

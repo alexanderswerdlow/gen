@@ -282,15 +282,15 @@ class Trainer:
         if len(self.train_dataloader.dataset) < total_batch_size:
             log_warn("The training dataloader is smaller than the total batch size. This may lead to unexpected behaviour.")
 
-        true_step = 0
-        global_step = 0
-        first_epoch = 0
-
         # Potentially load in the weights and states from a previous save. Due to an accelerate bug, we actually load the model in init_models and only fetch the step here.
         if tr.ckpt:
             initial_global_step = load_from_ckpt(cfg=self.cfg, accelerator=self.accelerator, model=self.model, load_model=False)
         else:
             initial_global_step = 0
+
+        true_step = 0
+        global_step = initial_global_step
+        first_epoch = 0
 
         if self.cfg.profile:
             profiler = Profiler(output_dir=self.cfg.output_dir, warmup_steps=tr.profiler_warmup_steps, active_steps=tr.profiler_active_steps, record_memory=True)

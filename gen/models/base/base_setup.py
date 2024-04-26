@@ -176,9 +176,16 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
     
     if hasattr(other, "vae"):
         if set_grad:
-            other.vae.to(device=_device, dtype=torch.float32 if md.force_fp32_pcd_vae else _dtype)
+            other.vae.to(device=_device, dtype=torch.float32 if (md.force_fp32_pcd_vae or md.unfreeze_vae_decoder) else _dtype)
             other.vae.requires_grad_(False)
-        other.vae.eval()
+            if md.unfreeze_vae_decoder:
+                other.vae.decoder.requires_grad_(True)
+
+        if md.unfreeze_vae_decoder:
+            other.vae.eval()
+            other.vae.decoder.train()
+        else:
+            other.vae.eval()
 
     if md.enable_encoder:
         if md.freeze_enc:
