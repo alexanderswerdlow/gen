@@ -23,13 +23,13 @@ if TYPE_CHECKING:
 
 @tensorclass
 class InputData:
-    src_enc_rgb: Float[Tensor, "b c h w"]
-    tgt_enc_rgb: Float[Tensor, "b c h w"]
-
     src_dec_rgb: Float[Tensor, "b c h w"]
     tgt_dec_rgb: Float[Tensor, "b c h w"]
 
     id: Integer[Tensor, "b"]
+
+    src_enc_rgb: Optional[Float[Tensor, "b c h w"]] = None
+    tgt_enc_rgb: Optional[Float[Tensor, "b c h w"]] = None
 
     src_dec_depth: Optional[Float[Tensor, "b h w"]] = None
     tgt_dec_depth: Optional[Float[Tensor, "b h w"]] = None
@@ -56,7 +56,7 @@ class InputData:
     def from_dict(batch: dict):
         batch = InputData(
             num_frames=1,
-            batch_size=[batch["src_enc_rgb"].shape[0]],
+            batch_size=[batch["src_dec_rgb"].shape[0]],
             **batch,
         )
         return batch
@@ -114,10 +114,10 @@ def visualize_input_data(
         
         output_img = Im.concat_vertical(
             output_img,
-            Im.concat_horizontal(
+            *((Im.concat_horizontal(
                 Im(_func(get_depth(batch.src_xyz[b], batch.src_intrinsics[b], batch.src_extrinsics[b]))).bool_to_rgb(),
                 Im(_func(get_depth(batch.tgt_xyz[b], batch.tgt_intrinsics[b], batch.tgt_extrinsics[b]))).bool_to_rgb(),
-            ),
+            )) if batch.src_xyz is not None else ()),
             Im.concat_horizontal(
                 Im(_func(get_depth(batch.src_dec_depth[b], is_xyz=False))).bool_to_rgb(),
                 Im(_func(get_depth(batch.tgt_dec_depth[b], is_xyz=False))).bool_to_rgb(),

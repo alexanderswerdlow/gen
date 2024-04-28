@@ -20,6 +20,12 @@ COCO_CUSTOM_PATH = Path(os.getenv("COCO_CUSTOM_PATH", f"{PROJECTS_PREFIX}/projec
 
 DUSTR_REPO_PATH = Path(os.getenv("DUSTR_REPO_PATH", Path.home() / "repos" / "dust3r"))
 
+HYPERSIM_DATASET_PATH = Path(os.getenv("HYPERSIM_DATASET_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/aswerdlo/datasets/hypersim"))
+SCRATCH_HYPERSIM_PATH = Path(os.getenv("SCRATCH_HYPERSIM_PATH", "/scratch/aswerdlo/hypersim"))
+if SCRATCH_HYPERSIM_PATH.exists():
+    HYPERSIM_DATASET_PATH = SCRATCH_HYPERSIM_PATH
+    log_info(f"Using scratch hypersim path: {HYPERSIM_DATASET_PATH}")
+    
 if SCRATCH_COCO_PATH.exists(): 
     COCO_DATASET_PATH = SCRATCH_COCO_PATH
     COCO_CUSTOM_PATH = SCRATCH_COCO_PATH / "annotations"
