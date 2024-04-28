@@ -78,19 +78,21 @@ class XFormersAttnProcessor:
         if attn.group_norm is not None:
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
 
+        is_cross_attention = encoder_hidden_states is not None
+
         if encoder_hidden_states is None:
             encoder_hidden_states = hidden_states
         elif attn.norm_cross:
             encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
-        is_cross_attention = encoder_hidden_states is not None
         is_dual_cross_attention = attn.attention_config is not None and (getattr(attn.attention_config, "dual_self_attention", False) and is_cross_attention)
         is_dual_self_attention = attn.attention_config is not None and (getattr(attn.attention_config, "dual_cross_attention", False) and is_cross_attention is False)
         if is_dual_cross_attention or is_dual_self_attention:
             left_state, right_state = hidden_states.chunk(2, dim=0)
             cond_states = ((left_state, right_state), (right_state, left_state)) if is_dual_cross_attention else ((left_state, left_state), (right_state, right_state))
-            cond_modules = ((attn.to_q, attn.to_k, attn.to_v, attn.to_out, attn.v_2_to_v_1), (attn.v2_to_q, attn.v2_to_k, attn.v2_to_v, attn.v2_to_out, attn.v_1_to_v_2))
+            cond_modules = ((attn.to_q, attn.to_k, attn.to_v, attn.to_out, attn.v_2_to_v_1 if is_dual_cross_attention else None), (attn.v2_to_q, attn.v2_to_k, attn.v2_to_v, attn.v2_to_out, attn.v_1_to_v_2 if is_dual_cross_attention else None))
             combined_states = []
+
             for (self_state, cross_state), (_to_q, _to_k, _to_v, _to_out, _to_self) in zip(cond_states, cond_modules):
                 query = _to_q(self_state)
                 cross_state = _to_self(cross_state) if is_dual_cross_attention else cross_state
@@ -117,6 +119,15 @@ class XFormersAttnProcessor:
 
             hidden_states = torch.cat(combined_states, dim=0)
         else:
+            if attn_meta.joint_attention is not None and is_cross_attention:
+                encoder_hidden_states = rearrange(
+                    '(views b) n c -> (repeat_views b) (views n) c',
+                    hidden_states,
+                    views=attn_meta.joint_attention,
+                    repeat_views=attn_meta.joint_attention
+                )
+                encoder_hidden_states = attn.to_cross(encoder_hidden_states)
+
             query = attn.to_q(hidden_states)
             key = attn.to_k(encoder_hidden_states)
             value = attn.to_v(encoder_hidden_states)

@@ -979,6 +979,9 @@ class StableDiffusionPipeline(
                 if kwargs.get("concat_rgb", None) is not None:
                     latent_model_input = torch.cat([kwargs["concat_rgb"], latent_model_input], dim=1) 
 
+                if kwargs.get("concat_src_depth", None) is not None:
+                    latent_model_input[latent_model_input.shape[0] // 2:, :latent_model_input.shape[1] // 2] = kwargs['concat_src_depth']
+
                 # predict the noise residual
                 noise_pred = self.unet(
                     latent_model_input,

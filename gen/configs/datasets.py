@@ -8,6 +8,7 @@ from gen.configs.utils import auto_store, mode_store, store_child_config
 from gen.datasets.abstract_dataset import AbstractDataset
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
 from gen.datasets.dustr.co3d import Co3d
+from gen.datasets.hypersim.hypersim import Hypersim
 from gen.datasets.misc.imagefolder import ImagefolderDataset
 
 
@@ -75,6 +76,20 @@ auto_store(DatasetConfig,
         augmentation=None,
     ), 
     name="co3d"
+)
+
+auto_store(DatasetConfig, 
+    train=get_dataset(
+        Hypersim,
+        augmentation=augmentation,
+        scratch_only=False,
+    ), 
+    val=get_dataset(
+        Hypersim,
+        augmentation=augmentation,
+        scratch_only=False,
+    ), 
+    name="hypersim"
 )
 
 def get_datasets():  # TODO: These do not need to be global configs

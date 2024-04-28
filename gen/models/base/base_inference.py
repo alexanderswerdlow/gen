@@ -68,9 +68,9 @@ def get_valid_mse(arr1, arr2, mask):
     _pred_mask = rearrange('b h w -> (b h w)', mask)
     return F.mse_loss(_pred_xyz[_pred_mask], _gt_xyz[_pred_mask], reduction="mean")
 
-def get_depth(cfg, _gt, _pred, _intrinsics, _extrinsics, b):
+def get_depth(cfg, _gt_depth, _gt, _pred, _intrinsics, _extrinsics, b):
     if cfg.model.predict_depth:
-        _gt_depth = _gt[b].mean(dim=-1)
+        _gt_depth = _gt_depth[b]
         _pred_depth = _pred[b].mean(dim=-1)
     else:
         _gt_depth = torch.from_numpy(xyz_to_depth(_gt[b], _intrinsics[b], _extrinsics[b], simple=True)).to(_gt)
@@ -90,28 +90,36 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     input_xyz, input_valid = get_input(self.cfg, batch)
     input_src_valid, input_tgt_valid = torch.chunk(input_valid, 2, dim=0)
 
-    xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
+    xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, self.dtype, 2, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
     src_valid, tgt_valid = torch.chunk(xyz_valid, 2, dim=0)
     autoencoded_xyz = autoencode_gt_xyz(self.cfg, batch, self.vae, xyz_latents, normalizer)
     autoencoded_src_xyz, autoencoded_tgt_xyz = torch.chunk(autoencoded_xyz, 2, dim=0)
+    if self.cfg.model.only_noise_tgt:
+        breakpoint()
+    
+    if self.cfg.model.predict_depth is False:
+        ret['wandb_metric_autoencode_l2_scale_shift_inv'] = get_dustr_loss(batch, autoencoded_xyz, xyz_valid)
 
     ret['wandb_metric_autoencode_valid_xyz_mse'] = get_valid_mse(input_xyz, autoencoded_xyz, xyz_valid)
-    ret['wandb_metric_autoencode_l2_scale_shift_inv'] = get_dustr_loss(batch, autoencoded_xyz, xyz_valid)
     for i in range(3):
         ret[f'wandb_metric_autoencode_valid_xyz_mse_channel_{i}'] = get_valid_mse(input_xyz[..., [i]], autoencoded_xyz[..., [i]], xyz_valid)
 
     if self.cfg.model.unet is False:
         return ret
 
-    rgb_to_encode = torch.cat([batch.src_dec_rgb, batch.tgt_dec_rgb], dim=0).to(next(self.vae.parameters()).dtype)
-    latents = self.vae.encode(rgb_to_encode).latent_dist.sample() # Convert images to latent space
-    latents = latents * self.vae.config.scaling_factor
+    rgb_latents = self.get_rgb_latents(batch)
 
-    pred_latents, cond = self.infer_batch(batch, concat_rgb=latents, num_images_per_prompt=1, output_type='latent')
+    pipeline_kwargs = dict()
+    if self.cfg.model.only_noise_tgt:
+        pipeline_kwargs['concat_src_depth'] = xyz_latents[:xyz_latents.shape[0]//2]
+
+    pred_latents, cond = self.infer_batch(batch, concat_rgb=rgb_latents, num_images_per_prompt=1, output_type='latent', **pipeline_kwargs)
     
     pred_xyz = decode_xyz(self.cfg, pred_latents, self.vae, normalizer)
 
-    ret['wandb_metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, xyz_valid)
+    if self.cfg.model.predict_depth is False:
+        ret['wandb_metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, xyz_valid)
+    
     ret['wandb_metric_valid_xyz_mse'] = get_valid_mse(input_xyz, pred_xyz, xyz_valid)
     for i in range(3):
         ret[f'wandb_metric_valid_xyz_mse_channel_{i}'] = get_valid_mse(input_xyz[..., [i]], pred_xyz[..., [i]], xyz_valid)
@@ -124,8 +132,8 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     imgs = []
     secondary_viz = []
     for b in range(batch.bs)[:1]:
-        src_gt_depth, src_pred_depth = get_depth(self.cfg, batch.src_xyz, pred_src_xyz, batch.src_intrinsics, batch.src_extrinsics, b)
-        tgt_gt_depth, tgt_pred_depth = get_depth(self.cfg, batch.tgt_xyz, pred_tgt_xyz, batch.tgt_intrinsics, batch.tgt_extrinsics, b)
+        src_gt_depth, src_pred_depth = get_depth(self.cfg, batch.src_dec_depth, batch.src_xyz, pred_src_xyz, batch.src_intrinsics, batch.src_extrinsics, b)
+        tgt_gt_depth, tgt_pred_depth = get_depth(self.cfg, batch.tgt_dec_depth, batch.tgt_xyz, pred_tgt_xyz, batch.tgt_intrinsics, batch.tgt_extrinsics, b)
 
         src_autoencoded_depth = torch.from_numpy(
             norm(xyz_to_depth(autoencoded_src_xyz[b], batch.src_intrinsics[b], batch.src_extrinsics[b], simple=True))

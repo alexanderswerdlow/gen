@@ -70,6 +70,7 @@ class ModelConfig:
     duplicate_unet_input_channels: bool = False
     separate_xyz_encoding: bool = False
     dual_attention: bool = False
+    joint_attention: bool = False
     enable_encoder: bool = False
     force_fp32_pcd_vae: bool = False
     snr_gamma: Optional[float] = None # Use 5.0 if enabled
@@ -79,7 +80,9 @@ class ModelConfig:
     unfreeze_vae_decoder: bool = False
     vae_decoder_batch_size: int = 1
     vae: bool = True
-    xyz_min_max_quantile: float = 0.1
+    xyz_min_max_quantile: float = 0.02
+    only_noise_tgt: bool = False
+    
 
 
 auto_store(

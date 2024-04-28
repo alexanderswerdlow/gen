@@ -172,24 +172,12 @@ class Hypersim(AbstractDataset, Dataset):
             RT = torch.cat((RT, torch.tensor([[0, 0, 0, 1]])), dim=0)
             return RT
 
-        # ret = {}
-        # ret.update({
-        #     "src_enc_rgb": left["img"],
-        #     "src_dec_rgb": left["img"],
-        #     "src_xyz": left["pts3d"],
-        #     "src_xyz_valid": left["valid_mask"],
-        #     "src_intrinsics": left['camera_intrinsics'],
-        #     "src_extrinsics": left['camera_pose'],
-        #     "src_dec_depth": left["depthmap"],
-        #     "tgt_enc_rgb": right["img"],
-        #     "tgt_dec_rgb": right["img"],
-        #     "tgt_xyz": right["pts3d"],
-        #     "tgt_xyz_valid": right["valid_mask"],
-        #     "tgt_intrinsics": right['camera_intrinsics'],
-        #     "tgt_extrinsics": right['camera_pose'],
-        #     "tgt_dec_depth": right["depthmap"],
-        #     **metadata
-        # })
+        def get_intrinsics_matrix(intrinsics_dict):
+            return torch.tensor([
+                [intrinsics_dict['fx'], 0, intrinsics_dict['cx']],
+                [0, intrinsics_dict['fy'], intrinsics_dict['cy']],
+                [0, 0, 1]
+            ])
 
         ret.update({
             "src_dec_rgb": src_data.image,
@@ -200,8 +188,8 @@ class Hypersim(AbstractDataset, Dataset):
             "tgt_xyz_valid": torch.ones_like(tgt_data.segmentation, dtype=torch.bool),
             "src_extrinsics": get_rt(init_src_data),
             "tgt_extrinsics": get_rt(init_tgt_data),
-            "src_intrinsics": init_src_data['depth_intrinsics'],
-            "tgt_intrinsics": init_tgt_data['depth_intrinsics'],
+            "src_intrinsics": get_intrinsics_matrix(init_src_data['depth_intrinsics']),
+            "tgt_intrinsics": get_intrinsics_matrix(init_tgt_data['depth_intrinsics']),
             "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
             "metadata": {
                 "dataset": "hypersim",

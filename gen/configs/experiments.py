@@ -78,7 +78,8 @@ def get_experiments():
             force_fp32_pcd_vae=True,
             fill_invalid_regions=True,
             use_valid_xyz_loss_mask=True,
-            snr_gamma=5.0
+            snr_gamma=5.0,
+            xyz_min_max_quantile=0.02,
         ),
         dataset=dict(
             train=dict(
@@ -134,6 +135,7 @@ def get_experiments():
         name="full_scene",
         model=dict(
             separate_xyz_encoding=True,
+            xyz_min_max_quantile=0.1,
         ),
         dataset=dict(
             train=dict(
@@ -145,7 +147,7 @@ def get_experiments():
                 mask_bg=False,
                 inpaint=False,
                 fill_invalid_regions=True,
-                subset_size="${eval:'${dataset.val.batch_size} * 4'}",
+                batch_size=16,
             ),
         ),
     )
@@ -157,4 +159,58 @@ def get_experiments():
             unet=False,
             unfreeze_vae_decoder=True,
         ),
+    )
+
+    mode_store(
+        name="exp_v1",
+        debug=True,
+        model=dict(
+            freeze_unet=True,
+            pretrained_model_name_or_path="stabilityai/stable-diffusion-2",
+            duplicate_unet_input_channels=True,
+            dual_attention=False,
+            joint_attention=True,
+            predict_depth=True,
+            token_embedding_dim=1024,
+            decoder_resolution=256,
+            decoder_latent_dim=32,
+            force_fp32_pcd_vae=True,
+            snr_gamma=5.0,
+            only_noise_tgt=True,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=36,
+                augmentation=dict(
+                    src_resolution="${model.decoder_resolution}",
+                    tgt_resolution="${model.decoder_resolution}",
+                    src_transforms="${get_tgt_transform:model}", # This is intentional
+                    tgt_transforms="${get_tgt_transform:model}",
+                ),
+            ),
+            val=dict(
+                batch_size=32,
+                subset_size="${eval:'${dataset.val.batch_size} * 8'}",
+                augmentation=dict(
+                    src_resolution="${model.decoder_resolution}",
+                    tgt_resolution="${model.decoder_resolution}",
+                    src_transforms="${get_tgt_transform:model}", # This is intentional
+                    tgt_transforms="${get_tgt_transform:model}",
+                ),
+            ),
+        ),
+        trainer=dict(
+            gradient_accumulation_steps=4,
+            ckpt_steps=1000,
+            eval_steps=500,
+            fsdp=True,
+            param_dtype_exception_prefixes=["vae."],
+        ),
+        inference=dict(
+            guidance_scale=1
+        ),
+        hydra_defaults=[
+            "_self_",
+            {"override /dataset": "hypersim"},
+        ],
     )

@@ -79,6 +79,9 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
         if self.cfg.model.dual_attention:
             unet_kwargs["attention_config"] = AttentionConfig(dual_self_attention=True, dual_cross_attention=True)
             unet_kwargs["strict_load"] = False
+        elif self.cfg.model.joint_attention:
+            unet_kwargs["attention_config"] = AttentionConfig(joint_attention=True)
+            unet_kwargs["strict_load"] = False
 
         self.unet = UNet2DConditionModel.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
@@ -130,6 +133,14 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
                     set_module_tensor_to_device(self.unet, k, self.device, value=param)
                     log_info(f"Initializing {k}")
 
+        if self.cfg.model.joint_attention:
+            from accelerate.utils import set_module_tensor_to_device
+            for k, v in self.unet.named_parameters():
+                if 'to_cross' in k:
+                    param = 0.02 * torch.randn(v.shape, device=self.device) if 'weight' in k else torch.zeros(v.shape, device=self.device)
+                    set_module_tensor_to_device(self.unet, k, self.device, value=param)
+                    log_info(f"Initializing {k}")
+
         if self.cfg.model.ema and not self.cfg.model.freeze_unet:
             self.ema_unet = EMAModel(self.unet.parameters(), model_cls=UNet2DConditionModel, model_config=self.unet.config)
             log_warn("Using EMA for U-Net. Inference has not het been handled properly.")
@@ -155,7 +166,7 @@ def add_unet_adapters(self: BaseModel):
         if self.cfg.model.controlnet:
             self.controlnet.enable_xformers_memory_efficient_attention()
 
-    if self.cfg.model.dual_attention:
+    if self.cfg.model.dual_attention or self.cfg.model.joint_attention:
         register_custom_attention(self.unet)
 
     if self.cfg.trainer.gradient_checkpointing:
@@ -261,7 +272,7 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
                     m.to(dtype=torch.float32)
                 m.train()
 
-        if md.dual_attention:
+        if md.dual_attention or md.joint_attention:
             for m in get_modules(other.unet, BasicTransformerBlock):
                 if set_grad:
                     m.requires_grad_(True)

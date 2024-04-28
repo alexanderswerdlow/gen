@@ -67,8 +67,9 @@ def validate_params(cfg: BaseConfig, models: Iterable[nn.Module], dtype: torch.d
             num_requires_grad += 1
         elif not p.requires_grad:
             num_no_grad += 1
-            if any(k.startswith(prefix) for prefix in cfg.trainer.param_dtype_exception_prefixes):
-                continue
+            if cfg.trainer.param_dtype_exception_prefixes is not None:
+                if any(k.startswith(prefix) for prefix in cfg.trainer.param_dtype_exception_prefixes):
+                    continue
             assert p.dtype == dtype, f"Param {k} is non-trainable but not in {dtype}"
             
     log_info(f"Found {num_requires_grad} trainable {torch.float32} and {num_no_grad} non-trainable {dtype} params.")

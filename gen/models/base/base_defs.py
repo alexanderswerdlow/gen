@@ -21,10 +21,12 @@ class ConditioningData:
 class AttentionConfig:
     dual_self_attention: bool = False
     dual_cross_attention: bool = False
+    joint_attention: bool = False
 
 @dataclass
 class AttentionMetadata:
     gate_scale: Optional[float] = None
+    joint_attention: Optional[int] = None
     
 
 class Dummy:

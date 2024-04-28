@@ -82,11 +82,11 @@ def depreciated_fill_invalid_regions(input_xyz, input_valid):
     return result
 
 @torch.no_grad()
-def encode_xyz(cfg: BaseConfig, gt_points, init_valid_mask, vae, kwargs = None):
+def encode_xyz(cfg: BaseConfig, gt_points, init_valid_mask, vae, dtype, num_views, kwargs = None):
     _kwargs = dict(valid_mask=init_valid_mask, clip=True, per_axis_quantile=True)
     _kwargs.update(kwargs or {})
 
-    normalizer = NearFarMetricNormalizer(min_max_quantile=cfg.model.xyz_min_max_quantile)
+    normalizer = NearFarMetricNormalizer(min_max_quantile=cfg.model.xyz_min_max_quantile, num_views=num_views)
     pre_enc, post_enc_valid_mask = normalizer(gt_points, **_kwargs)
     post_enc_valid_mask = (~post_enc_valid_mask & init_valid_mask).to(torch.bool)
 
@@ -94,6 +94,7 @@ def encode_xyz(cfg: BaseConfig, gt_points, init_valid_mask, vae, kwargs = None):
         pre_enc = rearrange('b xyz h w -> (b xyz) 3 h w', pre_enc)
 
     with torch.autocast(device_type="cuda", enabled=cfg.model.force_fp32_pcd_vae is False):
+        pre_enc = pre_enc.to(torch.float32 if cfg.model.force_fp32_pcd_vae else dtype)
         latents = vae.encode(pre_enc).latent_dist.sample() * vae.config.scaling_factor
 
     if cfg.model.separate_xyz_encoding:
@@ -112,13 +113,16 @@ def decode_xyz(cfg: BaseConfig, pred_latents, vae, normalizer):
         decoded_points = vae.decode(pred_latents.to(torch.float32), return_dict=False)[0]
         if cfg.model.separate_xyz_encoding:
             decoded_points = mean('(b xyz) [c] h w -> b xyz h w', decoded_points, xyz=3)
+        if cfg.model.predict_depth:
+            decoded_points = mean('b [c] h w -> b 1 h w', decoded_points, dim=-1)
+            
         decoded_points = normalizer.denormalize(decoded_points)
 
     return decoded_points
 
 def get_input(cfg: BaseConfig, batch: InputData):
     if cfg.model.predict_depth:
-        input_src, input_tgt = batch.src_dec_depth, batch.tgt_dec_depth
+        input_src, input_tgt = batch.src_dec_depth.to(torch.float32), batch.tgt_dec_depth.to(torch.float32)
         input_src, input_tgt = rearrange('b h w, b h w -> b h w 3, b h w 3', input_src, input_tgt)
     else:
         input_src, input_tgt = transform_coordinate_space(batch, batch.src_xyz, batch.tgt_xyz)

@@ -143,6 +143,9 @@ class BaseMapper(Trainable):
         
         if len(cond.unet_kwargs) == 0:
             cond.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=AttentionMetadata())
+
+        if self.cfg.model.joint_attention:
+            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].joint_attention = 2
         
         cond.encoder_hidden_states = self.uncond_hidden_states[None].repeat(batch.bs, 1, 1)
 
@@ -150,6 +153,13 @@ class BaseMapper(Trainable):
 
     def dropout_cfg(self, cond: ConditioningData):
         pass
+
+    def get_rgb_latents(self, batch: InputData):
+        with torch.no_grad():
+            rgb_to_encode = torch.cat([batch.src_dec_rgb, batch.tgt_dec_rgb], dim=0).to(dtype=self.dtype if self.cfg.model.force_fp32_pcd_vae is False else torch.float32, device=self.device)
+            rgb_latents = self.vae.encode(rgb_to_encode).latent_dist.sample() # Convert images to latent space
+            rgb_latents = rgb_latents * self.vae.config.scaling_factor
+        return rgb_latents
     
     @property
     def uncond_hidden_states(self):
@@ -179,7 +189,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.duplicate_unet_input_channels:
             input_xyz, input_valid = get_input(self.cfg, batch)
-            xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
+            xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, self.dtype, 2, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
             
             cond.xyz_normalizer = normalizer
             cond.xyz_valid = xyz_valid
@@ -187,12 +197,12 @@ class BaseMapper(Trainable):
         
         model_pred, target = None, None
         if self.cfg.model.unet and self.cfg.model.disable_unet_during_training is False:
-            with torch.no_grad() if self.cfg.model.duplicate_unet_input_channels else nullcontext():
-                rgb_to_encode = torch.cat([batch.src_dec_rgb, batch.tgt_dec_rgb], dim=0).to(dtype=self.dtype)
-                rgb_latents = self.vae.encode(rgb_to_encode).latent_dist.sample() # Convert images to latent space
-                rgb_latents = rgb_latents * self.vae.config.scaling_factor
+            rgb_latents = self.get_rgb_latents(batch)
 
             latents = xyz_latents if self.cfg.model.duplicate_unet_input_channels else rgb_latents
+            if self.cfg.model.only_noise_tgt:
+                timesteps[:timesteps.shape[0] // 2] = 0
+
             noise = torch.randn_like(latents) # Sample noise that we'll add to the latents
 
             # Add noise to the latents according to the noise magnitude at each timestep
