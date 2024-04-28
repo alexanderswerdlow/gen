@@ -62,7 +62,10 @@ def norm_two(arr1, arr2):
 def norm(x):
     return (x - x.min()) / (x.max() - x.min())
 
-def get_valid_mse(arr1, arr2, mask):
+def get_valid_mse(arr1, arr2, mask, norm: bool = False):
+    if norm:
+        arr1, arr2 = norm_two(arr1, arr2)
+
     _gt_xyz = rearrange('b h w xyz -> (b h w) xyz', arr1)
     _pred_xyz = rearrange('b h w xyz -> (b h w) xyz', arr2)
     _pred_mask = rearrange('b h w -> (b h w)', mask)
@@ -94,15 +97,15 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     src_valid, tgt_valid = torch.chunk(xyz_valid, 2, dim=0)
     autoencoded_xyz = autoencode_gt_xyz(self.cfg, batch, self.vae, xyz_latents, normalizer)
     autoencoded_src_xyz, autoencoded_tgt_xyz = torch.chunk(autoencoded_xyz, 2, dim=0)
-    if self.cfg.model.only_noise_tgt:
-        breakpoint()
-    
-    if self.cfg.model.predict_depth is False:
+    if self.cfg.model.predict_depth:
+        input_xyz = input_xyz[..., [0]]
+    else:
         ret['wandb_metric_autoencode_l2_scale_shift_inv'] = get_dustr_loss(batch, autoencoded_xyz, xyz_valid)
 
-    ret['wandb_metric_autoencode_valid_xyz_mse'] = get_valid_mse(input_xyz, autoencoded_xyz, xyz_valid)
-    for i in range(3):
-        ret[f'wandb_metric_autoencode_valid_xyz_mse_channel_{i}'] = get_valid_mse(input_xyz[..., [i]], autoencoded_xyz[..., [i]], xyz_valid)
+    ret['wandb_metric_autoencode_valid_xyz_mse'] = get_valid_mse(input_xyz, autoencoded_xyz, xyz_valid, norm=self.cfg.model.predict_depth)
+    if self.cfg.model.predict_depth is False:
+        for i in range(3):
+            ret[f'wandb_metric_autoencode_valid_xyz_mse_channel_{i}'] = get_valid_mse(input_xyz[..., [i]], autoencoded_xyz[..., [i]], xyz_valid)
 
     if self.cfg.model.unet is False:
         return ret
@@ -117,12 +120,11 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     
     pred_xyz = decode_xyz(self.cfg, pred_latents, self.vae, normalizer)
 
+    ret['wandb_metric_valid_xyz_mse'] = get_valid_mse(input_xyz, pred_xyz, xyz_valid)
     if self.cfg.model.predict_depth is False:
         ret['wandb_metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, xyz_valid)
-    
-    ret['wandb_metric_valid_xyz_mse'] = get_valid_mse(input_xyz, pred_xyz, xyz_valid)
-    for i in range(3):
-        ret[f'wandb_metric_valid_xyz_mse_channel_{i}'] = get_valid_mse(input_xyz[..., [i]], pred_xyz[..., [i]], xyz_valid)
+        for i in range(3):
+            ret[f'wandb_metric_valid_xyz_mse_channel_{i}'] = get_valid_mse(input_xyz[..., [i]], pred_xyz[..., [i]], xyz_valid)
 
     pred_src_xyz, pred_tgt_xyz = torch.chunk(pred_xyz, 2, dim=0)
 

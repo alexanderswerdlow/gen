@@ -100,6 +100,8 @@ def encode_xyz(cfg: BaseConfig, gt_points, init_valid_mask, vae, dtype, num_view
     if cfg.model.separate_xyz_encoding:
         latents = rearrange('(b xyz) c h w -> b (xyz c) h w', latents, xyz=3)
 
+    assert torch.isfinite(latents).all(), "Latents contain NaNs or Infs"
+
     return latents, post_enc_valid_mask, normalizer
 
 @torch.no_grad()
@@ -115,7 +117,7 @@ def decode_xyz(cfg: BaseConfig, pred_latents, vae, normalizer):
             decoded_points = mean('(b xyz) [c] h w -> b xyz h w', decoded_points, xyz=3)
         if cfg.model.predict_depth:
             decoded_points = mean('b [c] h w -> b 1 h w', decoded_points, dim=-1)
-            
+
         decoded_points = normalizer.denormalize(decoded_points)
 
     return decoded_points

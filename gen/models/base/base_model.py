@@ -287,6 +287,7 @@ class BaseMapper(Trainable):
                 
             losses.update({"metric_diffusion_mse": mse_loss})
             losses["diffusion_loss"] = mse_loss * self.cfg.model.diffusion_loss_weight
+            if not torch.isfinite(mse_loss): breakpoint()
 
         if self.cfg.model.unfreeze_vae_decoder:
             # losses['l2_scale_shift_inv_decoder_loss_v2'] = get_dustr_loss(batch, cond.gt_decoder_xyz, cond.gt_decoder_valid)

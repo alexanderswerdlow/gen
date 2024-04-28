@@ -934,7 +934,7 @@ class StableDiffusionPipeline(
         timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
 
         # 5. Prepare latent variables
-        num_channels_latents = (self.unet.conv_in.in_channels - self.unet.config.in_channels) if kwargs.get('concat_rgb', None) is not None else self.unet.config.in_channels
+        num_channels_latents = (self.unet.conv_in.in_channels - kwargs.get('concat_rgb', None).shape[1]) if kwargs.get('concat_rgb', None) is not None else self.unet.config.in_channels
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,

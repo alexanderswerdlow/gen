@@ -87,7 +87,7 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
             self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
         )
 
-        if self.cfg.model.duplicate_unet_input_channels:
+        if self.cfg.model.duplicate_unet_input_channels and self.cfg.model.pretrained_model_name_or_path != "prs-eth/marigold-v1-0":
             new_dim = self.unet.conv_in.in_channels * 4 if self.cfg.model.separate_xyz_encoding else self.unet.conv_in.in_channels * 2
             conv_in_updated = torch.nn.Conv2d(new_dim, self.unet.conv_in.out_channels, kernel_size=self.unet.conv_in.kernel_size, padding=self.unet.conv_in.padding)
             conv_in_updated.requires_grad_(False)

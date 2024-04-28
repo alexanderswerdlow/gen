@@ -301,6 +301,8 @@ def main():
         augmentation=augmentation,
         return_tensorclass=True,
         return_different_views=True,
+        bbox_overlap_threshold=0.9,
+        bbox_area_threshold=0.5,
     )
 
     import time

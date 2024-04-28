@@ -345,7 +345,7 @@ class Trainer:
                     global_step_metrics["loss"] += loss.detach().cpu().item()  # Only on the main process to avoid syncing
                     end_timing()
 
-                    if tr.backward_pass:
+                    if tr.backward_pass and torch.isfinite(loss).all():
                         start_timing("Backward Pass")
                         start_backward_time = time()
                         # The below lines may be silently skipped for gradient accumulation

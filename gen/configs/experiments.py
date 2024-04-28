@@ -166,7 +166,7 @@ def get_experiments():
         debug=True,
         model=dict(
             freeze_unet=True,
-            pretrained_model_name_or_path="stabilityai/stable-diffusion-2",
+            pretrained_model_name_or_path="prs-eth/marigold-v1-0",
             duplicate_unet_input_channels=True,
             dual_attention=False,
             joint_attention=True,
@@ -177,10 +177,12 @@ def get_experiments():
             force_fp32_pcd_vae=True,
             snr_gamma=5.0,
             only_noise_tgt=True,
+            use_valid_xyz_loss_mask=False
         ),
         dataset=dict(
             train=dict(
                 batch_size=36,
+                return_different_views=True,
                 augmentation=dict(
                     src_resolution="${model.decoder_resolution}",
                     tgt_resolution="${model.decoder_resolution}",
@@ -191,6 +193,7 @@ def get_experiments():
             val=dict(
                 batch_size=32,
                 subset_size="${eval:'${dataset.val.batch_size} * 8'}",
+                return_different_views=True,
                 augmentation=dict(
                     src_resolution="${model.decoder_resolution}",
                     tgt_resolution="${model.decoder_resolution}",
@@ -202,7 +205,7 @@ def get_experiments():
         trainer=dict(
             gradient_accumulation_steps=4,
             ckpt_steps=1000,
-            eval_steps=500,
+            eval_steps=250,
             fsdp=True,
             param_dtype_exception_prefixes=["vae."],
         ),

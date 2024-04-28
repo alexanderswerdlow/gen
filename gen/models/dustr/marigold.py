@@ -48,8 +48,6 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
 
         shape = depth_linear.shape
 
-        # breakpoint()
-
         depth_linear = rearrange(depth_linear, '(num_views b) h w xyz -> b (num_views h w) xyz', num_views=self.num_views)
         if valid_mask is not None:
             valid_mask = rearrange(valid_mask, '(num_views b) h w -> b (num_views h w)', num_views=self.num_views)
@@ -76,11 +74,11 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
             self._min =  self._min[:, None]
             self._max =  self._max[:, None]
 
-        # scale and shift
-        depth_norm_linear = (depth_linear - self._min) / (
-            self._max - self._min
-        ) * self.norm_range + self.norm_min
 
+        denom = torch.clamp(self._max - self._min, min=1e-8)
+
+        # scale and shift
+        depth_norm_linear = (depth_linear - self._min) / denom * self.norm_range + self.norm_min
         outside_range = ((depth_norm_linear < self.norm_min) | (depth_norm_linear > self.norm_max)).any(dim=-1)
 
         if clip:
@@ -102,8 +100,6 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
             print(f"Warning: depth_linear out of range: {depth_linear.min():.3f}, {depth_linear.max():.3f}")
 
         outside_range = ((depth_linear < 0) | (depth_linear > 1)).any(dim=-1)
-        
-        depth_linear = torch.clamp(depth_linear, 0, 1)
         depth_linear = depth_linear * (
             self._max - self._min
         ) + self._min
