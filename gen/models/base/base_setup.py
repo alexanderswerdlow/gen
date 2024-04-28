@@ -66,11 +66,13 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
     # Load scheduler and models
     self.noise_scheduler = DDPMScheduler.from_pretrained(self.cfg.model.pretrained_model_name_or_path, subfolder="scheduler")
 
-    unet_kwargs = dict()
-    if self.cfg.model.unet:
+    if self.cfg.model.vae:
         self.vae = AutoencoderKL.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path, subfolder="vae", revision=self.cfg.model.revision, variant=self.cfg.model.variant
         )
+
+    unet_kwargs = dict()
+    if self.cfg.model.unet:
         if self.cfg.model.autoencoder_slicing:
             self.vae.enable_slicing()
 
@@ -83,15 +85,34 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
         )
 
         if self.cfg.model.duplicate_unet_input_channels:
-            new_dim = self.unet.conv_in.in_channels * 2
+            new_dim = self.unet.conv_in.in_channels * 4 if self.cfg.model.separate_xyz_encoding else self.unet.conv_in.in_channels * 2
             conv_in_updated = torch.nn.Conv2d(new_dim, self.unet.conv_in.out_channels, kernel_size=self.unet.conv_in.kernel_size, padding=self.unet.conv_in.padding)
             conv_in_updated.requires_grad_(False)
             self.unet.conv_in.requires_grad_(False)
-            conv_in_updated.weight[:,:4,:,:].copy_(self.unet.conv_in.weight / 2)
-            conv_in_updated.weight[:,4:8,:,:].copy_(self.unet.conv_in.weight / 2)
+            if self.cfg.model.separate_xyz_encoding:
+                conv_in_updated.weight[:,:4,:,:].copy_(self.unet.conv_in.weight / 4)
+                conv_in_updated.weight[:,4:8,:,:].copy_(self.unet.conv_in.weight / 4)
+                conv_in_updated.weight[:,8:12,:,:].copy_(self.unet.conv_in.weight / 4)
+                conv_in_updated.weight[:,12:16,:,:].copy_(self.unet.conv_in.weight / 4)
+            else:
+                conv_in_updated.weight[:,:4,:,:].copy_(self.unet.conv_in.weight / 2)
+                conv_in_updated.weight[:,4:8,:,:].copy_(self.unet.conv_in.weight / 2)
             conv_in_updated.bias.copy_(self.unet.conv_in.bias)
             self.unet.conv_in = conv_in_updated
             self.unet.conv_in.requires_grad_(True)
+
+            if self.cfg.model.separate_xyz_encoding:
+                conv_out_updated = torch.nn.Conv2d(self.unet.conv_out.in_channels, self.unet.conv_out.out_channels * 3, kernel_size=self.unet.conv_out.kernel_size, padding=self.unet.conv_out.padding)
+                conv_out_updated.requires_grad_(False)
+                self.unet.conv_out.requires_grad_(False)
+                conv_out_updated.weight[:4, ...].copy_(self.unet.conv_out.weight / 3)
+                conv_out_updated.weight[4:8, ...].copy_(self.unet.conv_out.weight / 3)
+                conv_out_updated.weight[8:12, ...].copy_(self.unet.conv_out.weight / 3)
+                conv_out_updated.bias[:4].copy_(self.unet.conv_out.bias / 3)
+                conv_out_updated.bias[4:8].copy_(self.unet.conv_out.bias / 3)
+                conv_out_updated.bias[8:12].copy_(self.unet.conv_out.bias / 3)
+                self.unet.conv_out = conv_out_updated
+                self.unet.conv_out.requires_grad_(True)
 
         if self.cfg.model.dual_attention:
             from accelerate.utils import set_module_tensor_to_device
@@ -219,7 +240,7 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
                 block.requires_grad_(True)
             block.train()
 
-    if md.freeze_unet:
+    if md.unet and md.freeze_unet:
         if set_grad:
             other.unet.to(device=_device, dtype=_dtype)
             other.unet.requires_grad_(False)

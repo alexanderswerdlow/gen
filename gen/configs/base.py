@@ -52,6 +52,7 @@ class BaseConfig:
 
     logging_dir: Path = Path("logs")  # Folder inside the experiment folder
     checkpoint_dir: Path = CHECKPOINT_DIR
+    checkpoint_dir_symlink: Optional[Path] = None
 
     sweep_id: Optional[str] = None  # ID of the entire sweep
     sweep_run_id: Optional[str] = None  # ID of the specific run in a sweep

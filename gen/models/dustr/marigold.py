@@ -93,8 +93,7 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
 
         depth_linear = rearrange(depth_linear, '(b h w) xyz -> b h w xyz', b=shape[0], h=shape[2], w=shape[3])
         outside_range = rearrange(outside_range, '(b h w) -> b h w', b=shape[0], h=shape[2], w=shape[3])
-
-        return depth_linear, outside_range
+        return depth_linear
 
     def denormalize(self, depth_norm, **kwargs):
         return self.scale_back(depth_norm=depth_norm)

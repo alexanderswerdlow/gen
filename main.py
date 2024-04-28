@@ -84,16 +84,15 @@ def main(cfg: BaseConfig):
     if needs_checkpointing and is_main_process():
         if cfg.checkpoint_dir.is_absolute():
             if cfg.trainer.resume:
-                cfg.checkpoint_dir = cfg.checkpoint_dir / (cfg.run_name + "".join(random.choices(string.ascii_letters, k=10)))
+                cfg.checkpoint_dir = cfg.checkpoint_dir / (cfg.run_name + "".join(random.choices(string.ascii_letters, k=4)))
             elif cfg.checkpoint_dir.exists():
-                cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name / "".join(random.choices(string.ascii_letters, k=10))
+                cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name / "".join(random.choices(string.ascii_letters, k=4))
             else:
                 cfg.checkpoint_dir = cfg.checkpoint_dir / cfg.run_name
 
             cfg.checkpoint_dir.mkdir(exist_ok=True, parents=True)
-            if not cfg.trainer.resume:
-                symlink_dir = cfg.output_dir / "checkpoints"
-                symlink_dir.symlink_to(cfg.checkpoint_dir)
+            cfg.checkpoint_dir_symlink = cfg.output_dir / ("checkpoints" + ("".join(random.choices(string.ascii_letters, k=4)) if cfg.trainer.resume else ""))
+            cfg.checkpoint_dir_symlink.symlink_to(cfg.checkpoint_dir)
         else:
             cfg.checkpoint_dir = Path(cfg.output_dir, cfg.checkpoint_dir)
     else:

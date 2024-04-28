@@ -106,6 +106,12 @@ def visualize_input_data(
 
         _func = lambda x: rearrange('h w -> () h w 3', x)
 
+        _src = batch.src_dec_depth[b].clone()
+        _src[~batch.src_xyz_valid[b]] = 0
+
+        _tgt = batch.tgt_dec_depth[b].clone()
+        _tgt[~batch.tgt_xyz_valid[b]] = 0
+        
         output_img = Im.concat_vertical(
             output_img,
             Im.concat_horizontal(
@@ -115,7 +121,15 @@ def visualize_input_data(
             Im.concat_horizontal(
                 Im(_func(get_depth(batch.src_dec_depth[b], is_xyz=False))).bool_to_rgb(),
                 Im(_func(get_depth(batch.tgt_dec_depth[b], is_xyz=False))).bool_to_rgb(),
-            )
+            ),
+            Im.concat_horizontal(
+                Im(_func(get_depth(_src, is_xyz=False))).bool_to_rgb(),
+                Im(_func(get_depth(_tgt, is_xyz=False))).bool_to_rgb(),
+            ),
+            Im.concat_horizontal(
+                Im(batch.src_xyz_valid[b]).bool_to_rgb(),
+                Im(batch.tgt_xyz_valid[b]).bool_to_rgb(),
+            ).write_text(f"{name}_idx_{batch.metadata['index'][b]}", size=0.5)
         )
 
         if cond is not None:
@@ -150,8 +164,8 @@ def visualize_input_data(
         else:
             output_img.save(save_name)
 
-        if return_img:
-            return Im(torch.stack([img_.torch for img_ in output_imgs]))
+    if return_img:
+        return Im(torch.stack([img_.torch for img_ in output_imgs]))
 
 
 def create_coordinate_array(H, W):

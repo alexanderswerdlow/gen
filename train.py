@@ -226,9 +226,9 @@ class Trainer:
         save_path = self.cfg.checkpoint_dir / f"{prefix}_{state.global_step}"
         save_path.mkdir(exist_ok=True, parents=True)
         unwrap(self.model).checkpoint(self.accelerator, state, save_path)
-
         param_keys = get_named_params(self.models).keys()
         write_to_file(path=Path(self.cfg.output_dir, self.cfg.logging_dir) / "params.log", text="global_step:\n" + str(param_keys))
+        log_info(f"Saved to: {self.cfg.checkpoint_dir_symlink}")
 
     @torch.no_grad()
     def validate(self, state: TrainingState):

@@ -32,6 +32,8 @@ class Co3d(AbstractDataset, Dataset):
         tokenizer = None,
         resolution: int = 512,
         fill_invalid_regions: bool = False,
+        mask_bg: Optional[Union[str, bool]] = 'rand',
+        inpaint: bool = True,
         **kwargs
     ):
         self.fill_invalid_regions = fill_invalid_regions
@@ -40,7 +42,15 @@ class Co3d(AbstractDataset, Dataset):
         from dust3r.datasets.co3d import Co3d as DustrCo3d
         ColorJitter = tvf.Compose([tvf.ColorJitter(0.5, 0.5, 0.5, 0.1), tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
         _split = 'train' if self.split == Split.TRAIN else 'test'
-        self.dataset = DustrCo3d(transform=ColorJitter, split=_split, ROOT=str(DUSTR_REPO_PATH / 'data/co3d_subset_processed'), aug_crop=16, mask_bg='rand', resolution=[(resolution, resolution)], fill_invalid_regions=fill_invalid_regions)
+        self.dataset = DustrCo3d(
+            transform=ColorJitter,
+            split=_split,
+            ROOT=str(DUSTR_REPO_PATH / 'data/co3d_subset_processed'),
+            aug_crop=16,
+            mask_bg=mask_bg,
+            resolution=[(resolution, resolution)],
+            fill_invalid_regions=fill_invalid_regions
+        )
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -49,8 +59,9 @@ class Co3d(AbstractDataset, Dataset):
         return self.get_paired_data(idx)
     
     def get_paired_data(self, idx: int):
-        metadata = self.get_metadata(idx)
         left, right = self.dataset[idx]
+        label = f"{left['label'].replace('/', '_')}_{right['label'].replace('/', '_')}"
+        metadata = self.get_metadata(idx, label)
         ret = {}
         ret.update({
             "src_enc_rgb": left["img"],
@@ -71,13 +82,11 @@ class Co3d(AbstractDataset, Dataset):
         })
         return ret
     
-    def get_metadata(self, idx):
-        # TODO: Add real values here
-
+    def get_metadata(self, idx, label):
         scene_name = str(idx)
         frame_name = str(idx)
         frame_idxs = (idx, idx)
-        name = f"{scene_name}_{frame_name}"
+        name = label
 
         return {
             "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
@@ -121,14 +130,19 @@ def main(
             augmentation=None,
             return_tensorclass=return_tensorclass,
             use_cuda=False,
-            fill_invalid_regions=True,
+            fill_invalid_regions=False,
+            mask_bg=False
         )
+
+        # batch = dataset.collate_fn([dataset[8744]])
+        # visualize_input_data(batch, return_img=True).save(f"co3d_8744.png")
+        # breakpoint()
 
         subset_range = None
         dataloader = dataset.get_dataloader(pin_memory=False, subset_range=subset_range)
         for i, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
             if breakpoint_on_start: breakpoint()
-            if viz: visualize_input_data(batch)
+            if viz: visualize_input_data(batch, return_img=True).save(f"co3d_{i}.png")
             if steps is not None and i >= steps - 1: break
 
 if __name__ == "__main__":

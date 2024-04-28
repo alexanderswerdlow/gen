@@ -34,7 +34,10 @@ def get_experiments():
         dataset=dict(
             train=dict(
                 batch_size=2,
-            )
+            ),
+            val=dict(
+                batch_size=2,
+            ),
         )
     )
 
@@ -82,18 +85,20 @@ def get_experiments():
                 batch_size=36,
                 resolution="${model.decoder_resolution}",
                 fill_invalid_regions=True,
+                mask_bg=True,
             ),
             val=dict(
                 batch_size=32,
                 subset_size="${eval:'${dataset.val.batch_size} * 8'}",
                 resolution="${model.decoder_resolution}",
                 fill_invalid_regions=True,
+                mask_bg=True,
             ),
         ),
         trainer=dict(
             gradient_accumulation_steps=4,
-            ckpt_steps=2000,
-            eval_steps=1000,
+            ckpt_steps=1000,
+            eval_steps=500,
             fsdp=True,
             param_dtype_exception_prefixes=["vae."],
         ),
@@ -122,5 +127,34 @@ def get_experiments():
         ),
         trainer=dict(
             gradient_accumulation_steps=8,
+        ),
+    )
+
+    mode_store(
+        name="full_scene",
+        model=dict(
+            separate_xyz_encoding=True,
+        ),
+        dataset=dict(
+            train=dict(
+                mask_bg=False,
+                inpaint=False,
+                fill_invalid_regions=True,
+            ),
+            val=dict(
+                mask_bg=False,
+                inpaint=False,
+                fill_invalid_regions=True,
+                subset_size="${eval:'${dataset.val.batch_size} * 4'}",
+            ),
+        ),
+    )
+
+    mode_store(
+        name="finetune_vae_decoder",
+        model=dict(
+            separate_xyz_encoding=True,
+            unet=False,
+            unfreeze_vae_decoder=True,
         ),
     )

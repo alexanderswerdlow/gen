@@ -68,6 +68,7 @@ class ModelConfig:
     fused_bias_fc: bool = True
 
     duplicate_unet_input_channels: bool = False
+    separate_xyz_encoding: bool = False
     dual_attention: bool = False
     enable_encoder: bool = False
     force_fp32_pcd_vae: bool = False
@@ -76,6 +77,9 @@ class ModelConfig:
     use_valid_xyz_loss_mask: bool = False
     fill_invalid_regions: bool = False
     unfreeze_vae_decoder: bool = False
+    vae_decoder_batch_size: int = 1
+    vae: bool = True
+    xyz_min_max_quantile: float = 0.1
 
 
 auto_store(
