@@ -114,7 +114,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
     pipeline_kwargs = dict()
     if self.cfg.model.only_noise_tgt:
-        pipeline_kwargs['concat_src_depth'] = xyz_latents[:xyz_latents.shape[0]//2]
+        pipeline_kwargs['concat_src_depth'] = xyz_latents[:xyz_latents.shape[0] // 2]
 
     pred_latents, cond = self.infer_batch(batch, concat_rgb=rgb_latents, num_images_per_prompt=1, output_type='latent', **pipeline_kwargs)
     

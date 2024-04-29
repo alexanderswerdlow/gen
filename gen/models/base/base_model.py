@@ -194,7 +194,7 @@ class BaseMapper(Trainable):
             cond.xyz_normalizer = normalizer
             cond.xyz_valid = xyz_valid
             cond.gt_xyz = input_xyz
-        
+
         model_pred, target = None, None
         if self.cfg.model.unet and self.cfg.model.disable_unet_during_training is False:
             rgb_latents = self.get_rgb_latents(batch)
@@ -205,7 +205,7 @@ class BaseMapper(Trainable):
                 set_to_zero[timesteps.shape[0] // 2:] = False
                 if self.cfg.model.dropout_src_depth is None:
                     set_to_zero[:] = False
-                timesteps[set_to_zero] = 0
+                timesteps[set_to_zero] = torch.randint(0, self.noise_scheduler.config.num_train_timesteps // 5, (set_to_zero.sum().item(),), device=self.device).long()
 
             noise = torch.randn_like(latents) # Sample noise that we'll add to the latents
 

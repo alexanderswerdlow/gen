@@ -977,10 +977,18 @@ class StableDiffusionPipeline(
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
                 if kwargs.get("concat_rgb", None) is not None:
+                    assert self.do_classifier_free_guidance is False
                     latent_model_input = torch.cat([kwargs["concat_rgb"], latent_model_input], dim=1) 
 
+                _timesteps = t
                 if kwargs.get("concat_src_depth", None) is not None:
-                    latent_model_input[latent_model_input.shape[0] // 2:, :latent_model_input.shape[1] // 2] = kwargs['concat_src_depth']
+                    assert self.do_classifier_free_guidance is False
+                    if _timesteps.ndim == 0:
+                        _timesteps = _timesteps.expand(latent_model_input.shape[0]).to(latent_model_input.device)
+                    _bs = latent_model_input.shape[0] // 2
+                    _timesteps[:_bs] = 0
+                    latent_model_input[:_bs, latent_model_input.shape[1] // 2:] = kwargs['concat_src_depth']
+                    latents[:_bs] = kwargs['concat_src_depth']
 
                 # predict the noise residual
                 noise_pred = self.unet(
