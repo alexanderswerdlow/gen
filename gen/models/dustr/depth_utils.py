@@ -115,6 +115,7 @@ def decode_xyz(cfg: BaseConfig, pred_latents, vae, normalizer):
         decoded_points = vae.decode(pred_latents.to(torch.float32), return_dict=False)[0]
         if cfg.model.separate_xyz_encoding:
             decoded_points = mean('(b xyz) [c] h w -> b xyz h w', decoded_points, xyz=3)
+            
         if cfg.model.predict_depth:
             decoded_points = mean('b [c] h w -> b 1 h w', decoded_points, dim=-1)
 

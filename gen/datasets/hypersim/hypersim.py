@@ -55,7 +55,7 @@ class Hypersim(AbstractDataset, Dataset):
             camera_trajectory_window: int = 32,
             bbox_overlap_threshold: float = 0.65,
             bbox_area_threshold: float = 0.75,
-            segmentation_overlap_threshold: float = 0.65,
+            segmentation_overlap_threshold: float = 0.7,
             num_overlapping_masks: int = 1,
             return_encoder_normalized_tgt: bool = False,
             repeat_n: int = 1,
