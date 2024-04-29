@@ -294,8 +294,6 @@ class Hypersim(AbstractDataset, Dataset):
         # frame2 = self.hypersim._load_3d_boxes(2)
         # sum_largest_face_areas(frame1, frame2)
 
-
-
 typer.main.get_command_name = lambda name: name
 app = typer.Typer(pretty_exceptions_show_locals=False)
 
@@ -303,6 +301,7 @@ app = typer.Typer(pretty_exceptions_show_locals=False)
 def main():
     from image_utils import library_ops
     from gen.datasets.utils import get_stable_diffusion_transforms
+    resolution = 256
     augmentation=Augmentation(
         return_grid=False,
         enable_square_crop=True,
@@ -314,8 +313,8 @@ def main():
         tgt_random_scale_ratio=None,
         enable_rand_augment=False,
         enable_rotate=False,
-        src_transforms=get_stable_diffusion_transforms(resolution=512),
-        tgt_transforms=get_stable_diffusion_transforms(resolution=512),
+        src_transforms=get_stable_diffusion_transforms(resolution=resolution),
+        tgt_transforms=get_stable_diffusion_transforms(resolution=resolution),
         reorder_segmentation=False
     )
     dataset = Hypersim(
@@ -323,14 +322,13 @@ def main():
         cfg=None,
         split=Split.TRAIN,
         num_workers=0,
-        batch_size=32,
         tokenizer=MockTokenizer(),
         augmentation=augmentation,
         return_tensorclass=True,
+        batch_size=28,
+        subset_size=28*28,
+        random_subset=False,
         return_different_views=True,
-        bbox_overlap_threshold=0.9,
-        bbox_area_threshold=0.5,
-        camera_trajectory_window=32,
     )
 
     import time
@@ -339,7 +337,7 @@ def main():
 
     start_time = time.time()
     for step, batch in enumerate(dataloader):
-        if step == 2: exit()
+        if step == 10: exit()
         print(f'Time taken: {time.time() - start_time}')
         names = [f'{batch.metadata["scene_id"][i]}_{batch.metadata["camera_trajectory"][i]}_{batch.metadata["camera_frame"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
         visualize_input_data(batch, names=names)
