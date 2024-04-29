@@ -205,7 +205,7 @@ def get_experiments():
             decoder_latent_dim=32,
             force_fp32_pcd_vae=True,
             snr_gamma=5.0,
-            only_noise_tgt=True,
+            only_noise_tgt=False,
             use_valid_xyz_loss_mask=False,
             dropout_src_depth=0.5
         ),
