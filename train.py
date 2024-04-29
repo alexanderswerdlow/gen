@@ -291,6 +291,7 @@ class Trainer:
 
         true_step = 0
         global_step = initial_global_step
+        current_run_global_step = 0
         first_epoch = 0
 
         if self.cfg.profile:
@@ -322,7 +323,7 @@ class Trainer:
                     start_timing("Forward Pass")
                     global_step_metrics["examples_seen_per_gpu"] += len(next(iter(batch.values())))
                     state: TrainingState = TrainingState(
-                        epoch_step=step, num_epoch_steps=len(self.train_dataloader), global_step=global_step, epoch=epoch, true_step=true_step
+                        epoch_step=step, num_epoch_steps=len(self.train_dataloader), global_step=global_step, epoch=epoch, true_step=true_step, current_run_global_step=current_run_global_step
                     )
 
                     start_forward_time = time()
@@ -390,6 +391,7 @@ class Trainer:
 
                     progress_bar.update(1)
                     global_step += 1
+                    current_run_global_step += 1
                     logs = {
                         "max_gpu_memory_reserved_gb": torch.cuda.max_memory_reserved() / (1024**3),
                         "gpu_memory_reserved_gb": torch.cuda.memory_reserved() / (1024**3),

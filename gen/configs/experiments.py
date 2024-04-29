@@ -87,6 +87,7 @@ def get_experiments():
                 resolution="${model.decoder_resolution}",
                 fill_invalid_regions=True,
                 mask_bg=True,
+                inpaint=False,
             ),
             val=dict(
                 batch_size=32,
@@ -94,6 +95,7 @@ def get_experiments():
                 resolution="${model.decoder_resolution}",
                 fill_invalid_regions=True,
                 mask_bg=True,
+                inpaint=False,
             ),
         ),
         trainer=dict(
