@@ -13,6 +13,7 @@ PROJECTS_PREFIX = str(os.getenv("PROJECTS_PREFIX", ""))
 CHECKPOINT_DIR = Path(os.getenv("CHECKPOINT_DIR", "checkpoints"))
 GLOBAL_CACHE_PATH = Path(os.getenv("GLOBAL_CACHE_PATH", "/home/aswerdlo/data/cache"))
 SCRATCH_CACHE_PATH = Path(os.getenv("SCRATCH_CACHE_PATH", "/scratch/aswerdlo/cache"))
+CONDA_ENV = Path(os.getenv("CONDA_ENV", "gen"))
 
 COCO_DATASET_PATH = Path(os.getenv("COCO_DATASET_PATH", f"{PROJECTS_PREFIX}/projects/katefgroup/datasets/coco"))
 SCRATCH_COCO_PATH = Path(os.getenv("SCRATCH_COCO_PATH", "/scratch/aswerdlo/coco"))

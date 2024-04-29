@@ -82,7 +82,6 @@ def main(
         else:
             prod_args = " " + " ".join([f"{keys[i]}={value}" for i, value in enumerate(combination)])
             run_id = sanitize_filename("_".join([f"{keys[i]}={value}" for i, value in enumerate(combination)])) + f'_{datetime.now().strftime("%H%M")}_{"".join(random.choices(string.ascii_letters, k=2))}'
-
         
         output_dir_ = multirun_dir / run_id if is_sweep else multirun_dir
         output_dir_.mkdir(parents=True, exist_ok=True)
@@ -111,7 +110,7 @@ def main(
             job.exclude = get_excluded_nodes("A100", "6000ADA")
         elif med_gpu:
             job.exclude = get_excluded_nodes("3090", "A5500")
-            job.mem_gb = f"{gpus * 24}GB"
+            job.mem_gb = f"24GB"
         else:
             job.exclude = get_excluded_nodes("A100", "6000ADA", "3090", "A5500")
         

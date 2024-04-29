@@ -201,7 +201,11 @@ class BaseMapper(Trainable):
 
             latents = xyz_latents if self.cfg.model.duplicate_unet_input_channels else rgb_latents
             if self.cfg.model.only_noise_tgt:
-                timesteps[:timesteps.shape[0] // 2] = 0
+                set_to_zero = torch.rand(timesteps.shape[0]) > self.cfg.model.dropout_src_depth
+                set_to_zero[timesteps.shape[0] // 2:] = False
+                if self.cfg.model.dropout_src_depth is None:
+                    set_to_zero[:] = False
+                timesteps[set_to_zero] = 0
 
             noise = torch.randn_like(latents) # Sample noise that we'll add to the latents
 

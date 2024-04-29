@@ -186,9 +186,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
                     Im(tgt_valid[b]).bool_to_rgb().write_text("Truncated Valid Mask", size=0.6),
                 ),
             )
-        )
-
-        
+        ) 
 
     ret['imgs'] = Im.concat_horizontal(*imgs)
     ret['misc_data'] = Im.concat_horizontal(*imgs)

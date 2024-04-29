@@ -5,6 +5,7 @@ import os
 import pickle
 import random
 import string
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -52,7 +53,6 @@ def main(cfg: BaseConfig):
     os.chdir(cfg.cwd)
 
     if cfg.attach:
-        import subprocess
         import debugpy
         subprocess.run("kill -9 $(lsof -i :5678 | grep $(whoami) | awk '{print $2}')", shell=True)
         debugpy.listen(("0.0.0.0", 5678))
@@ -192,6 +192,10 @@ def main(cfg: BaseConfig):
 
     if cfg.run_dataloader_only:
         cfg.trainer.mixed_precision = PrecisionType.NO
+
+    gpu_info = subprocess.check_output("nvidia-smi -L", shell=True).decode()
+    if cfg.trainer.mixed_precision == PrecisionType.BF16 and not any(x in gpu_info for x in ["A100", "A6000", "A5500"]):
+        cfg.trainer.mixed_precision = PrecisionType.FP16
     
     accelerator = Accelerator(
         mixed_precision=cfg.trainer.mixed_precision,

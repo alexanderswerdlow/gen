@@ -76,18 +76,18 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
 
 
         denom = torch.clamp(self._max - self._min, min=1e-8)
-
-        # scale and shift
         depth_norm_linear = (depth_linear - self._min) / denom * self.norm_range + self.norm_min
         outside_range = ((depth_norm_linear < self.norm_min) | (depth_norm_linear > self.norm_max)).any(dim=-1)
 
         if clip:
-            depth_norm_linear = torch.clip(
-                depth_norm_linear, self.norm_min, self.norm_max
-            )
+            depth_norm_linear = torch.clip(depth_norm_linear, self.norm_min, self.norm_max)
 
-        depth_norm_linear = rearrange(depth_norm_linear, 'b (num_views h w) xyz -> (num_views b) xyz h w', b=bs, h=shape[1], w=shape[2], num_views=self.num_views)
-        outside_range = rearrange(outside_range, 'b (num_views h w) -> (num_views b) h w', b=bs, h=shape[1], w=shape[2], num_views=self.num_views)
+        depth_norm_linear = rearrange(
+            depth_norm_linear, 'b (num_views h w) xyz -> (num_views b) xyz h w', b=bs, h=shape[1], w=shape[2], num_views=self.num_views
+        )
+        outside_range = rearrange(
+            outside_range, 'b (num_views h w) -> (num_views b) h w', b=bs, h=shape[1], w=shape[2], num_views=self.num_views
+        )
         return depth_norm_linear, outside_range
 
     def scale_back(self, depth_norm, warn: bool = False):

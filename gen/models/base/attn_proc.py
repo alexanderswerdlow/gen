@@ -8,6 +8,7 @@ from einx import rearrange, mean
 
 from gen.models.base.base_defs import AttentionMetadata
 
+xformers_available = True
 def register_custom_attention(unet):
     attn_procs = {}
     cross_att_count = 0
@@ -21,6 +22,16 @@ def register_custom_attention(unet):
         attn_procs[name] = XFormersAttnProcessor()
 
     unet.set_attn_processor(attn_procs)
+
+    global xformers_available
+    try:
+        _ = xformers.ops.memory_efficient_attention(
+            torch.randn((1, 2, 40), device="cuda"),
+            torch.randn((1, 2, 40), device="cuda"),
+            torch.randn((1, 2, 40), device="cuda"),
+        )
+    except Exception as e:
+        xformers_available = False
     return cross_att_count
 
 class XFormersAttnProcessor:
@@ -136,9 +147,13 @@ class XFormersAttnProcessor:
             key = attn.head_to_batch_dim(key).contiguous()
             value = attn.head_to_batch_dim(value).contiguous()
 
-            hidden_states = xformers.ops.memory_efficient_attention(
-                query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale
-            )
+            if xformers_available is False:
+                attention_probs = attn.get_attention_scores(query, key, attention_mask)
+                hidden_states = torch.bmm(attention_probs, value)
+            else:
+                hidden_states = xformers.ops.memory_efficient_attention(
+                    query, key, value, attn_bias=attention_mask, op=self.attention_op, scale=attn.scale
+                )
 
             hidden_states = hidden_states.to(query.dtype)
             hidden_states = attn.batch_to_head_dim(hidden_states)

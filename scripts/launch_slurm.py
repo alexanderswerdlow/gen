@@ -25,7 +25,7 @@ class SlurmConfig:
     time: str = "24:00:00"
     gpus: int = 1
     mem_gb: str = "48GB"
-    cpus_per_task: int = 8
+    cpus_per_task: int = 6
     n_processes: int = 1
     n_nodes: int = 1
     max_num_timeout: int = 5

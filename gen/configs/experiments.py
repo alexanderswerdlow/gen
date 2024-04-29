@@ -102,6 +102,7 @@ def get_experiments():
             eval_steps=500,
             fsdp=True,
             param_dtype_exception_prefixes=["vae."],
+            enable_dynamic_grad_accum=False,
         ),
         inference=dict(
             guidance_scale=1
@@ -153,6 +154,34 @@ def get_experiments():
     )
 
     mode_store(
+        name="smaller_gpu",
+        dataset=dict(
+            train=dict(
+                batch_size=12
+            ),
+            val=dict(
+                batch_size=12
+            ),
+        ),
+    )
+
+    mode_store(
+        name="inpaint",
+        dataset=dict(
+            train=dict(
+                mask_bg=False,
+                inpaint=True,
+                fill_invalid_regions=False,
+            ),
+            val=dict(
+                mask_bg=False,
+                inpaint=True,
+                fill_invalid_regions=False,
+            ),
+        ),
+    )
+
+    mode_store(
         name="finetune_vae_decoder",
         model=dict(
             separate_xyz_encoding=True,
@@ -177,7 +206,8 @@ def get_experiments():
             force_fp32_pcd_vae=True,
             snr_gamma=5.0,
             only_noise_tgt=True,
-            use_valid_xyz_loss_mask=False
+            use_valid_xyz_loss_mask=False,
+            dropout_src_depth=0.5
         ),
         dataset=dict(
             train=dict(
@@ -205,9 +235,10 @@ def get_experiments():
         trainer=dict(
             gradient_accumulation_steps=4,
             ckpt_steps=1000,
-            eval_steps=250,
+            eval_steps=500,
             fsdp=True,
             param_dtype_exception_prefixes=["vae."],
+            enable_dynamic_grad_accum=False,
         ),
         inference=dict(
             guidance_scale=1

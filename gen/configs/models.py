@@ -82,6 +82,7 @@ class ModelConfig:
     vae: bool = True
     xyz_min_max_quantile: float = 0.02
     only_noise_tgt: bool = False
+    dropout_src_depth: Optional[float] = None
     
 
 

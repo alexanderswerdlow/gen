@@ -4,8 +4,9 @@ import random
 from collections import defaultdict
 from itertools import chain
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
+from joblib import Memory
 import numpy as np
 import torch
 import torchvision
@@ -16,7 +17,7 @@ from nicr_scene_analysis_datasets.pytorch import Hypersim as BaseHypersim
 from scipy.spatial.transform import Rotation as R
 from torch.utils.data import Dataset
 
-from gen import HYPERSIM_DATASET_PATH
+from gen import GLOBAL_CACHE_PATH, HYPERSIM_DATASET_PATH
 from gen.configs.utils import inherit_parent_args
 from gen.datasets.abstract_dataset import AbstractDataset, Split
 from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
@@ -30,6 +31,15 @@ torchvision.disable_beta_transforms_warning()
 class ModifiedHypersim(BaseHypersim):
     pass
 
+memory = Memory(GLOBAL_CACHE_PATH, verbose=0)
+@memory.cache(ignore=['obj'])
+def get_instance_segmentation(obj: Any, split: str, idx: int):
+    frame_seg = obj.hypersim._load_instance(idx)
+    image_area = frame_seg.size
+    unique1, counts1 = np.unique(frame_seg, return_counts=True)
+    counts1 = counts1 / image_area
+    return unique1, counts1
+
 @inherit_parent_args
 class Hypersim(AbstractDataset, Dataset):
     def __init__(
@@ -42,9 +52,10 @@ class Hypersim(AbstractDataset, Dataset):
             tokenizer = None,
             return_different_views: bool = False,
             return_raw_dataset_image: bool = False,
-            camera_trajectory_window: int = 24,
+            camera_trajectory_window: int = 32,
             bbox_overlap_threshold: float = 0.65,
             bbox_area_threshold: float = 0.75,
+            segmentation_overlap_threshold: float = 0.65,
             num_overlapping_masks: int = 1,
             return_encoder_normalized_tgt: bool = False,
             repeat_n: int = 1,
@@ -67,6 +78,7 @@ class Hypersim(AbstractDataset, Dataset):
         self.root = root
         self.repeat_n = repeat_n
         self.scratch_only = scratch_only
+        self.segmentation_overlap_threshold = segmentation_overlap_threshold
         assert self.augmentation.reorder_segmentation is False
 
         self.hypersim = ModifiedHypersim(
@@ -92,7 +104,7 @@ class Hypersim(AbstractDataset, Dataset):
         return super().collate_fn(batch)
     
     def __getitem__(self, index):
-        for i in range(60):
+        for i in range(120):
             try:
                 return self.getitem(index)
             except Exception as e:
@@ -113,13 +125,17 @@ class Hypersim(AbstractDataset, Dataset):
                 log_warn(f"Camera trajectory {camera_trajectory_frames[0][1]} has less than {window_size} frames. Returning a random frame.")
                 return self.__getitem__(random.randint(0, len(self) - 1))
 
+            run_idx = 0
             while True:
+                if run_idx > 60:
+                    assert False, "Failed to find two frames with overlapping segmentations"
+                run_idx += 1
                 first_frame_idx = random.randint(0, len(camera_trajectory_frames) - 1)
                 lower_bound = max(0, first_frame_idx - window_size)
                 upper_bound = min(len(camera_trajectory_frames) - 1, first_frame_idx + window_size)
                 possible_indices = list(range(lower_bound, upper_bound + 1))
                 second_frame_idx = random.choice(possible_indices)
-                if self.sum_largest_face_areas(first_frame_idx, second_frame_idx):
+                if self.compute_segmentation_overlap(first_frame_idx, second_frame_idx):
                     break
             
             ret = self.get_two_frames(camera_trajectory_frames[first_frame_idx][0], camera_trajectory_frames[second_frame_idx][0])
@@ -207,6 +223,17 @@ class Hypersim(AbstractDataset, Dataset):
 
     def get_dataset(self):
         return self
+
+    def compute_segmentation_overlap(self, first_frame_idx, second_frame_idx):
+        unique1, counts1 = get_instance_segmentation(self, self.split.name.lower(), first_frame_idx)
+        unique2, counts2 = get_instance_segmentation(self, self.split.name.lower(), second_frame_idx)
+
+        common_instances = np.intersect1d(unique1, unique2)
+        common_area_ratio1 = counts1[np.isin(unique1, common_instances)]
+        common_area_ratio2 = counts2[np.isin(unique2, common_instances)]
+        
+        weighted_score = np.sum(common_area_ratio1 * common_area_ratio2)        
+        return weighted_score > self.segmentation_overlap_threshold
 
     def sum_largest_face_areas(self, first_frame_idx, second_frame_idx):
         frame1 = self.hypersim._load_3d_boxes(first_frame_idx)
@@ -303,6 +330,7 @@ def main():
         return_different_views=True,
         bbox_overlap_threshold=0.9,
         bbox_area_threshold=0.5,
+        camera_trajectory_window=32,
     )
 
     import time

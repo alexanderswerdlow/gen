@@ -49,7 +49,8 @@ class Co3d(AbstractDataset, Dataset):
             aug_crop=16,
             mask_bg=mask_bg,
             resolution=[(resolution, resolution)],
-            fill_invalid_regions=fill_invalid_regions
+            fill_invalid_regions=fill_invalid_regions,
+            inpaint=inpaint,
         )
 
     def __len__(self) -> int:
@@ -131,7 +132,8 @@ def main(
             return_tensorclass=return_tensorclass,
             use_cuda=False,
             fill_invalid_regions=False,
-            mask_bg=False
+            mask_bg=False,
+            inpaint=True,
         )
 
         # batch = dataset.collate_fn([dataset[8744]])
