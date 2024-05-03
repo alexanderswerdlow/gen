@@ -9,7 +9,7 @@ from gen.datasets.abstract_dataset import AbstractDataset
 from gen.datasets.augmentation.kornia_augmentation import Augmentation
 from gen.datasets.dustr.co3d import Co3d
 from gen.datasets.hypersim.hypersim import Hypersim
-from gen.datasets.misc.imagefolder import ImagefolderDataset
+from gen.datasets.imagefolder.imagefolder import ImagefolderDataset
 
 
 @dataclass

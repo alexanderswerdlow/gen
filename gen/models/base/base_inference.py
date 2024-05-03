@@ -185,7 +185,7 @@ def align_depth_least_square(
         return aligned_pred
 
 
-def get_metrics(cfg, prefix, pred, gt, valid_mask, norm_data):
+def get_metrics_single_view(cfg, prefix, pred, gt, valid_mask, norm_data):
     pred = pred.squeeze(-1)
     gt = gt.squeeze(-1)
     valid_mask = valid_mask.squeeze(-1)
@@ -216,6 +216,46 @@ def get_metrics(cfg, prefix, pred, gt, valid_mask, norm_data):
 
     return ret
 
+
+def get_metrics(cfg, prefix, pred, gt, valid_mask, norm_data):
+    pred = pred.squeeze(-1)
+    gt = gt.squeeze(-1)
+    valid_mask = valid_mask.squeeze(-1)
+
+    if cfg.model.predict_depth:
+        depth_pred = []
+        gt_new = torch.concat((gt[:gt.shape[0]//2], gt[gt.shape[0]//2:]), dim =1)
+        pred_new = torch.concat((pred[:pred.shape[0]//2], pred[pred.shape[0]//2:]), dim =1)
+        valid_mask_new = torch.concat((valid_mask[:valid_mask.shape[0]//2], valid_mask[valid_mask.shape[0]//2:]), dim =1)
+        for b in range(pred.shape[0]//2):
+            _depth_pred, scale, shift = align_depth_least_square(
+                gt_arr=gt_new[b],
+                pred_arr=pred_new[b],
+                valid_mask_arr=valid_mask_new[b],
+                return_scale_shift=True,
+            )
+            _depth_pred = torch.from_numpy(_depth_pred).to(pred.device)
+            pred_half1 = _depth_pred[:_depth_pred.shape[0]//2]
+            pred_half2 = _depth_pred[_depth_pred.shape[0]//2:]
+
+            # Concatenating them back along the first dimension.
+            _depth_pred = torch.stack((pred_half1, pred_half2), dim=0)
+            depth_pred.append(_depth_pred)
+
+        pred = torch.stack(depth_pred, dim=1).flatten(0,1)
+
+    ret = {
+        f'{prefix}_mse': get_valid_mse(pred, gt, valid_mask),
+    }
+
+    if cfg.model.predict_depth:
+        ret.update({
+            f'{prefix}_delta1_acc': delta1_acc(pred, gt, valid_mask),
+            f'{prefix}_abs_rel_diff': abs_relative_difference(pred, gt, valid_mask),
+        })
+
+    return ret
+
 @torch.no_grad()
 def run_qualitative_inference(self: BaseMapper, batch: InputData, state: TrainingState, accelerator: Optional[Any] = None) -> dict:
     ret = {}
@@ -233,6 +273,8 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         ret['wandb_metric_autoencode_l2_scale_shift_inv'] = get_dustr_loss(batch, autoencoded_xyz, xyz_valid)
 
     ret.update(get_metrics(self.cfg, 'wandb_metric_autoencode', autoencoded_xyz, input_xyz, xyz_valid, self.cfg.model.predict_depth))
+    ret.update(get_metrics_single_view(self.cfg, 'wandb_metric_single_view_autoencode', autoencoded_xyz, input_xyz, xyz_valid, self.cfg.model.predict_depth))
+    
     if self.cfg.model.predict_depth is False:
         for i in range(3):
             ret[f'wandb_metric_autoencode_valid_xyz_mse_channel_{i}'] = get_valid_mse(input_xyz[..., [i]], autoencoded_xyz[..., [i]], xyz_valid)
@@ -251,6 +293,8 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     pred_xyz = decode_xyz(self.cfg, pred_latents, self.vae, normalizer)
 
     ret.update(get_metrics(self.cfg, 'wandb_metric_pred', pred_xyz, input_xyz, xyz_valid, self.cfg.model.predict_depth))
+    ret.update(get_metrics_single_view(self.cfg, 'wandb_single_view_metric_pred', pred_xyz, input_xyz, xyz_valid, self.cfg.model.predict_depth))
+
     if self.cfg.model.predict_depth is False:
         ret['wandb_metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, xyz_valid)
         for i in range(3):
@@ -296,6 +340,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         marigold_depth_pred = torch.from_numpy(marigold_depth_pred).to(self.device)[..., None]
         src_marigold_depth_pred, tgt_marigold_depth_pred = torch.chunk(marigold_depth_pred, 2, dim=0)
         ret.update(get_metrics(self.cfg, 'wandb_metric_marigold', marigold_depth_pred, input_xyz, xyz_valid, self.cfg.model.predict_depth))
+        ret.update(get_metrics_single_view(self.cfg, 'wandb_metric_single_view_marigold', marigold_depth_pred, input_xyz, xyz_valid, self.cfg.model.predict_depth))
 
     src_rgb = undo_normalization_given_transforms(get_stable_diffusion_transforms(resolution=self.cfg.model.decoder_resolution), batch.src_dec_rgb)
     tgt_rgb = undo_normalization_given_transforms(get_stable_diffusion_transforms(resolution=self.cfg.model.decoder_resolution), batch.tgt_dec_rgb)

@@ -42,26 +42,26 @@ def get_experiments():
     )
 
     mode_store(
-        name="demo",
+        name="test_depth",
         debug=True,
-        model=dict(
-            freeze_unet=True,
-            unfreeze_single_unet_layer=True,
-        ),
         dataset=dict(
             train=dict(
-                batch_size=2,
+                batch_size=1,
                 num_workers=0,
-                repeat_dataset_n_times=1000,
-                root='/home/aswerdlo/repos/gen/archive/imagefolder_test',
+                root='data/depth',
+                load_depth=True,
             ),
             val=dict(
                 batch_size=1,
                 num_workers=0,
-                repeat_dataset_n_times=1000,
-                root='/home/aswerdlo/repos/gen/archive/imagefolder_test',
+                root='data/depth',
+                load_depth=True,
             ),
         ),
+        hydra_defaults=[
+            "_self_",
+            {"override /dataset": "imagefolder"},
+        ],
     )
 
     mode_store(

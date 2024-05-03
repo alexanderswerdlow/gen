@@ -5,3 +5,6 @@
 [submodule "image_utils"]
 	path = image_utils
 	url = https://github.com/alexanderswerdlow/image_utils
+[submodule "flowmap"]
+	path = flowmap
+	url = ./flowmap

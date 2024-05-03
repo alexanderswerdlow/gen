@@ -200,8 +200,8 @@ class Hypersim(AbstractDataset, Dataset):
             "tgt_dec_rgb": tgt_data.image,
             "src_dec_depth": src_data.segmentation,
             "tgt_dec_depth": tgt_data.segmentation,
-            "src_xyz_valid": torch.ones_like(src_data.segmentation, dtype=torch.bool),
-            "tgt_xyz_valid": torch.ones_like(tgt_data.segmentation, dtype=torch.bool),
+            "src_xyz_valid": src_data.segmentation > 0,
+            "tgt_xyz_valid": tgt_data.segmentation > 0,
             "src_extrinsics": get_rt(init_src_data),
             "tgt_extrinsics": get_rt(init_tgt_data),
             "src_intrinsics": get_intrinsics_matrix(init_src_data['depth_intrinsics']),
@@ -327,7 +327,7 @@ def main():
         return_tensorclass=True,
         batch_size=28,
         subset_size=28*28,
-        random_subset=False,
+        random_subset=True,
         return_different_views=True,
     )
 
