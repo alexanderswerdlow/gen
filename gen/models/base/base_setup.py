@@ -83,6 +83,9 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
             unet_kwargs["attention_config"] = AttentionConfig(joint_attention=True)
             unet_kwargs["strict_load"] = False
 
+        if self.cfg.model.add_cross_attn_pos_emb is not None:
+            unet_kwargs["add_cross_attn_pos_emb"] = self.cfg.model.add_cross_attn_pos_emb
+
         self.unet = UNet2DConditionModel.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
         )
@@ -264,7 +267,7 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
                     m.to(dtype=torch.float32)
                 m.train()
 
-        if md.duplicate_unet_input_channels:
+        if md.duplicate_unet_input_channels and md.freeze_self_attn is False:
             modules_to_unfreeze = [other.unet.conv_in, other.unet.conv_out, other.unet.conv_norm_out]
             for m in modules_to_unfreeze:
                 if set_grad:
@@ -277,8 +280,14 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
                 if set_grad:
                     m.requires_grad_(True)
                     m.to(dtype=torch.float32)
-                m.train()
 
+                    if md.freeze_self_attn:
+                        m.attn1.requires_grad_(False)
+                        m.attn1.to(dtype=_dtype)
+
+                m.train()
+                if md.freeze_self_attn:
+                    m.attn1.eval()
     else:
         if set_grad:
             other.unet.requires_grad_(True)

@@ -51,6 +51,7 @@ class Hypersim(AbstractDataset, Dataset):
             add_background: bool = False,
             tokenizer = None,
             return_different_views: bool = False,
+            return_n_views: int = 2,
             return_raw_dataset_image: bool = False,
             camera_trajectory_window: int = 28,
             bbox_overlap_threshold: float = 0.65,
@@ -60,6 +61,9 @@ class Hypersim(AbstractDataset, Dataset):
             return_encoder_normalized_tgt: bool = False,
             repeat_n: int = 1,
             scratch_only: bool = True,
+            return_tgt_only: bool = True,
+            legacy_format: bool = False,
+            uniform_sampler: bool = False,
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
             **kwargs
         ):
@@ -79,6 +83,12 @@ class Hypersim(AbstractDataset, Dataset):
         self.repeat_n = repeat_n
         self.scratch_only = scratch_only
         self.segmentation_overlap_threshold = segmentation_overlap_threshold
+        self.return_tgt_only = return_tgt_only
+        self.return_n_views = return_n_views
+        self.legacy_format = legacy_format
+        self.uniform_sampler = uniform_sampler
+        if self.return_n_views > 2:
+            assert self.uniform_sampler is True
         assert self.augmentation.reorder_segmentation is False
 
         self.hypersim = ModifiedHypersim(
@@ -105,14 +115,29 @@ class Hypersim(AbstractDataset, Dataset):
     
     def __getitem__(self, index):
         for i in range(120):
-            try:
-                return self.getitem(index)
-            except Exception as e:
-                index = random.randint(0, len(self) - 1)
-                if i == 59:
-                    log_error(e)
-
+            # try:
+            return self.getitem(index)
+            # except Exception as e:
+            #     index = random.randint(0, len(self) - 1)
+            #     if i == 59:
+            #         log_error(e)
         raise Exception(f'Hypersim Failed to get item for index {index}')
+    
+    def nonuniform_sampler(self, camera_trajectory_frames, window_size):
+        run_idx = 0
+        while True:
+            if run_idx > 60:
+                assert False, "Failed to find two frames with overlapping segmentations"
+            run_idx += 1
+            first_frame_idx = random.randint(0, len(camera_trajectory_frames) - 1)
+            lower_bound = max(0, first_frame_idx - window_size)
+            upper_bound = min(len(camera_trajectory_frames) - 1, first_frame_idx + window_size)
+            possible_indices = list(range(lower_bound, upper_bound + 1))
+            second_frame_idx = random.choice(possible_indices)
+            if self.compute_segmentation_overlap(first_frame_idx, second_frame_idx):
+                break
+
+        return first_frame_idx, second_frame_idx
     
     def getitem(self, index):
         index = index % len(self.hypersim)
@@ -121,64 +146,47 @@ class Hypersim(AbstractDataset, Dataset):
             camera_trajectory_frames = self.scene_cam_map[self.hypersim._load_identifier(index)[:2]]
             window_size = min(max(1, self.camera_trajectory_window), len(camera_trajectory_frames))
 
-            if window_size <= 2:
+            if window_size < self.return_n_views:
                 log_warn(f"Camera trajectory {camera_trajectory_frames[0][1]} has less than {window_size} frames. Returning a random frame.")
                 return self.__getitem__(random.randint(0, len(self) - 1))
 
-            run_idx = 0
-            while True:
-                if run_idx > 60:
-                    assert False, "Failed to find two frames with overlapping segmentations"
-                run_idx += 1
-                first_frame_idx = random.randint(0, len(camera_trajectory_frames) - 1)
-                lower_bound = max(0, first_frame_idx - window_size)
-                upper_bound = min(len(camera_trajectory_frames) - 1, first_frame_idx + window_size)
-                possible_indices = list(range(lower_bound, upper_bound + 1))
-                second_frame_idx = random.choice(possible_indices)
-                if self.compute_segmentation_overlap(first_frame_idx, second_frame_idx):
-                    break
+            if self.uniform_sampler:
+                frame_idxs = random.sample(range(len(camera_trajectory_frames)), self.return_n_views)
+            else:
+                frame_idxs = self.nonuniform_sampler(camera_trajectory_frames, window_size)
             
-            ret = self.get_two_frames(camera_trajectory_frames[first_frame_idx][0], camera_trajectory_frames[second_frame_idx][0])
+            ret = self.get_two_frames((camera_trajectory_frames[_idx][0] for _idx in frame_idxs))
             return ret
         else:
-            return self.get_two_frames(index, index)
+            return self.get_two_frames((index, index))
 
-    def get_two_frames(self, src_index, tgt_index):
-        init_src_data = self.hypersim.__getitem__(src_index)
-
-        if src_index == tgt_index:
-            init_tgt_data = init_src_data
-        else:
-            init_tgt_data = self.hypersim.__getitem__(tgt_index)
-
+    def get_two_frames(self, indices):
+        frame_data = [self.hypersim.__getitem__(tgt_index) for tgt_index in indices]
         ret = {}
-
         def _process(_data):
             rgb, seg, metadata = torch.from_numpy(_data['rgb']).to(self.device), torch.from_numpy(_data['depth'].astype(np.int32)).to(self.device), _data["identifier"]
-            if seg.max().item() < 0: raise Exception(f"Segmentation mask has only one unique value for index {src_index}")
+            if seg.max().item() < 0: raise Exception(f"Segmentation mask has only one unique value for index")
             rgb = rearrange(rgb / 255, "h w c -> () c h w")
-            seg = rearrange(seg.to(torch.float32), "h w -> () () h w")
+            seg = rearrange(seg, "h w -> () () h w")
             return rgb, seg, metadata
         
-        src_rgb, src_seg, src_metadata = _process(init_src_data)
-        tgt_rgb, tgt_seg, tgt_metadata = _process(init_tgt_data)
+        rgb, seg, metadata = zip(*[_process(frame_data_) for frame_data_ in frame_data])
+        rgb = torch.cat(rgb, dim=0)
+        seg = torch.cat(seg, dim=0).to(torch.float32)
 
-        src_data, tgt_data = self.augmentation(
-            src_data=Data(image=src_rgb, segmentation=src_seg),
-            tgt_data=Data(image=tgt_rgb, segmentation=tgt_seg),
+        src_data, _ = self.augmentation(
+            src_data=Data(image=rgb, segmentation=seg),
+            tgt_data=None,
             use_keypoints=False, 
-            return_encoder_normalized_tgt=self.return_encoder_normalized_tgt
+            return_encoder_normalized_tgt=False
         )
 
         def process_data(data_: Data):
-            data_.image = data_.image.squeeze(0)
-            data_.segmentation = data_.segmentation.squeeze(0).squeeze(0).to(torch.int32)
+            data_.segmentation = data_.segmentation.squeeze(1).to(torch.int32)
             return data_
         
         src_data = process_data(src_data)
-        tgt_data = process_data(tgt_data)
-        
-        name = "_".join(src_metadata) + "_" + "_".join(tgt_metadata)
+        name = "__".join(("_".join(_meta) for _meta in metadata))
 
         def get_rt(_data):
             extrinsics = _data['extrinsics']
@@ -194,26 +202,35 @@ class Hypersim(AbstractDataset, Dataset):
                 [0, intrinsics_dict['fy'], intrinsics_dict['cy']],
                 [0, 0, 1]
             ])
+        
+        if self.legacy_format:
+            ret.update({
+                "src_dec_rgb": src_data.image[0],
+                "tgt_dec_rgb": src_data.image[1],
+                "src_dec_depth": src_data.segmentation[0],
+                "tgt_dec_depth": src_data.segmentation[1],
+                "src_xyz_valid": src_data.segmentation[0] > 0,
+                "tgt_xyz_valid": src_data.segmentation[1] > 0,
+                "src_extrinsics": get_rt(frame_data[0]),
+                "tgt_extrinsics": get_rt(frame_data[1]),
+                "src_intrinsics": get_intrinsics_matrix(frame_data[0]['depth_intrinsics']),
+                "tgt_intrinsics": get_intrinsics_matrix(frame_data[1]['depth_intrinsics']),
+            })
 
         ret.update({
-            "src_dec_rgb": src_data.image,
-            "tgt_dec_rgb": tgt_data.image,
-            "src_dec_depth": src_data.segmentation,
-            "tgt_dec_depth": tgt_data.segmentation,
-            "src_xyz_valid": src_data.segmentation > 0,
-            "tgt_xyz_valid": tgt_data.segmentation > 0,
-            "src_extrinsics": get_rt(init_src_data),
-            "tgt_extrinsics": get_rt(init_tgt_data),
-            "src_intrinsics": get_intrinsics_matrix(init_src_data['depth_intrinsics']),
-            "tgt_intrinsics": get_intrinsics_matrix(init_tgt_data['depth_intrinsics']),
+            "dec_rgb": src_data.image,
+            "dec_depth": src_data.segmentation,
+            "xyz_valid": src_data.segmentation > 0,
+            "extrinsics": torch.stack([get_rt(_frame_data) for _frame_data in frame_data]),
+            "intrinsics": torch.stack([get_intrinsics_matrix(_frame_data['depth_intrinsics']) for _frame_data in frame_data]),
             "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
             "metadata": {
                 "dataset": "hypersim",
                 "name": name,
-                "scene_id": src_metadata[0],
-                "camera_frame": src_metadata[2],
-                "index": src_index,
-                "camera_trajectory": src_metadata[1],
+                "scene_id": metadata[0][0],
+                "camera_frame": metadata[0][2],
+                "index": 0,
+                "camera_trajectory": metadata[0][1],
                 "split": self.split.name.lower(),
                 "frame_idxs": (0, 0) # Dummy value
             },
@@ -304,18 +321,19 @@ def main():
     resolution = 256
     augmentation=Augmentation(
         return_grid=False,
-        enable_square_crop=True,
-        center_crop=True,
         different_src_tgt_augmentation=False,
-        enable_random_resize_crop=False, 
-        enable_horizontal_flip=False,
         src_random_scale_ratio=None,
-        tgt_random_scale_ratio=None,
         enable_rand_augment=False,
         enable_rotate=False,
         src_transforms=get_stable_diffusion_transforms(resolution=resolution),
         tgt_transforms=get_stable_diffusion_transforms(resolution=resolution),
-        reorder_segmentation=False
+        reorder_segmentation=False,
+        enable_horizontal_flip=True,
+        enable_square_crop=True,
+        enable_zoom_crop=False,
+        enable_random_resize_crop=None,
+        tgt_random_scale_ratio=None,
+        initial_resolution=768,
     )
     dataset = Hypersim(
         shuffle=True,
@@ -329,6 +347,10 @@ def main():
         subset_size=28*28,
         random_subset=True,
         return_different_views=True,
+        return_n_views=2,
+        window_size=10,
+        legacy_format=True,
+        uniform_sampler=True,
     )
 
     import time
@@ -339,6 +361,7 @@ def main():
     for step, batch in enumerate(dataloader):
         if step == 10: exit()
         print(f'Time taken: {time.time() - start_time}')
+        start_time = time.time()
         names = [f'{batch.metadata["scene_id"][i]}_{batch.metadata["camera_trajectory"][i]}_{batch.metadata["camera_frame"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
         visualize_input_data(batch, names=names)
       

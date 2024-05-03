@@ -1,5 +1,5 @@
 import torch
-from einops import rearrange
+from einx import rearrange
 class DepthNormalizerBase:
     is_relative = None
     far_plane_at_max = None
@@ -48,9 +48,9 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
 
         shape = depth_linear.shape
 
-        depth_linear = rearrange(depth_linear, '(num_views b) h w xyz -> b (num_views h w) xyz', num_views=self.num_views)
+        depth_linear = rearrange('(num_views b) h w xyz -> b (num_views h w) xyz', depth_linear, num_views=self.num_views)
         if valid_mask is not None:
-            valid_mask = rearrange(valid_mask, '(num_views b) h w -> b (num_views h w)', num_views=self.num_views)
+            valid_mask = rearrange('(num_views b) h w -> b (num_views h w)', valid_mask, num_views=self.num_views)
         else:
             valid_mask = torch.full_like(depth_linear[..., 0], True, dtype=torch.bool)
 
@@ -83,16 +83,16 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
             depth_norm_linear = torch.clip(depth_norm_linear, self.norm_min, self.norm_max)
 
         depth_norm_linear = rearrange(
-            depth_norm_linear, 'b (num_views h w) xyz -> (num_views b) xyz h w', b=bs, h=shape[1], w=shape[2], num_views=self.num_views
+            'b (num_views h w) xyz -> (num_views b) xyz h w', depth_norm_linear, b=bs, h=shape[1], w=shape[2], num_views=self.num_views
         )
         outside_range = rearrange(
-            outside_range, 'b (num_views h w) -> (num_views b) h w', b=bs, h=shape[1], w=shape[2], num_views=self.num_views
+            'b (num_views h w) -> (num_views b) h w', outside_range, b=bs, h=shape[1], w=shape[2], num_views=self.num_views
         )
         return depth_norm_linear, outside_range
 
     def scale_back(self, depth_norm, warn: bool = False):
         shape = depth_norm.shape
-        depth_norm = rearrange(depth_norm, '(num_views b) xyz h w -> b (num_views h w) xyz', num_views=self.num_views)
+        depth_norm = rearrange('(num_views b) xyz h w -> b (num_views h w) xyz', depth_norm, num_views=self.num_views)
         depth_linear = (depth_norm / 2 + 0.5)
         bs = depth_linear.shape[0]
 
@@ -104,8 +104,8 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
             self._max - self._min
         ) + self._min
 
-        depth_linear = rearrange(depth_linear, 'b (num_views h w) xyz -> (num_views b) h w xyz', b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
-        outside_range = rearrange(outside_range, 'b (num_views h w) -> (num_views b) h w', b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
+        depth_linear = rearrange('b (num_views h w) xyz -> (num_views b) h w xyz', depth_linear, b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
+        outside_range = rearrange('b (num_views h w) -> (num_views b) h w', outside_range, b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
         return depth_linear
 
     def denormalize(self, depth_norm, **kwargs):

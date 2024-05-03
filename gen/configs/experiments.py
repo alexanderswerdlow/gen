@@ -1,3 +1,4 @@
+from pyexpat import model
 from gen.configs.datasets import get_datasets
 from gen.configs.utils import mode_store
 
@@ -250,4 +251,61 @@ def get_experiments():
             "_self_",
             {"override /dataset": "hypersim"},
         ],
+    )
+
+    mode_store(
+        name="fast_hypersim",
+        debug=True,
+        dataset=dict(
+            train=dict(
+                uniform_sampler=True,
+                camera_trajectory_window=6,
+                augmentation=dict(
+                    enable_horizontal_flip=True,
+                    enable_square_crop=True,
+                    enable_zoom_crop=False,
+                    enable_random_resize_crop=False,
+                    tgt_random_scale_ratio=None,
+                    initial_resolution=768,
+                )
+            ),
+            val=dict(
+                uniform_sampler=True,
+                camera_trajectory_window=6,
+            ),
+        ),
+     )
+
+    mode_store(
+        name="exp_v1_1",
+        debug=True,
+        model=dict(
+            freeze_self_attn=True,
+            n_view_pred=True,
+        ),
+        hydra_defaults=["exp_v1", "fast_hypersim"],
+    )
+
+    mode_store(
+        name="exp_v1_1_multiview",
+        debug=True,
+        model=dict(
+            n_view_pred=True,
+            add_cross_attn_pos_emb=4,
+        ),
+        dataset=dict(
+            train=dict(
+                uniform_sampler=True,
+                return_n_views=4,
+                camera_trajectory_window=12,
+                batch_size=22
+            ),
+            val=dict(
+                uniform_sampler=True,
+                return_n_views=4,
+                camera_trajectory_window=12,
+                batch_size=16
+            ),
+        ),
+        hydra_defaults=["exp_v1_1"],
     )

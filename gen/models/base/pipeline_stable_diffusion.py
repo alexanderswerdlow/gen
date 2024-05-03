@@ -985,6 +985,7 @@ class StableDiffusionPipeline(
                     assert self.do_classifier_free_guidance is False
                     if _timesteps.ndim == 0:
                         _timesteps = _timesteps.expand(latent_model_input.shape[0]).to(latent_model_input.device)
+                        
                     _bs = latent_model_input.shape[0] // 2
                     _timesteps[:_bs] = 0
                     latent_model_input[:_bs, latent_model_input.shape[1] // 2:] = kwargs['concat_src_depth']

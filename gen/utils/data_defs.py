@@ -23,28 +23,33 @@ if TYPE_CHECKING:
 
 @tensorclass
 class InputData:
-    src_dec_rgb: Float[Tensor, "b c h w"]
-    tgt_dec_rgb: Float[Tensor, "b c h w"]
-
     id: Integer[Tensor, "b"]
+    src_dec_rgb: Float[Tensor, "b c h w"] = None
+    tgt_dec_rgb: Float[Tensor, "b c h w"] = None
+    dec_rgb: Float[Tensor, "b n c h w"] = None
 
     src_enc_rgb: Optional[Float[Tensor, "b c h w"]] = None
     tgt_enc_rgb: Optional[Float[Tensor, "b c h w"]] = None
 
     src_dec_depth: Optional[Float[Tensor, "b h w"]] = None
     tgt_dec_depth: Optional[Float[Tensor, "b h w"]] = None
+    dec_depth: Optional[Float[Tensor, "b n h w"]] = None
 
     src_xyz: Optional[Float[Tensor, "b h w 3"]] = None
     tgt_xyz: Optional[Float[Tensor, "b h w 3"]] = None
+    xyz: Optional[Float[Tensor, "b n h w 3"]] = None
 
     src_xyz_valid: Optional[Bool[Tensor, "b h w"]] = None
     tgt_xyz_valid: Optional[Bool[Tensor, "b h w"]] = None
+    xyz_valid: Optional[Bool[Tensor, "b n h w"]] = None
 
     src_intrinsics: Optional[Float[Tensor, "b 3 3"]] = None
     tgt_intrinsics: Optional[Float[Tensor, "b 3 3"]] = None
+    intrinsics: Optional[Float[Tensor, "b n 3 3"]] = None
 
     src_extrinsics: Optional[Float[Tensor, "b 4 4"]] = None
     tgt_extrinsics: Optional[Float[Tensor, "b 4 4"]] = None
+    extrinsics: Optional[Float[Tensor, "b n 4 4"]] = None
     
     metadata: Optional[dict] = None
     state: Optional[TrainingState] = None
@@ -56,7 +61,7 @@ class InputData:
     def from_dict(batch: dict):
         batch = InputData(
             num_frames=1,
-            batch_size=[batch["src_dec_rgb"].shape[0]],
+            batch_size=[batch["dec_rgb"].shape[0] if "dec_rgb" in batch else batch["src_dec_rgb"].shape[0]],
             **batch,
         )
         return batch
@@ -64,7 +69,10 @@ class InputData:
     @property
     def bs(self):
         return self.batch_size[0]
-
+    
+    @property
+    def n(self):
+        return 2 if self.dec_rgb is None else self.dec_rgb.shape[1]
 
 def visualize_input_data(
         batch: InputData, 
@@ -78,11 +86,9 @@ def visualize_input_data(
     from image_utils import Im
 
     if cfg is not None:
-        tgt_rgb = undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, batch.tgt_dec_rgb)
-        src_rgb = undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, batch.src_dec_rgb)
+        rgb = rearrange('(b n) ... -> b n ...', undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, rearrange('b n ... -> (b n) ...', batch.dec_rgb)), n=batch.n)
     else:
-        tgt_rgb = (batch.tgt_dec_rgb + 1) / 2
-        src_rgb = (batch.src_dec_rgb + 1) / 2
+        rgb = (batch.dec_rgb + 1) / 2
 
     output_imgs = []
 
@@ -93,8 +99,8 @@ def visualize_input_data(
             name = batch.metadata['name'][b]
         save_name = f'input_data_{name}_{b}.png'
 
-        src_ = src_rgb[b]
-        tgt_ = tgt_rgb[b]
+        src_ = rgb[b][0]
+        tgt_ = rgb[b][1]
         output_img = Im.concat_horizontal(src_, tgt_)
 
         def get_depth(_gt_depth, _intrinsics = None, _extrinsics = None, is_xyz: bool = True):

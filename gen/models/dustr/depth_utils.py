@@ -107,7 +107,6 @@ def encode_xyz(cfg: BaseConfig, gt_points, init_valid_mask, vae, dtype, num_view
 @torch.no_grad()
 def decode_xyz(cfg: BaseConfig, pred_latents, vae, normalizer):
     pred_latents = (1 / vae.config.scaling_factor) * pred_latents
-
     if cfg.model.separate_xyz_encoding:
         pred_latents = rearrange('b (xyz c) h w -> (b xyz) c h w', pred_latents, xyz=3)
 
@@ -123,17 +122,16 @@ def decode_xyz(cfg: BaseConfig, pred_latents, vae, normalizer):
 
     return decoded_points
 
-def get_input(cfg: BaseConfig, batch: InputData):
+def get_xyz_input(cfg: BaseConfig, batch: InputData):
     if cfg.model.predict_depth:
-        input_src, input_tgt = batch.src_dec_depth.to(torch.float32), batch.tgt_dec_depth.to(torch.float32)
-        input_src, input_tgt = rearrange('b h w, b h w -> b h w 3, b h w 3', input_src, input_tgt)
+        input_xyz = rearrange('b n h w -> (n b) h w 3', batch.dec_depth.to(torch.float32))
+        input_valid = rearrange('b n h w -> (n b) h w', batch.xyz_valid)
     else:
         input_src, input_tgt = transform_coordinate_space(batch, batch.src_xyz, batch.tgt_xyz)
+        input_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', input_src, input_tgt)
+        input_valid = rearrange('b h w, b h w -> (b + b) h w', batch.src_xyz_valid, batch.tgt_xyz_valid)
 
-    input_xyz = rearrange('b h w xyz, b h w xyz -> (b + b) h w xyz', input_src, input_tgt)
-    input_valid = rearrange('b h w, b h w -> (b + b) h w', batch.src_xyz_valid, batch.tgt_xyz_valid)
     return input_xyz, input_valid
-
 
 if __name__ == "__main__":
     pass

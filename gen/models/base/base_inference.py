@@ -11,7 +11,7 @@ from einx import mean, rearrange, softmax
 from gen.datasets.abstract_dataset import Split
 from gen.datasets.utils import get_stable_diffusion_transforms
 from gen.models.base.losses import get_dustr_loss, transform_coordinate_space
-from gen.models.dustr.depth_utils import encode_xyz, decode_xyz, get_input, xyz_to_depth
+from gen.models.dustr.depth_utils import encode_xyz, decode_xyz, get_xyz_input, xyz_to_depth
 from gen.models.dustr.marigold import NearFarMetricNormalizer
 from gen.utils.data_defs import undo_normalization_given_transforms
 from gen.utils.trainer_utils import TrainingState
@@ -32,7 +32,7 @@ def infer_batch(
 ) -> tuple[list[Any], dict, ConditioningData]:
     if cond is None or len(cond.unet_kwargs) == 0 and allow_get_cond:
         cond = self.get_hidden_state(batch, cond)
-        _repeat_dim = 2 if self.cfg.model.duplicate_unet_input_channels else 1
+        _repeat_dim = batch.n if self.cfg.model.duplicate_unet_input_channels else 1
         cond.encoder_hidden_states = cond.encoder_hidden_states.repeat(_repeat_dim, 1, 1)
         cond.unet_kwargs["prompt_embeds"] = cond.encoder_hidden_states
 
@@ -129,7 +129,6 @@ def abs_relative_difference(output, target, valid_mask=None):
     abs_relative_diff = torch.sum(abs_relative_diff, (-1, -2)) / n
     return abs_relative_diff.mean()
 
-
 def align_depth_least_square(
     gt_arr: np.ndarray,
     pred_arr: np.ndarray,
@@ -184,15 +183,24 @@ def align_depth_least_square(
     else:
         return aligned_pred
 
+def get_metrics(batch, cfg, prefix, pred, gt, valid_mask):
+    ret = get_metrics_(batch, cfg, prefix, pred, gt, valid_mask)
+    ret.update(get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=True))
+    return ret
 
-def get_metrics_single_view(cfg, prefix, pred, gt, valid_mask, norm_data):
+def get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=False):
     pred = pred.squeeze(-1)
     gt = gt.squeeze(-1)
     valid_mask = valid_mask.squeeze(-1)
 
     if cfg.model.predict_depth:
         depth_pred = []
-        for b in range(pred.shape[0]):
+        if single_view is False:
+            gt = rearrange('(n b) h w -> b (n h) w', gt, b=batch.n)
+            pred = rearrange('(n b) h w -> b (n h) w', pred, b=batch.n)
+            valid_mask = rearrange('(n b) h w -> b (n h) w', valid_mask, b=batch.n)
+        
+        for b in range(gt.shape[0]):
             _depth_pred, scale, shift = align_depth_least_square(
                 gt_arr=gt[b],
                 pred_arr=pred[b],
@@ -204,45 +212,8 @@ def get_metrics_single_view(cfg, prefix, pred, gt, valid_mask, norm_data):
 
         pred = torch.stack(depth_pred)
 
-    ret = {
-        f'{prefix}_mse': get_valid_mse(pred, gt, valid_mask),
-    }
-
-    if cfg.model.predict_depth:
-        ret.update({
-            f'{prefix}_delta1_acc': delta1_acc(pred, gt, valid_mask),
-            f'{prefix}_abs_rel_diff': abs_relative_difference(pred, gt, valid_mask),
-        })
-
-    return ret
-
-
-def get_metrics(cfg, prefix, pred, gt, valid_mask, norm_data):
-    pred = pred.squeeze(-1)
-    gt = gt.squeeze(-1)
-    valid_mask = valid_mask.squeeze(-1)
-
-    if cfg.model.predict_depth:
-        depth_pred = []
-        gt_new = torch.concat((gt[:gt.shape[0]//2], gt[gt.shape[0]//2:]), dim =1)
-        pred_new = torch.concat((pred[:pred.shape[0]//2], pred[pred.shape[0]//2:]), dim =1)
-        valid_mask_new = torch.concat((valid_mask[:valid_mask.shape[0]//2], valid_mask[valid_mask.shape[0]//2:]), dim =1)
-        for b in range(pred.shape[0]//2):
-            _depth_pred, scale, shift = align_depth_least_square(
-                gt_arr=gt_new[b],
-                pred_arr=pred_new[b],
-                valid_mask_arr=valid_mask_new[b],
-                return_scale_shift=True,
-            )
-            _depth_pred = torch.from_numpy(_depth_pred).to(pred.device)
-            pred_half1 = _depth_pred[:_depth_pred.shape[0]//2]
-            pred_half2 = _depth_pred[_depth_pred.shape[0]//2:]
-
-            # Concatenating them back along the first dimension.
-            _depth_pred = torch.stack((pred_half1, pred_half2), dim=0)
-            depth_pred.append(_depth_pred)
-
-        pred = torch.stack(depth_pred, dim=1).flatten(0,1)
+    if single_view:
+        prefix = f"single_view/{prefix}"
 
     ret = {
         f'{prefix}_mse': get_valid_mse(pred, gt, valid_mask),
@@ -255,26 +226,23 @@ def get_metrics(cfg, prefix, pred, gt, valid_mask, norm_data):
         })
 
     return ret
+
 
 @torch.no_grad()
 def run_qualitative_inference(self: BaseMapper, batch: InputData, state: TrainingState, accelerator: Optional[Any] = None) -> dict:
     ret = {}
 
-    input_xyz, input_valid = get_input(self.cfg, batch)
-    input_src_valid, input_tgt_valid = torch.chunk(input_valid, 2, dim=0)
+    input_xyz, input_valid = get_xyz_input(self.cfg, batch)
+    xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, self.dtype, batch.n, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
 
-    xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, self.dtype, 2, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
-    src_valid, tgt_valid = torch.chunk(xyz_valid, 2, dim=0)
     autoencoded_xyz = autoencode_gt_xyz(self.cfg, batch, self.vae, xyz_latents, normalizer)
-    autoencoded_src_xyz, autoencoded_tgt_xyz = torch.chunk(autoencoded_xyz, 2, dim=0)
     if self.cfg.model.predict_depth:
         input_xyz = input_xyz[..., [0]]
     else:
         ret['wandb_metric_autoencode_l2_scale_shift_inv'] = get_dustr_loss(batch, autoencoded_xyz, xyz_valid)
 
-    ret.update(get_metrics(self.cfg, 'wandb_metric_autoencode', autoencoded_xyz, input_xyz, xyz_valid, self.cfg.model.predict_depth))
-    ret.update(get_metrics_single_view(self.cfg, 'wandb_metric_single_view_autoencode', autoencoded_xyz, input_xyz, xyz_valid, self.cfg.model.predict_depth))
-    
+    ret.update(get_metrics(batch, self.cfg, 'wandb_metric_autoencode', autoencoded_xyz, input_xyz, xyz_valid))
+
     if self.cfg.model.predict_depth is False:
         for i in range(3):
             ret[f'wandb_metric_autoencode_valid_xyz_mse_channel_{i}'] = get_valid_mse(input_xyz[..., [i]], autoencoded_xyz[..., [i]], xyz_valid)
@@ -286,21 +254,18 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
     pipeline_kwargs = dict()
     if self.cfg.model.only_noise_tgt:
+        assert self.cfg.model.n_view_pred is False
         pipeline_kwargs['concat_src_depth'] = xyz_latents[:xyz_latents.shape[0] // 2]
 
     pred_latents, cond = self.infer_batch(batch, concat_rgb=rgb_latents, num_images_per_prompt=1, output_type='latent', **pipeline_kwargs)
-    
     pred_xyz = decode_xyz(self.cfg, pred_latents, self.vae, normalizer)
 
-    ret.update(get_metrics(self.cfg, 'wandb_metric_pred', pred_xyz, input_xyz, xyz_valid, self.cfg.model.predict_depth))
-    ret.update(get_metrics_single_view(self.cfg, 'wandb_single_view_metric_pred', pred_xyz, input_xyz, xyz_valid, self.cfg.model.predict_depth))
+    ret.update(get_metrics(batch, self.cfg, 'wandb_metric_pred', pred_xyz, input_xyz, xyz_valid))
 
     if self.cfg.model.predict_depth is False:
         ret['wandb_metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, xyz_valid)
         for i in range(3):
             ret[f'wandb_metric_valid_xyz_mse_channel_{i}'] = get_valid_mse(input_xyz[..., [i]], pred_xyz[..., [i]], xyz_valid)
-
-    pred_src_xyz, pred_tgt_xyz = torch.chunk(pred_xyz, 2, dim=0)
 
     pred_marigold = True
     marigold_depth_pred = None
@@ -319,7 +284,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         pipe = pipe.to(self.device)
         resample_method = 'bilinear'
 
-        rgb_to_encode = torch.cat([batch.src_dec_rgb, batch.tgt_dec_rgb], dim=0).to(dtype=dtype, device=self.device)
+        rgb_to_encode = self.get_rgb_input(batch)
         rgb_to_encode = (rgb_to_encode + 1) / 2
         rgb_to_encode = rearrange('b c h w -> b h w c', rgb_to_encode * 255).to(dtype=torch.uint8).cpu().numpy()
         from PIL import Image
@@ -333,84 +298,74 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
                 color_map=None,
                 show_progress_bar=False,
                 resample_method=resample_method,
+                ensemble_size=1,
             )
             marigold_depth_pred.append(pipe_out.depth_np)
 
         marigold_depth_pred = np.stack(marigold_depth_pred)
         marigold_depth_pred = torch.from_numpy(marigold_depth_pred).to(self.device)[..., None]
-        src_marigold_depth_pred, tgt_marigold_depth_pred = torch.chunk(marigold_depth_pred, 2, dim=0)
-        ret.update(get_metrics(self.cfg, 'wandb_metric_marigold', marigold_depth_pred, input_xyz, xyz_valid, self.cfg.model.predict_depth))
-        ret.update(get_metrics_single_view(self.cfg, 'wandb_metric_single_view_marigold', marigold_depth_pred, input_xyz, xyz_valid, self.cfg.model.predict_depth))
+        ret.update(get_metrics(batch, self.cfg, 'wandb_metric_marigold', marigold_depth_pred, input_xyz, xyz_valid))
 
-    src_rgb = undo_normalization_given_transforms(get_stable_diffusion_transforms(resolution=self.cfg.model.decoder_resolution), batch.src_dec_rgb)
-    tgt_rgb = undo_normalization_given_transforms(get_stable_diffusion_transforms(resolution=self.cfg.model.decoder_resolution), batch.tgt_dec_rgb)
+    orig_rgb = undo_normalization_given_transforms(get_stable_diffusion_transforms(resolution=self.cfg.model.decoder_resolution), batch.dec_rgb)
 
     imgs = []
     secondary_viz = []
 
     n = 1
     to_viz_indices = np.random.choice(list(range(batch.bs)), n, replace=False)
-    for b in to_viz_indices:
-        src_gt_depth, src_pred_depth = get_depth(self.cfg, batch.src_dec_depth, batch.src_xyz, pred_src_xyz, batch.src_intrinsics, batch.src_extrinsics, b)
-        tgt_gt_depth, tgt_pred_depth = get_depth(self.cfg, batch.tgt_dec_depth, batch.tgt_xyz, pred_tgt_xyz, batch.tgt_intrinsics, batch.tgt_extrinsics, b)
+    input_xyz = rearrange('(n b) ... -> b n ...', input_xyz, n=batch.n)
+    pred_xyz = rearrange('(n b) ... -> b n ...', pred_xyz, n=batch.n)
+    autoencoded_xyz = rearrange('(n b) ... -> b n ...', autoencoded_xyz, n=batch.n)
+    marigold_depth_pred = rearrange('(n b) ... -> b n ...', marigold_depth_pred, n=batch.n) if marigold_depth_pred is not None else None
+    xyz_valid = rearrange('(n b) ... -> b n ...', xyz_valid, n=batch.n)
 
-        src_autoencoded_depth = get_depth(self.cfg, batch.src_dec_depth, batch.src_xyz, autoencoded_src_xyz, batch.src_intrinsics, batch.src_extrinsics, b)[1]
-        tgt_autoencoded_depth = get_depth(self.cfg, batch.tgt_dec_depth, batch.tgt_xyz, autoencoded_tgt_xyz, batch.tgt_intrinsics, batch.tgt_extrinsics, b)[1]
+    for b in to_viz_indices:
+        _gt_depth, _pred_depth = get_depth(self.cfg, batch.dec_depth, batch.xyz, pred_xyz, batch.intrinsics, batch.extrinsics, b)
+        _autoencoded_depth = get_depth(self.cfg, batch.dec_depth, batch.xyz, autoencoded_xyz, batch.intrinsics, batch.extrinsics, b)[1]
 
         if marigold_depth_pred is not None:
-            src_marigold_depth_pred = get_depth(self.cfg, batch.src_dec_depth, batch.src_xyz, src_marigold_depth_pred, batch.src_intrinsics, batch.src_extrinsics, b)[1]
-            tgt_marigold_depth_pred = get_depth(self.cfg, batch.tgt_dec_depth, batch.tgt_xyz, tgt_marigold_depth_pred, batch.tgt_intrinsics, batch.tgt_extrinsics, b)[1]
+            _marigold_depth_pred = get_depth(self.cfg, batch.dec_depth, batch.xyz, marigold_depth_pred, batch.intrinsics, batch.extrinsics, b)[1]
             
-        src_gt_orig_depth, tgt_gt_orig_depth = batch.src_dec_depth[b], batch.tgt_dec_depth[b]
+        _gt_orig_depth = batch.dec_depth[b]
 
-        _func = lambda x: rearrange('h w -> () h w 3', x)
+        _func = lambda x: rearrange('h w -> () h w 3', x.to(dtype=torch.float32))
         _post = 'Depth' if self.cfg.model.predict_depth else 'PCD'
-
+        
         imgs.append(
             Im.concat_horizontal(
                 Im.concat_vertical(
-                    src_rgb[[b]],
-                    Im(_func(src_gt_depth)).bool_to_rgb().write_text(f"GT {_post}", size=0.6),
-                    Im(_func(src_pred_depth)).bool_to_rgb().write_text(f"Pred {_post}", size=0.6),
-                    *((Im(_func(src_marigold_depth_pred)).bool_to_rgb().write_text("Marigold", size=0.6),) if marigold_depth_pred is not None else ()),
-                    Im(_func(src_autoencoded_depth)).bool_to_rgb().write_text(f"Autoencoded {_post}", size=0.6),
-                    Im(_func(get_valid(src_pred_depth, src_valid[b]))).bool_to_rgb().write_text(f"Pred {_post} Valid", size=0.6),
-                    Im(src_valid[b]).bool_to_rgb().write_text("Truncated Valid Mask", size=0.6),
-                ),
-                Im.concat_vertical(
-                    tgt_rgb[[b]],
-                    Im(_func(tgt_gt_depth)).bool_to_rgb().write_text(f"GT {_post}", size=0.6),
-                    Im(_func(tgt_pred_depth)).bool_to_rgb().write_text(f"Pred {_post}", size=0.6),
-                    *((Im(_func(tgt_marigold_depth_pred)).bool_to_rgb().write_text(f"Marigold {_post}", size=0.6),) if marigold_depth_pred is not None else ()),
-                    Im(_func(tgt_autoencoded_depth)).bool_to_rgb().write_text(f"Autoencoded {_post}", size=0.6),
-                    Im(_func(get_valid(tgt_pred_depth, tgt_valid[b]))).bool_to_rgb().write_text(f"Pred {_post} Valid", size=0.6),
-                    Im(tgt_valid[b]).bool_to_rgb().write_text("Truncated Valid Mask", size=0.6),
-                ),
+                    orig_rgb[[b], view_idx],
+                    Im(norm(_func(_gt_orig_depth[view_idx]))).bool_to_rgb().write_text(f"GT {_post}", size=0.6),
+                    Im(_func(_pred_depth[view_idx])).bool_to_rgb().write_text(f"Pred {_post}", size=0.6),
+                    *((Im(_func(_marigold_depth_pred[view_idx])).bool_to_rgb().write_text(f"Marigold {_post}", size=0.6),) if marigold_depth_pred is not None else ()),
+                    Im(_func(_autoencoded_depth[view_idx])).bool_to_rgb().write_text(f"Autoencoded {_post}", size=0.6),
+                    Im(_func(get_valid(_pred_depth[view_idx], xyz_valid[b, view_idx]))).bool_to_rgb().write_text(f"Pred {_post} Valid", size=0.6),
+                    Im(xyz_valid[b, view_idx]).bool_to_rgb().write_text("Truncated Valid Mask", size=0.6),
+                ) for view_idx in range(batch.n)
             )
         )
 
-        secondary_viz.append(
-            Im.concat_horizontal(
-                Im.concat_vertical(
-                    Im(_func(src_gt_orig_depth)).bool_to_rgb().write_text("GT Depth", size=0.6),
-                    Im(_func(get_valid(src_gt_orig_depth, input_src_valid[b]))).bool_to_rgb().write_text("GT Depth Dataset Valid", size=0.6),
-                    Im(_func(get_valid(src_gt_orig_depth, src_valid[b]))).bool_to_rgb().write_text("GT Depth Truncated Valid", size=0.6),
-                    Im(input_src_valid[b]).bool_to_rgb().write_text("Dataset Valid Mask", size=0.6),
-                    Im(src_valid[b]).bool_to_rgb().write_text("Truncated Valid Mask", size=0.6),
-                ),
-                Im.concat_vertical(
-                    Im(_func(tgt_gt_orig_depth)).bool_to_rgb().write_text("GT Depth", size=0.6),
-                    Im(_func(get_valid(tgt_gt_orig_depth, input_tgt_valid[b]))).bool_to_rgb().write_text("GT Depth Dataset Valid", size=0.6),
-                    Im(_func(get_valid(tgt_gt_orig_depth, tgt_valid[b]))).bool_to_rgb().write_text("GT Depth Truncated Valid", size=0.6),
-                    Im(input_tgt_valid[b]).bool_to_rgb().write_text("Dataset Valid Mask", size=0.6),
-                    Im(tgt_valid[b]).bool_to_rgb().write_text("Truncated Valid Mask", size=0.6),
-                ),
-            )
-        ) 
+        # secondary_viz.append(
+        #     Im.concat_horizontal(
+        #         Im.concat_vertical(
+        #             Im(_func(src_gt_orig_depth)).bool_to_rgb().write_text("GT Depth", size=0.6),
+        #             Im(_func(get_valid(src_gt_orig_depth, input_src_valid[b]))).bool_to_rgb().write_text("GT Depth Dataset Valid", size=0.6),
+        #             Im(_func(get_valid(src_gt_orig_depth, src_valid[b]))).bool_to_rgb().write_text("GT Depth Truncated Valid", size=0.6),
+        #             Im(input_src_valid[b]).bool_to_rgb().write_text("Dataset Valid Mask", size=0.6),
+        #             Im(src_valid[b]).bool_to_rgb().write_text("Truncated Valid Mask", size=0.6),
+        #         ),
+        #         Im.concat_vertical(
+        #             Im(_func(tgt_gt_orig_depth)).bool_to_rgb().write_text("GT Depth", size=0.6),
+        #             Im(_func(get_valid(tgt_gt_orig_depth, input_tgt_valid[b]))).bool_to_rgb().write_text("GT Depth Dataset Valid", size=0.6),
+        #             Im(_func(get_valid(tgt_gt_orig_depth, tgt_valid[b]))).bool_to_rgb().write_text("GT Depth Truncated Valid", size=0.6),
+        #             Im(input_tgt_valid[b]).bool_to_rgb().write_text("Dataset Valid Mask", size=0.6),
+        #             Im(tgt_valid[b]).bool_to_rgb().write_text("Truncated Valid Mask", size=0.6),
+        #         ),
+        #     )
+        # ) 
 
     ret['imgs'] = Im.concat_horizontal(*imgs)
     ret['misc_data'] = Im.concat_horizontal(*imgs)
-        
     return ret
                     
 def autoencode_gt_xyz(cfg: BaseConfig, batch: InputData, vae, xyz_latents, normalizer):

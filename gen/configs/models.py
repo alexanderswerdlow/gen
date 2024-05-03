@@ -83,6 +83,9 @@ class ModelConfig:
     xyz_min_max_quantile: float = 0.02
     only_noise_tgt: bool = False
     dropout_src_depth: Optional[float] = None
+    freeze_self_attn: bool = False
+    n_view_pred: bool = False
+    add_cross_attn_pos_emb: Optional[int] = None
     
 
 

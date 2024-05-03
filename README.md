@@ -93,3 +93,7 @@ Many of the experiments make use of merging global configs to produce a final ou
 
 - Overriding datasets is a bit problematic as all datasets need all kwargs.
 - Segmentation maps when cropping sometimes have false where it should be true
+
+## Guidance
+
+- Do not use einx on tensors with varying shapes. It will cause slow performance.

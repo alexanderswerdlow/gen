@@ -120,6 +120,10 @@ class ImagefolderDataset(AbstractDataset, Dataset):
             **metadata
         })
 
+        ret.update({
+            "dec_rgb": torch.stack([ret['src_dec_rgb'], ret['tgt_dec_rgb']], dim=0),
+        })
+
         if self.load_depth:
             ret.update({
                 "src_dec_depth": src_data_dec_transform.segmentation.squeeze(0).squeeze(0).to(torch.int32),
@@ -129,6 +133,11 @@ class ImagefolderDataset(AbstractDataset, Dataset):
             ret.update({
                 "src_xyz_valid": ret['src_dec_depth'] > 0,
                 "tgt_xyz_valid": ret['tgt_dec_depth'] > 0,
+            })
+            
+            ret.update({
+                "xyz_valid": torch.stack([ret['src_xyz_valid'], ret['tgt_xyz_valid']], dim=0),
+                "dec_depth": torch.stack([ret['src_dec_depth'], ret['tgt_dec_depth']], dim=0),
             })
 
         return ret

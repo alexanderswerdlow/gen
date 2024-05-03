@@ -15,8 +15,7 @@ from gen.configs import BaseConfig
 from gen.models.base.base_defs import AttentionMetadata, ConditioningData
 from gen.models.base.base_setup import (add_unet_adapters, checkpoint, initialize_custom_models, initialize_diffusers_models, set_inference_mode,
                                         set_training_mode)
-from gen.models.base.losses import get_dustr_loss, transform_coordinate_space
-from gen.models.dustr.depth_utils import decode_xyz, encode_xyz, get_input, xyz_to_depth
+from gen.models.dustr.depth_utils import encode_xyz, get_xyz_input
 from gen.models.encoders.encoder import BaseModel
 from gen.utils.data_defs import InputData
 from gen.utils.logging_utils import log_debug, log_error, log_info, log_warn
@@ -145,7 +144,7 @@ class BaseMapper(Trainable):
             cond.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=AttentionMetadata())
 
         if self.cfg.model.joint_attention:
-            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].joint_attention = 2
+            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].joint_attention = batch.n
         
         cond.encoder_hidden_states = self.uncond_hidden_states[None].repeat(batch.bs, 1, 1)
 
@@ -154,9 +153,17 @@ class BaseMapper(Trainable):
     def dropout_cfg(self, cond: ConditioningData):
         pass
 
+    def get_rgb_input(self, batch: InputData):
+        if batch.dec_rgb is None:
+            rgb_to_encode = torch.cat([batch.src_dec_rgb, batch.tgt_dec_rgb], dim=0)
+        else:
+            rgb_to_encode = rearrange('b n c h w -> (n b) c h w', batch.dec_rgb)
+        return rgb_to_encode
+    
     def get_rgb_latents(self, batch: InputData):
         with torch.no_grad():
-            rgb_to_encode = torch.cat([batch.src_dec_rgb, batch.tgt_dec_rgb], dim=0).to(dtype=self.dtype if self.cfg.model.force_fp32_pcd_vae is False else torch.float32, device=self.device)
+            rgb_to_encode = self.get_rgb_input(batch)
+            rgb_to_encode = rgb_to_encode.to(dtype=self.dtype if self.cfg.model.force_fp32_pcd_vae is False else torch.float32, device=self.device)
             rgb_latents = self.vae.encode(rgb_to_encode).latent_dist.sample() # Convert images to latent space
             rgb_latents = rgb_latents * self.vae.config.scaling_factor
         return rgb_latents
@@ -167,10 +174,14 @@ class BaseMapper(Trainable):
 
     def inverted_cosine(self, timesteps):
         return torch.arccos(torch.sqrt(timesteps))
+    
+    def clamp_input(self, arr):
+        return torch.clamp(arr, -1, 1) if arr is not None else arr
 
     def forward(self, batch: InputData, state: TrainingState, cond: Optional[ConditioningData] = None):
-        batch.src_dec_rgb = torch.clamp(batch.src_dec_rgb, -1, 1)
-        batch.tgt_dec_rgb = torch.clamp(batch.tgt_dec_rgb, -1, 1)
+        batch.src_dec_rgb = self.clamp_input(batch.src_dec_rgb)
+        batch.tgt_dec_rgb = self.clamp_input(batch.tgt_dec_rgb)
+        batch.dec_rgb = self.clamp_input(batch.dec_rgb)
 
         if self.cfg.model.diffusion_timestep_range is not None:
             timesteps = torch.randint(self.cfg.model.diffusion_timestep_range[0], self.cfg.model.diffusion_timestep_range[1], (batch.bs,), device=self.device).long()
@@ -178,7 +189,7 @@ class BaseMapper(Trainable):
             timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (batch.bs,), device=self.device).long()
 
         if self.cfg.model.duplicate_unet_input_channels:
-            timesteps = einops.repeat(timesteps, 'b -> (n b)', n=2)
+            timesteps = rearrange('b -> (n b)', timesteps, n=batch.n)
 
         if cond is None:
             cond = self.get_hidden_state(batch)
@@ -188,8 +199,8 @@ class BaseMapper(Trainable):
         encoder_hidden_states = cond.encoder_hidden_states
 
         if self.cfg.model.duplicate_unet_input_channels:
-            input_xyz, input_valid = get_input(self.cfg, batch)
-            xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, self.dtype, 2, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
+            input_xyz, input_valid = get_xyz_input(self.cfg, batch)
+            xyz_latents, xyz_valid, normalizer = encode_xyz(self.cfg, input_xyz, input_valid, self.vae, self.dtype, batch.n, kwargs=dict(per_axis_quantile=self.cfg.model.predict_depth is False))
             
             cond.xyz_normalizer = normalizer
             cond.xyz_valid = xyz_valid
@@ -201,6 +212,7 @@ class BaseMapper(Trainable):
 
             latents = xyz_latents if self.cfg.model.duplicate_unet_input_channels else rgb_latents
             if self.cfg.model.only_noise_tgt:
+                assert self.cfg.model.n_view_pred is False
                 set_to_zero = torch.rand(timesteps.shape[0]) > self.cfg.model.dropout_src_depth
                 set_to_zero[timesteps.shape[0] // 2:] = False
                 if self.cfg.model.dropout_src_depth is None:
@@ -297,19 +309,5 @@ class BaseMapper(Trainable):
             # losses['l2_scale_shift_inv_decoder_loss_v2'] = get_dustr_loss(batch, cond.gt_decoder_xyz, cond.gt_decoder_valid)
             losses['vae_decoder_mse_loss'] = 1e-3 * F.mse_loss(cond.gt_decoder_xyz.float()[cond.gt_decoder_valid], cond.gt_xyz.float()[:self.cfg.model.vae_decoder_batch_size][cond.gt_decoder_valid], reduction="mean")
 
-        if self.cfg.model.duplicate_unet_input_channels and False:
-            pred_xyz, pred_mask = decode_xyz(self.cfg, model_pred, cond.xyz_valid, self.vae, cond.xyz_normalizer)
-            losses['metric_l2_scale_shift_inv'] = get_dustr_loss(batch, pred_xyz, pred_mask)
-
-            def get_norm_pts(_gt, _pred, _mask):
-                _mask = rearrange('b h w -> (b h w)', _mask)
-                _pred = rearrange('b h w xyz -> (b h w) xyz', _pred)
-                _gt = rearrange('b h w xyz -> (b h w) xyz', _gt)
-                gt_min, gt_max = _gt.min(dim=0)[0], _gt.max(dim=0)[0]
-                _pred = (_pred - gt_min) / (gt_max - gt_min)
-                _gt = (_gt - gt_min) / (gt_max - gt_min)
-                return _gt[_mask], _pred[_mask]
-
-            losses['metric_valid_norm_xyz_mse'] = F.mse_loss(*get_norm_pts(cond.gt_xyz, pred_xyz, pred_mask), reduction="mean")
 
         return losses

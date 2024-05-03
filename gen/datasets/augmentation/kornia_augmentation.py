@@ -147,7 +147,10 @@ class Augmentation:
         return self.src_transform is not None or self.tgt_transform is not None
 
     def __call__(self, src_data, tgt_data, use_keypoints: bool = True, return_encoder_normalized_tgt: bool = False):
-        assert src_data.image.shape == tgt_data.image.shape, f"Source and target image shapes do not match: {src_data.image.shape} != {tgt_data.image.shape}"
+        if tgt_data is not None:
+            assert src_data.image.shape == tgt_data.image.shape, f"Source and target image shapes do not match: {src_data.image.shape} != {tgt_data.image.shape}"
+        else:
+            tgt_data = Data()
         initial_h, initial_w = src_data.image.shape[-2], src_data.image.shape[-1]
 
         if self.enable_square_crop:
@@ -165,7 +168,8 @@ class Augmentation:
             src_params = self.src_transform.forward_parameters(batch_shape=src_data.image.shape)
             src_data = process(aug=self.src_transform, params=src_params, input_data=src_data, return_grid=self.return_grid, use_keypoints=use_keypoints)
             if self.different_src_tgt_augmentation is False:
-                tgt_data = process(aug=self.src_transform, params=src_params, input_data=tgt_data, return_grid=self.return_grid, use_keypoints=use_keypoints)
+                if tgt_data.image is not None:
+                    tgt_data = process(aug=self.src_transform, params=src_params, input_data=tgt_data, return_grid=self.return_grid, use_keypoints=use_keypoints)
 
         if self.different_src_tgt_augmentation and self.tgt_transform is not None:
             tgt_params = self.tgt_transform.forward_parameters(batch_shape=tgt_data.image.shape)
@@ -264,6 +268,9 @@ def santitize_and_normalize_grid_values(tensor, patch_size = 4):
     return (2 * tensor) - 1 # Normalize from -1 to 1
 
 def apply_normalization_transforms(data: Data, normalization_transform, initial_h, initial_w):
+    if data is None or data.image is None:
+        return data
+    
     if data.grid is not None:
         data.grid = data.grid.permute(0, 3, 1, 2).float()
 
@@ -332,6 +339,9 @@ def process(aug: AugmentationSequential, input_data: Data, should_viz: bool = Fa
         input_image: (B, C, H, W)
         input_segmentation_mask: (B, H, W)
     """
+
+    if input_data is None:
+        return None
 
     if return_grid or use_keypoints: 
         B, _, H, W = input_data.image.shape
