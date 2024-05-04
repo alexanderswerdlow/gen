@@ -1,6 +1,9 @@
 from pyexpat import model
+
+from hydra_zen import builds
 from gen.configs.datasets import get_datasets
 from gen.configs.utils import mode_store
+from gen.datasets.imagefolder.imagefolder import ImagefolderDataset
 
 
 def get_override_dict(**kwargs):
@@ -124,10 +127,10 @@ def get_experiments():
         ),
         dataset=dict(
             train=dict(
-                batch_size=8,
+                batch_size=12,
             ),
             val=dict(
-                batch_size=10,
+                batch_size=8,
             ),
         ),
         trainer=dict(
@@ -235,6 +238,13 @@ def get_experiments():
                     tgt_transforms="${get_tgt_transform:model}",
                 ),
             ),
+            # additional_val=dict(
+            #     hypersim=builds(
+            #         ImagefolderDataset, 
+            #         populate_full_signature=True,
+            #         pass
+            #     ),
+            # )
         ),
         trainer=dict(
             gradient_accumulation_steps=4,
@@ -297,15 +307,35 @@ def get_experiments():
             train=dict(
                 uniform_sampler=True,
                 return_n_views=4,
-                camera_trajectory_window=12,
+                camera_trajectory_window=16,
                 batch_size=22
             ),
             val=dict(
                 uniform_sampler=True,
                 return_n_views=4,
-                camera_trajectory_window=12,
+                camera_trajectory_window=16,
                 batch_size=16
             ),
+            additional_val=None,
         ),
         hydra_defaults=["exp_v1_1"],
+    )
+
+    mode_store(
+        name="high_res_multiview",
+        model=dict(
+            decoder_resolution=512,
+            decoder_latent_dim=64,
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=6,
+            ),
+            val=dict(
+                batch_size=4,
+            ),
+        ),
+        trainer=dict(
+            gradient_accumulation_steps=8,
+        ),
     )

@@ -1,3 +1,24 @@
+import autoroot
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Union
+
+import numpy as np
+import simplejpeg
+import torch
+import torch.nn.functional as F
+import typer
+from torch.utils.data import Dataset
+from tqdm import tqdm
+from PIL import Image
+
+from gen.configs.utils import inherit_parent_args
+from gen.datasets.abstract_dataset import AbstractDataset, Split
+from gen.datasets.augmentation.kornia_augmentation import Augmentation, Data
+from gen.utils.data_defs import visualize_input_data
+from gen.utils.decoupled_utils import breakpoint_on_error, hash_str_as_int
+from gen.utils.file_utils import get_available_path
+
 import os
 import pickle
 import random
@@ -26,22 +47,8 @@ from gen.utils.data_defs import visualize_input_data
 from gen.utils.decoupled_utils import breakpoint_on_error, hash_str_as_int, set_global_breakpoint
 from gen.utils.logging_utils import log_error, log_info, log_warn
 
-torchvision.disable_beta_transforms_warning()
-
-class ModifiedHypersim(BaseHypersim):
-    pass
-
-memory = Memory(GLOBAL_CACHE_PATH, verbose=0)
-@memory.cache(ignore=['obj'])
-def get_instance_segmentation(obj: Any, split: str, idx: int):
-    frame_seg = obj.hypersim._load_instance(idx)
-    image_area = frame_seg.size
-    unique1, counts1 = np.unique(frame_seg, return_counts=True)
-    counts1 = counts1 / image_area
-    return unique1, counts1
-
 @inherit_parent_args
-class Hypersim(AbstractDataset, Dataset):
+class VideofolderDataset(AbstractDataset, Dataset):
     def __init__(
             self,
             *,
@@ -71,31 +78,9 @@ class Hypersim(AbstractDataset, Dataset):
         self.top_n_masks_only = top_n_masks_only
         self.augmentation = augmentation
         self.tokenizer = tokenizer
-        self.add_background = add_background
-        self.return_different_views = return_different_views
-        self.return_raw_dataset_image = return_raw_dataset_image
-        self.camera_trajectory_window = camera_trajectory_window
-        self.bbox_overlap_threshold = bbox_overlap_threshold
-        self.bbox_area_threshold = bbox_area_threshold
-        self.num_overlapping_masks = num_overlapping_masks
-        self.return_encoder_normalized_tgt = return_encoder_normalized_tgt
         self.root = root
-        self.repeat_n = repeat_n
-        self.scratch_only = scratch_only
-        self.segmentation_overlap_threshold = segmentation_overlap_threshold
-        self.return_tgt_only = return_tgt_only
         self.return_n_views = return_n_views
-        self.legacy_format = legacy_format
-        self.uniform_sampler = uniform_sampler
-        if self.return_n_views > 2:
-            assert self.uniform_sampler is True
         assert self.augmentation.reorder_segmentation is False
-
-        self.hypersim = ModifiedHypersim(
-            dataset_path=root,
-            split='train' if self.split == Split.TRAIN else 'valid',
-            sample_keys=("rgb", "instance", "identifier", "rgb_intrinsics", "depth_intrinsics", "extrinsics", "3d_boxes", "depth"),
-        )
 
         self.scene_cam_map = defaultdict(list)
         for idx, filename in enumerate(self.hypersim._filenames):
@@ -104,8 +89,7 @@ class Hypersim(AbstractDataset, Dataset):
             key = (scene_name, camera_trajectory)
             self.scene_cam_map[key].append((idx, camera_frame))
 
-        if (root / 'extents.pkl').exists():
-            self.camera_trajectory_extents = pickle.load(open(root / 'extents.pkl', "rb"))
+        self.camera_trajectory_extents = pickle.load(open(root / 'extents.pkl', "rb"))
         log_info(f"Loaded {len(self.hypersim)} frames from hypersim dataset with root: {self.root}", main_process_only=False)
     
     def __len__(self):
@@ -115,30 +99,7 @@ class Hypersim(AbstractDataset, Dataset):
         return super().collate_fn(batch)
     
     def __getitem__(self, index):
-        for i in range(120):
-            # try:
-            return self.getitem(index)
-            # except Exception as e:
-            #     index = random.randint(0, len(self) - 1)
-            #     if i == 59:
-            #         log_error(e)
-        raise Exception(f'Hypersim Failed to get item for index {index}')
-    
-    def nonuniform_sampler(self, camera_trajectory_frames, window_size):
-        run_idx = 0
-        while True:
-            if run_idx > 60:
-                assert False, "Failed to find two frames with overlapping segmentations"
-            run_idx += 1
-            first_frame_idx = random.randint(0, len(camera_trajectory_frames) - 1)
-            lower_bound = max(0, first_frame_idx - window_size)
-            upper_bound = min(len(camera_trajectory_frames) - 1, first_frame_idx + window_size)
-            possible_indices = list(range(lower_bound, upper_bound + 1))
-            second_frame_idx = random.choice(possible_indices)
-            if self.compute_segmentation_overlap(first_frame_idx, second_frame_idx):
-                break
-
-        return first_frame_idx, second_frame_idx
+        return self.getitem(index)
     
     def getitem(self, index):
         index = index % len(self.hypersim)
@@ -188,21 +149,6 @@ class Hypersim(AbstractDataset, Dataset):
         
         src_data = process_data(src_data)
         name = "__".join(("_".join(_meta) for _meta in metadata))
-
-        def get_rt(_data):
-            extrinsics = _data['extrinsics']
-            rot = R.from_quat((extrinsics['quat_x'], extrinsics['quat_y'], extrinsics['quat_z'], extrinsics['quat_w']))
-            T = torch.tensor([extrinsics['x'], extrinsics['y'], extrinsics['z']]).view(3, 1) / 50
-            RT = torch.cat((torch.from_numpy(rot.as_matrix()), T), dim=1)
-            RT = torch.cat((RT, torch.tensor([[0, 0, 0, 1]])), dim=0)
-            return RT
-
-        def get_intrinsics_matrix(intrinsics_dict):
-            return torch.tensor([
-                [intrinsics_dict['fx'], 0, intrinsics_dict['cx']],
-                [0, intrinsics_dict['fy'], intrinsics_dict['cy']],
-                [0, 0, 1]
-            ])
         
         if self.legacy_format:
             ret.update({
@@ -242,75 +188,31 @@ class Hypersim(AbstractDataset, Dataset):
     def get_dataset(self):
         return self
 
-    def compute_segmentation_overlap(self, first_frame_idx, second_frame_idx):
-        unique1, counts1 = get_instance_segmentation(self, self.split.name.lower(), first_frame_idx)
-        unique2, counts2 = get_instance_segmentation(self, self.split.name.lower(), second_frame_idx)
-
-        common_instances = np.intersect1d(unique1, unique2)
-        common_area_ratio1 = counts1[np.isin(unique1, common_instances)]
-        common_area_ratio2 = counts2[np.isin(unique2, common_instances)]
         
-        weighted_score = np.sum(common_area_ratio1 * common_area_ratio2)        
-        return weighted_score > self.segmentation_overlap_threshold
+    def get_metadata(self, idx):
+        scene_name = list(self.saved_scene_frames.keys())[idx]
+        allowed_frames = self.saved_scene_frames[scene_name]
 
-    def sum_largest_face_areas(self, first_frame_idx, second_frame_idx):
-        frame1 = self.hypersim._load_3d_boxes(first_frame_idx)
-        frame2 = self.hypersim._load_3d_boxes(second_frame_idx)
+        src_img_idx, tgt_img_idx = np.random.choice(list(allowed_frames), size=2, replace=False)
+        frame_name = f"{src_img_idx}-{tgt_img_idx}"
+        frame_idxs = (hash_str_as_int(src_img_idx), hash_str_as_int(tgt_img_idx))
 
-        assert isinstance(frame1, dict) and isinstance(frame2, dict), "Inputs must be dictionaries."
+        name = f"{scene_name}_{frame_name}"
+        return {
+            "id": torch.tensor([hash_str_as_int(name)], dtype=torch.long),
+            "metadata": {
+                "dataset": "imagefolder",
+                "name": name,
+                "scene_id": scene_name,
+                "camera_frame": frame_name,
+                "index": idx,
+                "camera_trajectory": "0", # Dummy value
+                "frame_idxs": frame_idxs,
+                "split": self.split.name.lower(),
+            },
+        }, src_img_idx, tgt_img_idx
 
-        total_boxes_frame1 = len(frame1)
-        total_boxes_frame2 = len(frame2)
-        shared_keys = frame1.keys() & frame2.keys()  # Get the set of keys present in both frames
-        total_shared_boxes = len(shared_keys)
 
-        if total_shared_boxes < self.bbox_overlap_threshold * max(total_boxes_frame1, total_boxes_frame2):
-            return False
-
-        total_area = 0
-
-        for key in shared_keys:
-            extents1 = sorted(frame1[key]['extents'], reverse=True)  # Sort extents in descending order
-            extents2 = sorted(frame2[key]['extents'], reverse=True)  # Sort extents for the second frame
-
-            # The largest face area of a box is the product of its two largest extents
-            area1 = extents1[0] * extents1[1]
-            area2 = extents2[0] * extents2[1]
-
-            total_area += max(area1, area2)  # Sum the larger of the two areas for each shared box
-
-        return total_area > self.bbox_area_threshold
-
-    def make_video(self, camera_scene, camera_traj):
-        from image_utils import Im
-        from image_utils.standalone_image_utils import get_color
-        frames = self.scene_cam_map[(camera_scene, camera_traj)]
-        rgb = []
-        prev_ids = None
-        all_ids = set()
-        for frame_idx, frame_name in frames:
-            data = self.hypersim.__getitem__(frame_idx)
-            unique_ids = set(np.unique(data['instance']).tolist())
-            if prev_ids is not None:
-                print(len(unique_ids.symmetric_difference(prev_ids)), len(unique_ids), len(prev_ids))
-            prev_ids = unique_ids
-            all_ids.update(unique_ids)
-            rgb.append(data["rgb"])
-
-        colors = get_color(max(list(all_ids)) + 1)
-        color_tensor = np.array(colors, dtype=np.uint8)  # [N, 3]
-
-        instance = []
-        for frame_idx, frame_name in frames:
-            data = self.hypersim.__getitem__(frame_idx)
-            instance.append(color_tensor[data['instance']])
-
-        Im(np.stack(instance)).save_video(f"{camera_scene}_{camera_traj}_instance.mp4")
-        Im(np.stack(rgb)).save_video(f"{camera_scene}_{camera_traj}.mp4")
-
-        # frame1 = self.hypersim._load_3d_boxes(0)
-        # frame2 = self.hypersim._load_3d_boxes(2)
-        # sum_largest_face_areas(frame1, frame2)
 
 typer.main.get_command_name = lambda name: name
 app = typer.Typer(pretty_exceptions_show_locals=False)
@@ -366,6 +268,57 @@ def main():
         names = [f'{batch.metadata["scene_id"][i]}_{batch.metadata["camera_trajectory"][i]}_{batch.metadata["camera_frame"][i]}_{dataset.split.name.lower()}' for i in range(batch.bs)]
         visualize_input_data(batch, names=names)
       
+if __name__ == "__main__":
+    with breakpoint_on_error():
+        app()
+
+
+typer.main.get_command_name = lambda name: name
+app = typer.Typer(pretty_exceptions_show_locals=False)
+
+@app.command()
+def main(
+    root: Path,
+    num_workers: int = 0,
+    batch_size: int = 1,
+    viz: bool = True,
+    steps: Optional[int] = None,
+    breakpoint_on_start: bool = False,
+    return_tensorclass: bool = True,
+    load_depth: bool = False,
+    save_images: Optional[Path] = None,
+):
+    with breakpoint_on_error():
+        from gen.datasets.utils import get_stable_diffusion_transforms
+        from image_utils import library_ops
+        augmentation=Augmentation(
+            initial_resolution=512,
+            enable_square_crop=True,
+            center_crop=True,
+            src_transforms=get_stable_diffusion_transforms(resolution=224),
+            tgt_transforms=get_stable_diffusion_transforms(resolution=512),
+        )
+        dataset = ImagefolderDataset(
+            root=root,
+            shuffle=True,
+            cfg=None,
+            split=Split.TRAIN,
+            num_workers=num_workers,
+            batch_size=batch_size,
+            augmentation=augmentation,
+            return_tensorclass=return_tensorclass,
+            use_cuda=False,
+            load_depth=load_depth,
+        )
+
+        subset_range = None
+        dataloader = dataset.get_dataloader(pin_memory=False, subset_range=subset_range)
+        for i, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
+            if breakpoint_on_start: breakpoint()
+            if viz: visualize_input_data(batch)
+            if steps is not None and i >= steps - 1: break
+            if save_images is not None: save_data(batch, save_images)
+
 if __name__ == "__main__":
     with breakpoint_on_error():
         app()
