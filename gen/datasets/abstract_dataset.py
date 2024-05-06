@@ -3,14 +3,17 @@ from enum import Enum
 from math import e
 from typing import Any, Iterable, Optional
 
-from regex import D
-from torch.utils.data import DataLoader, RandomSampler, Subset, ChainDataset, StackDataset, ConcatDataset, Dataset
-from gen.utils.data_defs import InputData
-
-from gen.utils.logging_utils import log_info, log_warn
-from torch import Generator
 import torch
 import torch.multiprocessing as mp
+import torch.utils.data
+from regex import D
+from torch import Generator
+from torch.utils.data import ChainDataset, ConcatDataset, DataLoader, Dataset, IterableDataset, RandomSampler, StackDataset, Subset
+from torch.utils.data.sampler import Sampler
+
+from gen.utils.data_defs import InputData
+from gen.utils.logging_utils import log_info, log_warn
+
 
 class Split(Enum):
     TRAIN = 0
@@ -30,12 +33,6 @@ def get_even_subset(dataset, subset_size):
         
     dataset = Subset(dataset, idxs)
     return dataset
-
-from torch.utils.data.sampler import Sampler
-
-import torch
-import torch.utils.data
-
 
 class _RepeatSampler(object):
     """ Sampler that repeats forever.
@@ -67,6 +64,20 @@ class FastDataLoader(torch.utils.data.dataloader.DataLoader):
     def __iter__(self):
         for i in range(len(self)):
             yield next(self.iterator)
+
+class IterableSubset(IterableDataset):
+    def __init__(self, dataset, indices):
+        super().__init__()
+        self.dataset = dataset
+        self.indices = indices
+
+    def __iter__(self):
+        dataset_iter = iter(self.dataset)
+        for _ in range(len(self)):
+            yield next(dataset_iter)
+
+    def __len__(self):
+        return len(self.indices)
 
 class AbstractDataset(ABC):
     """
@@ -158,8 +169,11 @@ class AbstractDataset(ABC):
                 log_info(f"Dataset {_ds_name} has size: {len(_ds)}")
             orig_dataset = ConcatDataset([orig_dataset, *self.additional_datasets.values()])
 
+        is_iterable = isinstance(orig_dataset, IterableDataset)
         if self.allow_subset and self.subset_size is not None:
-            if self.random_subset:
+            if is_iterable:
+                dataset = IterableSubset(orig_dataset, list(range(self.subset_size)))
+            elif self.random_subset:
                 dataset = Subset(orig_dataset, list(RandomSampler(orig_dataset, num_samples=self.subset_size, generator=generator)))
             else:
                 dataset = get_even_subset(orig_dataset, self.subset_size)
@@ -172,7 +186,7 @@ class AbstractDataset(ABC):
         extra_kwargs.update(kwargs)
         if self.repeat_dataset_n_times is not None:
             dataset = ConcatDataset(*[[dataset] * self.repeat_dataset_n_times])
-        else:
+        elif is_iterable is False:
             extra_kwargs['shuffle'] = self.allow_shuffle and self.shuffle
 
         if self.drop_last:

@@ -139,8 +139,12 @@ class XFormersAttnProcessor:
                 encoder_hidden_states = rearrange('(views b) tokens c -> (repeat_views b) views tokens c', hidden_states, views=views, repeat_views=views)
                 encoder_hidden_states = attn.to_cross(encoder_hidden_states)
                 if attn.cross_attn_pos_emb is not None:
+                    trained_views = attn.cross_attn_pos_emb.shape[0]
+                    if views != trained_views:
+                        indices = torch.randperm(encoder_hidden_states.shape[1], device=encoder_hidden_states.device)[:trained_views]
+                        encoder_hidden_states = encoder_hidden_states[:, indices]
                     encoder_hidden_states = add('(repeat_views b) views tokens c, views c -> (repeat_views b) views tokens c', encoder_hidden_states, attn.cross_attn_pos_emb)
-                encoder_hidden_states = rearrange('(repeat_views b) views tokens c -> (repeat_views b) (views tokens) c', encoder_hidden_states, views=attn_meta.joint_attention)
+                encoder_hidden_states = rearrange('(repeat_views b) views tokens c -> (repeat_views b) (views tokens) c', encoder_hidden_states)
 
             query = attn.to_q(hidden_states)
             key = attn.to_k(encoder_hidden_states)

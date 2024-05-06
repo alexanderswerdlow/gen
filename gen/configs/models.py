@@ -85,7 +85,9 @@ class ModelConfig:
     dropout_src_depth: Optional[float] = None
     freeze_self_attn: bool = False
     n_view_pred: bool = False
+    num_training_views: Optional[int] = None
     add_cross_attn_pos_emb: Optional[int] = None
+    batched_denoise: bool = False
     
 
 

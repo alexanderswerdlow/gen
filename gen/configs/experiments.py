@@ -1,9 +1,12 @@
+from pathlib import Path
 from pyexpat import model
 
 from hydra_zen import builds
-from gen.configs.datasets import get_datasets
+from gen.configs.datasets import get_datasets, get_default_augmentation
 from gen.configs.utils import mode_store
+from gen.datasets.hypersim.hypersim import Hypersim
 from gen.datasets.imagefolder.imagefolder import ImagefolderDataset
+from gen.datasets.imagefolder.videofolder import VideofolderDataset
 
 
 def get_override_dict(**kwargs):
@@ -213,7 +216,8 @@ def get_experiments():
             snr_gamma=5.0,
             only_noise_tgt=False,
             use_valid_xyz_loss_mask=False,
-            dropout_src_depth=0.5
+            dropout_src_depth=0.5,
+            num_training_views=2,
         ),
         dataset=dict(
             train=dict(
@@ -238,13 +242,26 @@ def get_experiments():
                     tgt_transforms="${get_tgt_transform:model}",
                 ),
             ),
-            # additional_val=dict(
-            #     hypersim=builds(
-            #         ImagefolderDataset, 
-            #         populate_full_signature=True,
-            #         pass
-            #     ),
-            # )
+            additional_val=dict(
+                sevenscenes=builds(
+                    VideofolderDataset, 
+                    populate_full_signature=True,
+                    root=Path('data/depth_data/video'),
+                    zen_partial=True,
+                    camera_trajectory_window=100,
+                    return_n_views=2,
+                    load_depth=True,
+                    augmentation=get_default_augmentation(**dict(
+                        src_resolution="${model.decoder_resolution}",
+                        tgt_resolution="${model.decoder_resolution}",
+                        src_transforms="${get_tgt_transform:model}", # This is intentional
+                        tgt_transforms="${get_tgt_transform:model}",
+                    )),
+                    batch_size="${dataset.val.batch_size}",
+                    subset_size="${dataset.val.subset_size}",
+                    random_subset=False,
+                ),
+            )
         ),
         trainer=dict(
             gradient_accumulation_steps=4,
@@ -253,6 +270,7 @@ def get_experiments():
             fsdp=True,
             param_dtype_exception_prefixes=["vae."],
             enable_dynamic_grad_accum=False,
+            additional_val_datasets_seperate_inference=True,
         ),
         inference=dict(
             guidance_scale=1
@@ -301,7 +319,9 @@ def get_experiments():
         debug=True,
         model=dict(
             n_view_pred=True,
-            add_cross_attn_pos_emb=4,
+            add_cross_attn_pos_emb="${model.num_training_views}",
+            batched_denoise=True,
+            num_training_views=4,
         ),
         dataset=dict(
             train=dict(
@@ -316,7 +336,48 @@ def get_experiments():
                 camera_trajectory_window=16,
                 batch_size=16
             ),
-            additional_val=None,
+            additional_val=dict(
+                hypersim_double_views=builds(
+                    Hypersim,
+                    populate_full_signature=True,
+                    zen_partial=True,
+                    return_different_views=True,
+                    uniform_sampler=True,
+                    return_n_views="${eval:'${dataset.val.return_n_views} * 2'}",
+                    camera_trajectory_window=16,
+                    batch_size="${eval:'${dataset.val.batch_size} // 3'}",
+                    augmentation=get_default_augmentation(**dict(
+                        src_resolution="${model.decoder_resolution}",
+                        tgt_resolution="${model.decoder_resolution}",
+                        src_transforms="${get_tgt_transform:model}", # This is intentional
+                        tgt_transforms="${get_tgt_transform:model}",
+                    )),
+                ),
+                sevenscenes=dict(
+                    camera_trajectory_window=500,
+                    return_n_views="${dataset.val.return_n_views}",
+                    batch_size="${eval:'${dataset.val.batch_size} // 3'}",
+                    subset_size="${dataset.val.subset_size}",
+                ),
+                sevenscenes_double_views=builds(
+                    VideofolderDataset, 
+                    populate_full_signature=True,
+                    root=Path('data/depth_data/video'),
+                    zen_partial=True,
+                    camera_trajectory_window=500,
+                    return_n_views="${eval:'${dataset.val.return_n_views} * 2'}",
+                    load_depth=True,
+                    augmentation=get_default_augmentation(**dict(
+                        src_resolution="${model.decoder_resolution}",
+                        tgt_resolution="${model.decoder_resolution}",
+                        src_transforms="${get_tgt_transform:model}", # This is intentional
+                        tgt_transforms="${get_tgt_transform:model}",
+                    )),
+                    batch_size="${eval:'${dataset.val.batch_size} // 3'}",
+                    subset_size="${dataset.val.subset_size}",
+                    random_subset=False,
+                ),
+            ),
         ),
         hydra_defaults=["exp_v1_1"],
     )
@@ -329,7 +390,7 @@ def get_experiments():
         ),
         dataset=dict(
             train=dict(
-                batch_size=6,
+                batch_size=5,
             ),
             val=dict(
                 batch_size=4,

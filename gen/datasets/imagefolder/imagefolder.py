@@ -19,6 +19,25 @@ from gen.utils.data_defs import visualize_input_data
 from gen.utils.decoupled_utils import breakpoint_on_error, hash_str_as_int
 from gen.utils.file_utils import get_available_path
 
+def get_jpeg_image(image_path: Path):
+    image_path = get_available_path(image_path, resolve=False, return_scratch_only=False)
+    with open(image_path, 'rb', buffering=100*1024) as fp:
+        data = fp.read()
+    image = simplejpeg.decode_jpeg(data)
+    image = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
+    return image
+
+def get_rgb_image(image_path: Path):
+    if image_path.suffix == '.jpg':
+        return get_jpeg_image(image_path)
+    else:
+        image = np.asarray(Image.open(image_path).convert('RGB'))
+        image = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
+        return image
+
+def get_depth_image(rgb_image_path: Path):
+    return torch.from_numpy(np.asarray(Image.open(str(rgb_image_path).replace('rgb', 'depth')))[None, None])
+
 save_image_idx = 0
 def save_data(batch, save_image_path):
     global save_image_idx
@@ -66,26 +85,7 @@ class ImagefolderDataset(AbstractDataset, Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         return self.get_paired_data(idx)
-            
-    def get_jpeg_image(self, image_path: Path):
-        image_path = get_available_path(image_path, resolve=False, return_scratch_only=False)
-        with open(image_path, 'rb', buffering=100*1024) as fp:
-            data = fp.read()
-        image = simplejpeg.decode_jpeg(data)
-        image = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
-        return image
-    
-    def get_rgb_image(self, image_path: Path):
-        if image_path.suffix == '.jpg':
-            return self.get_jpeg_image(image_path)
-        else:
-            image = np.asarray(Image.open(image_path).convert('RGB'))
-            image = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
-            return image
-        
-    def get_depth_image(self, rgb_image_path: Path):
-        return torch.from_numpy(np.asarray(Image.open(str(rgb_image_path).replace('rgb', 'depth')))[None, None])
-    
+
     def get_paired_data(self, idx: int):
         metadata, src_img_idx, tgt_img_idx = self.get_metadata(idx)
 
@@ -94,15 +94,15 @@ class ImagefolderDataset(AbstractDataset, Dataset):
         src_path = self.root / scene_id / src_img_idx
         tgt_path = self.root / scene_id / tgt_img_idx
         
-        src_img = self.get_rgb_image(src_path)
-        tgt_img = self.get_rgb_image(tgt_path)
+        src_img = get_rgb_image(src_path)
+        tgt_img = get_rgb_image(tgt_path)
 
         ret = {}
 
         src_seg_img, tgt_seg_img = None, None
         if self.load_depth:
-            src_seg_img = self.get_depth_image(src_path).to(self.device)
-            tgt_seg_img = self.get_depth_image(tgt_path).to(self.device)
+            src_seg_img = get_depth_image(src_path).to(self.device)
+            tgt_seg_img = get_depth_image(tgt_path).to(self.device)
         
         src_data, tgt_data = self.augmentation(
             src_data=Data(image=src_img.to(self.device), segmentation=src_seg_img),

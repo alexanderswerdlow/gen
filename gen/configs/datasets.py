@@ -38,31 +38,36 @@ def get_override_dict(**kwargs):
         val=dict(**kwargs),
     )
 
-augmentation = builds(
-    Augmentation,
-    enable_rand_augment=False,
-    different_src_tgt_augmentation=False,
-    src_random_scale_ratio=None,
-    enable_random_resize_crop=False,
-    enable_horizontal_flip=False,
-    src_resolution=None,
-    tgt_resolution=None,
-    # A little hacky but very useful. We instantiate the model to get the transforms, making sure
-    # that we always have the right transform
-    src_transforms="${get_src_transform:model}",
-    tgt_transforms="${get_tgt_transform:model}",
-    populate_full_signature=True,
-)
+def get_default_augmentation(**kwargs):
+    _args = dict(
+        enable_rand_augment=False,
+        different_src_tgt_augmentation=False,
+        src_random_scale_ratio=None,
+        enable_random_resize_crop=False,
+        enable_horizontal_flip=False,
+        src_resolution=None,
+        tgt_resolution=None,
+        # A little hacky but very useful. We instantiate the model to get the transforms, making sure
+        # that we always have the right transform
+        src_transforms="${get_src_transform:model}",
+        tgt_transforms="${get_tgt_transform:model}",
+    )
+    _args.update(kwargs)
+    return builds(
+        Augmentation,
+        populate_full_signature=True,
+        **_args
+    )
 
 auto_store(DatasetConfig, 
     train=get_dataset(
         ImagefolderDataset,
-        augmentation=augmentation,
-    ), 
+        augmentation=get_default_augmentation(),
+    ),
     val=get_dataset(
         ImagefolderDataset,
-        augmentation=augmentation,
-    ), 
+        augmentation=get_default_augmentation(),
+    ),
     name="imagefolder"
 )
 
@@ -70,25 +75,25 @@ auto_store(DatasetConfig,
     train=get_dataset(
         Co3d,
         augmentation=None,
-    ), 
+    ),
     val=get_dataset(
         Co3d,
         augmentation=None,
-    ), 
+    ),
     name="co3d"
 )
 
-auto_store(DatasetConfig, 
+auto_store(DatasetConfig,
     train=get_dataset(
         Hypersim,
-        augmentation=augmentation,
+        augmentation=get_default_augmentation(),
         scratch_only=False,
-    ), 
+    ),
     val=get_dataset(
         Hypersim,
-        augmentation=augmentation,
+        augmentation=get_default_augmentation(),
         scratch_only=False,
-    ), 
+    ),
     name="hypersim"
 )
 

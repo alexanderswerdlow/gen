@@ -94,6 +94,7 @@ class TrainerConfig:
     load_accelerator_state: bool = True
     ignore_clip_weights: bool = False
     set_even_batches_false: bool = False
+    additional_val_datasets_seperate_inference: bool = False
 
     # Set in code
     num_gpus: Optional[int] = None

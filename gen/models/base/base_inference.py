@@ -53,11 +53,16 @@ def infer_batch(
 
     return images, cond
 
-def norm_two(arr1, arr2):
-    _min, _max = arr1.min(), arr1.max()
-    arr1 = (arr1 - _min) / (_max - _min)
-    arr2 = (arr2 - _min) / (_max - _min)
-    return arr1, arr2
+def jointnorm(*args):
+    _min, _max = min([x.min() for x in args]), max([x.max() for x in args])
+    ret = tuple((x - _min) / (_max - _min) for x in args)
+    if len(ret) == 1:
+        return ret[0]
+    return ret
+
+def multinorm(*args):
+    _min, _max = args[0].min(), args[0].max()
+    return ((x - _min) / (_max - _min) for x in args)
 
 def norm(x):
     return (x - x.min()) / (x.max() - x.min())
@@ -72,7 +77,7 @@ def norm_batch(x):
 
 def get_valid_mse(arr1, arr2, mask, norm_data: bool = False):
     if norm_data:
-        arr1, arr2 = norm_two(arr1, arr2)
+        arr1, arr2 = multinorm(arr1, arr2)
 
     _gt_xyz = rearrange('b h w ... -> (b h w) ...', arr1)
     _pred_xyz = rearrange('b h w ... -> (b h w) ...', arr2)
@@ -88,7 +93,7 @@ def get_depth(cfg, _gt_depth, _gt, _pred, _intrinsics, _extrinsics, b, joint_nor
         _pred_depth = torch.from_numpy(xyz_to_depth(_pred[b], _intrinsics[b], _extrinsics[b], simple=True)).to(_pred)
 
     if joint_norm:
-        return norm_two(_gt_depth, _pred_depth)
+        return multinorm(_gt_depth, _pred_depth)
     else:
         return norm(_gt_depth), norm(_pred_depth)
 
@@ -215,9 +220,11 @@ def get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=False):
     if single_view:
         prefix = f"single_view/{prefix}"
 
-    ret = {
-        f'{prefix}_mse': get_valid_mse(pred, gt, valid_mask),
-    }
+    # ret = {
+    #     f'{prefix}_mse': get_valid_mse(pred, gt, valid_mask),
+    # }
+
+    ret = dict()
 
     if cfg.model.predict_depth:
         ret.update({
@@ -256,6 +263,9 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     if self.cfg.model.only_noise_tgt:
         assert self.cfg.model.n_view_pred is False
         pipeline_kwargs['concat_src_depth'] = xyz_latents[:xyz_latents.shape[0] // 2]
+
+    if self.cfg.model.batched_denoise and self.cfg.model.num_training_views != batch.n:
+        pipeline_kwargs['batched_denoise'] = batch.n
 
     pred_latents, cond = self.infer_batch(batch, concat_rgb=rgb_latents, num_images_per_prompt=1, output_type='latent', **pipeline_kwargs)
     pred_xyz = decode_xyz(self.cfg, pred_latents, self.vae, normalizer)
@@ -330,12 +340,14 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
 
         _func = lambda x: rearrange('h w -> () h w 3', x.to(dtype=torch.float32))
         _post = 'Depth' if self.cfg.model.predict_depth else 'PCD'
+
+        norm_gt = jointnorm(_gt_orig_depth)
         
         imgs.append(
             Im.concat_horizontal(
                 Im.concat_vertical(
                     orig_rgb[[b], view_idx],
-                    Im(norm(_func(_gt_orig_depth[view_idx]))).bool_to_rgb().write_text(f"GT {_post}", size=0.6),
+                    Im(_func(norm_gt[view_idx])).bool_to_rgb().write_text(f"GT {_post}", size=0.6),
                     Im(_func(_pred_depth[view_idx])).bool_to_rgb().write_text(f"Pred {_post}", size=0.6),
                     *((Im(_func(_marigold_depth_pred[view_idx])).bool_to_rgb().write_text(f"Marigold {_post}", size=0.6),) if marigold_depth_pred is not None else ()),
                     Im(_func(_autoencoded_depth[view_idx])).bool_to_rgb().write_text(f"Autoencoded {_post}", size=0.6),
@@ -344,7 +356,6 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
                 ) for view_idx in range(batch.n)
             )
         )
-
         # secondary_viz.append(
         #     Im.concat_horizontal(
         #         Im.concat_vertical(
@@ -365,7 +376,6 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         # ) 
 
     ret['imgs'] = Im.concat_horizontal(*imgs)
-    ret['misc_data'] = Im.concat_horizontal(*imgs)
     return ret
                     
 def autoencode_gt_xyz(cfg: BaseConfig, batch: InputData, vae, xyz_latents, normalizer):

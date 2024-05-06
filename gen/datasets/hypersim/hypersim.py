@@ -124,16 +124,20 @@ class Hypersim(AbstractDataset, Dataset):
             #         log_error(e)
         raise Exception(f'Hypersim Failed to get item for index {index}')
     
+    def get_indices(self, camera_trajectory_frames, window_size):
+        first_frame_idx = random.randint(0, len(camera_trajectory_frames) - 1)
+        lower_bound = max(0, first_frame_idx - window_size)
+        upper_bound = min(len(camera_trajectory_frames) - 1, first_frame_idx + window_size)
+        possible_indices = list(range(lower_bound, upper_bound + 1))
+        return first_frame_idx, possible_indices, lower_bound, upper_bound
+    
     def nonuniform_sampler(self, camera_trajectory_frames, window_size):
         run_idx = 0
         while True:
             if run_idx > 60:
                 assert False, "Failed to find two frames with overlapping segmentations"
             run_idx += 1
-            first_frame_idx = random.randint(0, len(camera_trajectory_frames) - 1)
-            lower_bound = max(0, first_frame_idx - window_size)
-            upper_bound = min(len(camera_trajectory_frames) - 1, first_frame_idx + window_size)
-            possible_indices = list(range(lower_bound, upper_bound + 1))
+            first_frame_idx, possible_indices, _, _ = self.get_indices(camera_trajectory_frames, window_size)
             second_frame_idx = random.choice(possible_indices)
             if self.compute_segmentation_overlap(first_frame_idx, second_frame_idx):
                 break
@@ -152,7 +156,8 @@ class Hypersim(AbstractDataset, Dataset):
                 return self.__getitem__(random.randint(0, len(self) - 1))
 
             if self.uniform_sampler:
-                frame_idxs = random.sample(range(len(camera_trajectory_frames)), self.return_n_views)
+                _, possible_indices, _, _ = self.get_indices(camera_trajectory_frames, window_size)
+                frame_idxs = random.sample(possible_indices, self.return_n_views)
             else:
                 frame_idxs = self.nonuniform_sampler(camera_trajectory_frames, window_size)
             

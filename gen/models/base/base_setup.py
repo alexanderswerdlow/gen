@@ -84,7 +84,7 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
             unet_kwargs["strict_load"] = False
 
         if self.cfg.model.add_cross_attn_pos_emb is not None:
-            unet_kwargs["add_cross_attn_pos_emb"] = self.cfg.model.add_cross_attn_pos_emb
+            unet_kwargs["attention_config"].add_cross_attn_pos_emb = self.cfg.model.add_cross_attn_pos_emb
 
         self.unet = UNet2DConditionModel.from_pretrained(
             self.cfg.model.pretrained_model_name_or_path, subfolder="unet", revision=self.cfg.model.revision, variant=self.cfg.model.variant, **unet_kwargs
@@ -141,6 +141,11 @@ def initialize_diffusers_models(self: BaseModel) -> tuple[CLIPTokenizer, DDPMSch
             for k, v in self.unet.named_parameters():
                 if 'to_cross' in k:
                     param = 0.02 * torch.randn(v.shape, device=self.device) if 'weight' in k else torch.zeros(v.shape, device=self.device)
+                    set_module_tensor_to_device(self.unet, k, self.device, value=param)
+                    log_info(f"Initializing {k}")
+
+                if 'cross_attn_pos_emb' in k:
+                    param = 0.02 * torch.randn(v.shape, device=self.device)
                     set_module_tensor_to_device(self.unet, k, self.device, value=param)
                     log_info(f"Initializing {k}")
 

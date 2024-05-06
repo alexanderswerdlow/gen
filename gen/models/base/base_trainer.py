@@ -3,6 +3,7 @@ import traceback
 import types
 from functools import partial
 from time import time
+from typing import Any, Optional
 
 import torch
 import torch.utils.checkpoint
@@ -30,15 +31,15 @@ class BaseTrainer(Trainer):
         self.val_dataset_holder.batch_size = self.cfg.dataset.val.batch_size
         set_default_inference_func(unwrap(self.model), self.cfg)
 
-    def validate_validation_dataloader(self, state: TrainingState):
+    def validate_validation_dataloader(self, state: TrainingState, val_dataset_holder, prefix=""):
         if self.cfg.dataset.reset_val_dataset_every_epoch:
             g = torch.Generator()
             g.manual_seed(state.global_step + get_rank())
-            self.val_dataset_holder.batch_size = self.cfg.dataset.val.batch_size
-            self.val_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.val_dataset_holder.batch_size, self.cfg.dataset.val.batch_size)
-            self.val_dataset_holder.num_workers = self.cfg.dataset.val.num_workers
-            log_debug(f"Resetting Validation Dataloader with {self.val_dataset_holder.num_workers} workers", main_process_only=False)
-            self.validation_dataloader = self.val_dataset_holder.get_dataloader(generator=g, pin_memory=False)
+            val_dataset_holder.batch_size = self.cfg.dataset.val.batch_size
+            val_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * val_dataset_holder.batch_size, self.cfg.dataset.val.batch_size)
+            val_dataset_holder.num_workers = self.cfg.dataset.val.num_workers
+            log_debug(f"Resetting Validation Dataloader with {val_dataset_holder.num_workers} workers", main_process_only=False)
+            self.validation_dataloader = val_dataset_holder.get_dataloader(generator=g, pin_memory=False)
             self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
 
         log_debug(f"Running validation on val dataloder", main_process_only=False)
@@ -48,7 +49,7 @@ class BaseTrainer(Trainer):
             model=self.model,
             state=state,
             output_path=self.cfg.output_dir / "images",
-            prefix="val/",
+            prefix=f"{prefix}val/",
             init_pipeline=False,
         )
 
@@ -160,7 +161,11 @@ class BaseTrainer(Trainer):
 
         log_info(f"Running validation on val dataloder", main_process_only=False)
         if self.cfg.trainer.validate_validation_dataset:
-            self.validate_validation_dataloader(state)
+            self.validate_validation_dataloader(state, self.val_dataset_holder)
+            if self.cfg.trainer.additional_val_datasets_seperate_inference and self.additional_val_datasets is not None:
+                for k, v in self.additional_val_datasets.items():
+                    log_info(f"Running {k} validation on val dataloder", main_process_only=False)
+                    self.validate_validation_dataloader(state, v, prefix=f'{k}/')
 
         log_info(f"Running validation on train dataloder", main_process_only=False)
         if self.cfg.trainer.validate_training_dataset:

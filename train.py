@@ -138,9 +138,9 @@ class Trainer:
         log_info("Creating val_dataset + self.validation_dataloader")
         self.val_dataset_holder: AbstractDataset = instantiate(self.cfg.dataset.val)(cfg=self.cfg, split=Split.VALIDATION, tokenizer=self.tokenizer)
 
-        additional_val_datasets = None
+        self.additional_val_datasets = None
         if exists(self.cfg.dataset.additional_val):
-            additional_val_datasets = {dataset_name: instantiate(dataset_cfg)(cfg=self.cfg, split=Split.VALIDATION, tokenizer=self.tokenizer) for dataset_name, dataset_cfg in self.cfg.dataset.additional_val.items()}
+            self.additional_val_datasets = {dataset_name: instantiate(dataset_cfg)(cfg=self.cfg, split=Split.VALIDATION, tokenizer=self.tokenizer) for dataset_name, dataset_cfg in self.cfg.dataset.additional_val.items()}
 
         if self.cfg.dataset.overfit: self.val_dataset_holder.get_dataset = lambda: self.train_dataloader.dataset
 
@@ -148,7 +148,7 @@ class Trainer:
         g.manual_seed(0 + get_rank())
         self.val_dataset_holder.batch_size = self.cfg.dataset.val.batch_size
         self.val_dataset_holder.subset_size = max(self.cfg.trainer.num_gpus * self.val_dataset_holder.batch_size, self.cfg.dataset.val.batch_size)
-        self.validation_dataloader = self.val_dataset_holder.get_dataloader(generator=g, pin_memory=False, additional_datasets=additional_val_datasets)
+        self.validation_dataloader = self.val_dataset_holder.get_dataloader(generator=g, pin_memory=False, additional_datasets=self.additional_val_datasets if self.cfg.trainer.additional_val_datasets_seperate_inference is False else None)
         self.validation_dataloader = self.accelerator.prepare_data_loader(self.validation_dataloader, device_placement=False)
 
         assert len(self.validation_dataloader) > 0

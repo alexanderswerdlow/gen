@@ -980,6 +980,16 @@ class StableDiffusionPipeline(
                     assert self.do_classifier_free_guidance is False
                     latent_model_input = torch.cat([kwargs["concat_rgb"], latent_model_input], dim=1) 
 
+                if kwargs.get("batched_denoise", None) is not None:
+                    if i % 5 == 0:
+                        from einx import rearrange
+                        training_views = self.cross_attention_kwargs['attn_meta'].joint_attention
+                        inference_views = kwargs.get("batched_denoise", None)
+                        assert inference_views is not None
+                        latent_model_input = rearrange('(inference_views b) ... -> inference_views b ...', latent_model_input, inference_views=inference_views)
+                        latent_model_input = latent_model_input[torch.randperm(latent_model_input.shape[0], device=latent_model_input.device)]
+                        latent_model_input = rearrange('inference_views b ... -> (inference_views b) ...', latent_model_input)
+
                 _timesteps = t
                 if kwargs.get("concat_src_depth", None) is not None:
                     assert self.do_classifier_free_guidance is False
