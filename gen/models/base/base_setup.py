@@ -303,7 +303,7 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
         if cfg.model.ema:
             other.ema_unet.train()
 
-def set_inference_mode(self: BaseModel, init_pipeline: bool = True):
+def set_inference_mode(self: BaseModel, init_pipeline: bool = True, **kwargs):
     if init_pipeline and self.cfg.model.unet and getattr(self, "pipeline", None) is None:
         self.pipeline: Union[StableDiffusionControlNetPipeline, StableDiffusionPipeline] = load_stable_diffusion_model(
             cfg=self.cfg,
@@ -314,6 +314,7 @@ def set_inference_mode(self: BaseModel, init_pipeline: bool = True):
             vae=self.vae,
             model=self,
             torch_dtype=self.dtype,
+            **kwargs
         )
 
 

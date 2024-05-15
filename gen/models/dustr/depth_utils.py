@@ -53,8 +53,6 @@ def xyz_to_depth(pcd, camera_intrinsics, camera_pose, simple: bool = False):
 
     depthmap[valid_v, valid_u] = valid_z
 
-    
-
     return depthmap
 
 def depreciated_fill_invalid_regions(input_xyz, input_valid):
@@ -104,21 +102,45 @@ def encode_xyz(cfg: BaseConfig, gt_points, init_valid_mask, vae, dtype, num_view
 
     return latents, post_enc_valid_mask, normalizer
 
-@torch.no_grad()
-def decode_xyz(cfg: BaseConfig, pred_latents, vae, normalizer):
-    pred_latents = (1 / vae.config.scaling_factor) * pred_latents
-    if cfg.model.separate_xyz_encoding:
-        pred_latents = rearrange('b (xyz c) h w -> (b xyz) c h w', pred_latents, xyz=3)
 
-    with torch.autocast(device_type="cuda", enabled=cfg.model.force_fp32_pcd_vae is False):
-        decoded_points = vae.decode(pred_latents.to(torch.float32), return_dict=False)[0]
+def decode_xyz(
+        cfg: BaseConfig,
+        pred_latents,
+        vae,
+        normalizer,
+        enable_grad=False,
+        enable_checkpointing=False,
+        force_mixed_precision=False,
+        return_depth_std=False,
+        **kwargs
+    ):
+    with torch.set_grad_enabled(enable_grad):
+        pred_latents = (1 / vae.config.scaling_factor) * pred_latents
         if cfg.model.separate_xyz_encoding:
-            decoded_points = mean('(b xyz) [c] h w -> b xyz h w', decoded_points, xyz=3)
-            
-        if cfg.model.predict_depth:
-            decoded_points = mean('b [c] h w -> b 1 h w', decoded_points, dim=-1)
+            pred_latents = rearrange('b (xyz c) h w -> (b xyz) c h w', pred_latents, xyz=3)
 
-        decoded_points = normalizer.denormalize(decoded_points)
+        cast_fp32 = not ((cfg.model.force_fp32_pcd_vae is False) or force_mixed_precision)
+        with torch.autocast(device_type="cuda", enabled=not cast_fp32):
+            if cast_fp32:
+                pred_latents = pred_latents.to(torch.float32)
+            if enable_checkpointing:
+                import torch.utils.checkpoint as checkpoint
+                decoded_points = checkpoint.checkpoint(vae.decode, pred_latents, False, use_reentrant=False)[0]
+            else:
+                decoded_points = vae.decode(pred_latents.to(torch.float32), return_dict=False)[0]
+
+            if cfg.model.separate_xyz_encoding:
+                decoded_points = mean('(b xyz) [c] h w -> b xyz h w', decoded_points, xyz=3)
+                
+            if cfg.model.predict_depth:
+                if return_depth_std:
+                    std_dev = torch.std(decoded_points, dim=1)
+                decoded_points = mean('b [c] h w -> b 1 h w', decoded_points, dim=-1)
+
+            decoded_points = normalizer.denormalize(decoded_points, **kwargs)
+
+            if return_depth_std:
+                return *decoded_points, std_dev
 
     return decoded_points
 

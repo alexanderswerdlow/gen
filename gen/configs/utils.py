@@ -73,8 +73,10 @@ def inherit_parent_args(cls):
     cls.__init__ = new_init
     return cls
 
-def get_cfg(overrides: Union[str, list[str]], handle_dtype: bool = True) -> BaseConfig:
+def get_cfg(overrides: Union[str, list[str]], clear_global_hydra: bool = False) -> BaseConfig:
+    if clear_global_hydra:
+        import hydra
+        hydra.core.global_hydra.GlobalHydra.instance().clear()
     with initialize(config_path=None, version_base=None):
         cfg = compose(config_name="config", return_hydra_config=True, overrides=overrides)
-
         return cfg

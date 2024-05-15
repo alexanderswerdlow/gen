@@ -26,7 +26,14 @@ class AttentionConfig:
 @dataclass
 class AttentionMetadata:
     gate_scale: Optional[float] = None
+    training_views: Optional[int] = None
     joint_attention: Optional[int] = None
+
+    fix_current_view_during_shuffle: bool = False
+    inference_shuffle_per_layer: bool = False
+    inference_shuffle_every_n_iterations: Optional[int] = None
+    inference_shuffle_up_to: Optional[float] = None
+    inference_views: Optional[int] = None
     
 
 class Dummy:

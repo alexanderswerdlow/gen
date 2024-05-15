@@ -90,7 +90,15 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
         )
         return depth_norm_linear, outside_range
 
-    def scale_back(self, depth_norm, warn: bool = False):
+    def scale_back(
+            self,
+            depth_norm,
+            warn: bool = False,
+            disable_scaling: bool = False,
+            return_vae_valid_mask: bool = False,
+            clip_outside_vae: bool = False,
+            mask_outside_quantile: bool = False,
+        ):
         shape = depth_norm.shape
         depth_norm = rearrange('(num_views b) xyz h w -> b (num_views h w) xyz', depth_norm, num_views=self.num_views)
         depth_linear = (depth_norm / 2 + 0.5)
@@ -100,13 +108,39 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
             print(f"Warning: depth_linear out of range: {depth_linear.min():.3f}, {depth_linear.max():.3f}")
 
         outside_range = ((depth_linear < 0) | (depth_linear > 1)).any(dim=-1)
-        depth_linear = depth_linear * (
-            self._max - self._min
-        ) + self._min
+
+        if clip_outside_vae:
+            depth_linear = torch.clip(depth_linear, 0, 1)
+
+        if mask_outside_quantile:
+            all_min, all_max = [], []
+            for b in range(bs):
+                _min, _max = torch.quantile(
+                    depth_linear[b][~outside_range[b]].float(),
+                    torch.tensor([self.min_quantile, self.max_quantile]).to(depth_linear.device),
+                    dim=None,
+                )
+                all_min.append(_min)
+                all_max.append(_max)
+
+            _min = torch.stack(all_min)[:, None]
+            _max = torch.stack(all_max)[:, None]
+            _min =  _min[:, None]
+            _max =  _max[:, None]
+            outside_range = outside_range | ((_min > depth_linear) | (_max < depth_linear)).squeeze(-1)
+
+        if disable_scaling is False:
+            depth_linear = depth_linear * (
+                self._max - self._min
+            ) + self._min
 
         depth_linear = rearrange('b (num_views h w) xyz -> (num_views b) h w xyz', depth_linear, b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
         outside_range = rearrange('b (num_views h w) -> (num_views b) h w', outside_range, b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
-        return depth_linear
+        
+        if return_vae_valid_mask:
+            return depth_linear, outside_range
+        else:
+            return depth_linear
 
     def denormalize(self, depth_norm, **kwargs):
-        return self.scale_back(depth_norm=depth_norm)
+        return self.scale_back(depth_norm=depth_norm, **kwargs)

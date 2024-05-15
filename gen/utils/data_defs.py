@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 @tensorclass
 class InputData:
-    id: Integer[Tensor, "b"]
+    id: Integer[Tensor, "b"] = None
     src_dec_rgb: Float[Tensor, "b c h w"] = None
     tgt_dec_rgb: Float[Tensor, "b c h w"] = None
     dec_rgb: Float[Tensor, "b n c h w"] = None

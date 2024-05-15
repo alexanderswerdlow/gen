@@ -136,13 +136,30 @@ class XFormersAttnProcessor:
         else:
             if attn_meta.joint_attention is not None and is_cross_attention:
                 views = attn_meta.joint_attention
-                encoder_hidden_states = rearrange('(views b) tokens c -> (repeat_views b) views tokens c', hidden_states, views=views, repeat_views=views)
+
+                if attn_meta.inference_shuffle_per_layer: # Pass all images through linear before repeating
+                    encoder_hidden_states = hidden_states.clone()
+                else:
+                    encoder_hidden_states = rearrange('(views b) tokens c -> (repeat_views b) views tokens c', hidden_states, views=views, repeat_views=views)
+
                 encoder_hidden_states = attn.to_cross(encoder_hidden_states)
+
+                if attn_meta.inference_shuffle_per_layer: # TODO: Inefficient
+                    encoder_hidden_states = rearrange('vb ... -> repeat_vb vb ...', encoder_hidden_states, repeat_vb=encoder_hidden_states.shape[0])
+
                 if attn.cross_attn_pos_emb is not None:
                     trained_views = attn.cross_attn_pos_emb.shape[0]
+                    if attn_meta.training_views is not None: assert trained_views == attn_meta.training_views
                     if views != trained_views:
-                        indices = torch.randperm(encoder_hidden_states.shape[1], device=encoder_hidden_states.device)[:trained_views]
-                        encoder_hidden_states = encoder_hidden_states[:, indices]
+                        if attn_meta.inference_shuffle_per_layer:
+                            if attn_meta.fix_current_view_during_shuffle:
+                                indices = torch.randint(0, encoder_hidden_states.size(1), (encoder_hidden_states.size(0), trained_views - 1), device=encoder_hidden_states.device)
+                                indices = torch.cat([torch.arange(encoder_hidden_states.size(0), device=encoder_hidden_states.device)[:, None], indices], dim=1)
+                            else:
+                                indices = torch.randint(0, encoder_hidden_states.size(1), (encoder_hidden_states.size(0), trained_views), device=encoder_hidden_states.device)
+                            batch_indices = torch.arange(encoder_hidden_states.shape[0], device=indices.device).unsqueeze(-1)
+                            encoder_hidden_states = encoder_hidden_states[batch_indices, indices]
+
                     encoder_hidden_states = add('(repeat_views b) views tokens c, views c -> (repeat_views b) views tokens c', encoder_hidden_states, attn.cross_attn_pos_emb)
                 encoder_hidden_states = rearrange('(repeat_views b) views tokens c -> (repeat_views b) (views tokens) c', encoder_hidden_states)
 

@@ -27,13 +27,14 @@ def load_stable_diffusion_model(
     text_encoder: Optional[CLIPTextModel] = None,
     unet: Optional[UNet2DConditionModel] = None,
     vae: Optional[AutoencoderKL] = None,
+    should_disable_progress_bar: bool = True,
 ) -> Union[StableDiffusionPipeline, StableDiffusionControlNetPipeline]:
     
     log_debug("Loading Diffusion Pipeline...", main_process_only=False)
     """Loads SD model given the current text encoder and our mapper."""
     assert not cfg.model.controlnet or hasattr(model, "controlnet"), "You must pass a controlnet model to use controlnet."
 
-    disable_progress_bar()
+    if should_disable_progress_bar: disable_progress_bar()
     cls = StableDiffusionControlNetPipeline if cfg.model.controlnet else StableDiffusionPipeline
     pretrained_model_name_or_path = cfg.model.pretrained_model_name_or_path
 
@@ -65,7 +66,7 @@ def load_stable_diffusion_model(
 
     scheduler.set_timesteps(cfg.inference.num_denoising_steps, device=pipeline.device)
     pipeline.scheduler = scheduler
-    pipeline.set_progress_bar_config(disable=True)
+    pipeline.set_progress_bar_config(disable=should_disable_progress_bar)
 
     # if cfg.model.unet_lora:
     #     pipeline.load_lora_weights(args.output_dir)

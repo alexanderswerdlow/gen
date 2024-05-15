@@ -29,11 +29,13 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 
-try:
-    from gen.utils.logging_utils import log_info
-    log_func = log_info
-except ImportError:
-    log_func = print
+# try:
+#     from gen.utils.logging_utils import log_info, set_logger
+#     set_logger(__name__)
+#     log_func = log_info
+# except ImportError:
+#     
+log_func = print
 
 def get_info():
     return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE).stdout.decode("utf-8")
@@ -49,7 +51,7 @@ def print_trainable_parameters(model):
         all_param += param.numel()
         if param.requires_grad:
             trainable_params += param.numel()
-    print(
+    log_func(
         f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param:.2f}"
     )
 
@@ -307,22 +309,26 @@ def tensorboard_trace_handler(dir_name: str, record_memory: bool = False, worker
         if use_gzip:
             file_name = file_name + ".gz"
 
-        print(f"Exporting to {os.path.join(dir_name, file_name)}")
-        prof.export_chrome_trace(os.path.join(dir_name, file_name))
+        chrome_trace_path = os.path.join(dir_name, file_name)
+        memory_trace_path = os.path.join(dir_name, "memory_timeline.html")
         if is_main_process() and record_memory:
             try:
-                prof.export_memory_timeline(os.path.join(dir_name, "memory_timeline.html"))
+                log_func(f"Exporting memory timeline: {memory_trace_path}")
+                prof.export_memory_timeline(memory_trace_path)
             except Exception as e:
-                print(f"Failed to export memory timeline: {e}")
+                log_func(f"Failed to export memory timeline: {e}")
         
             prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=100)
+
+        log_func(f"Exporting chrome trace to {chrome_trace_path}")
+        prof.export_chrome_trace(chrome_trace_path)
 
     return handler_fn
 
 def save_memory_profile(profile_dir):
     import wandb
     rank_postfix = f"_rank_{get_rank()}" if use_dist() else ""
-    print(f"Saving memory profile to {profile_dir}")
+    log_func(f"Saving memory profile to {profile_dir}")
     os.makedirs(profile_dir, exist_ok=True)
     torch.cuda.memory._dump_snapshot(f"{profile_dir}/memory_snapshot{rank_postfix}.pickle")
     os.system(
@@ -340,21 +346,29 @@ def save_memory_profile(profile_dir):
         wandb.log({'profile': wandb.Html(f"{profile_dir}/memory_timeline{rank_postfix}.html")})
 
 class Profiler:
-    def __init__(self, output_dir, warmup_steps: int = 5, active_steps: int = 3, record_memory: bool = False):
+    def __init__(self, output_dir, warmup_steps: int = 5, active_steps: int = 3, record_memory: bool = False, record_memory_only: bool = False):
         self.record_memory = record_memory
         self.profile_dir = Path(output_dir) / "profile"
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         wait, warmup, active, repeat = 0, warmup_steps, active_steps, 0
         self.total_steps = (wait + warmup + active) * (1 + repeat)
         schedule = torch.profiler.schedule(wait=wait, warmup=warmup, active=active, repeat=repeat)
+        profiler_kwargs = dict(record_shapes=True, with_stack=True)
+        if record_memory_only:
+            pass
+        else:
+            profiler_kwargs.update(
+                dict(
+                    with_modules=True,
+                    with_flops=True,
+                ),
+            )
+
         self.profiler = torch.profiler.profile(
             schedule=schedule,
             on_trace_ready=tensorboard_trace_handler(self.profile_dir, record_memory=record_memory),
-            record_shapes=True,
-            with_modules=True,
-            with_flops=True,
             profile_memory=record_memory,
-            with_stack=True,
+            **profiler_kwargs
         )
         self.profiler.start()
 
@@ -496,27 +510,29 @@ def show_memory_usage(empty_cache: bool = True, verbose: bool = False):
     torch.cuda.synchronize()
     if empty_cache: torch.cuda.empty_cache()
     if is_main_process():
-        log_func("Before context", end="")
-        log_func(verbose)
+        log_func("Before context: ", end="")
+        print_memory(verbose)
     
     yield
 
     torch.cuda.synchronize()
     if empty_cache: torch.cuda.empty_cache()
     if is_main_process():
-        log_func("After context", end="")
-        log_func(verbose)
+        log_func("After context: ", end="")
+        print_memory(verbose)
 
 
 def get_date_time_str():
     return datetime.now().strftime("%Y_%m_%d-%H_%M")
 
 @contextlib.contextmanager
-def profile_memory(enable: bool = True):
-    if enable and is_main_process(): torch.cuda.memory._record_memory_history()
-    yield
-    if enable: save_memory_profile(Path(f"output/profile/{get_date_time_str()}"))
-    
+def profile_memory(enable: bool = True, empty_cache: bool = True):
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(show_memory_usage(empty_cache=empty_cache))
+        if enable and is_main_process(): torch.cuda.memory._record_memory_history()
+        yield
+        if enable: save_memory_profile(Path(f"output/profile/{get_date_time_str()}"))
+
 def profile_memory_decorator(func):
     @wraps(func)
     def wrapper(*args, **kwargs):

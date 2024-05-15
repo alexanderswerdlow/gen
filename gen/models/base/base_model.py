@@ -145,6 +145,7 @@ class BaseMapper(Trainable):
 
         if self.cfg.model.joint_attention:
             cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].joint_attention = self.cfg.model.num_training_views
+            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].training_views = self.cfg.model.num_training_views
         
         cond.encoder_hidden_states = self.uncond_hidden_states[None].repeat(batch.bs, 1, 1)
 

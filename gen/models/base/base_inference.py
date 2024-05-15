@@ -189,11 +189,11 @@ def align_depth_least_square(
         return aligned_pred
 
 def get_metrics(batch, cfg, prefix, pred, gt, valid_mask):
-    ret = get_metrics_(batch, cfg, prefix, pred, gt, valid_mask)
+    ret = get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=False)
     ret.update(get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=True))
     return ret
 
-def get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=False):
+def get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=False, ret_mse=False):
     pred = pred.squeeze(-1)
     gt = gt.squeeze(-1)
     valid_mask = valid_mask.squeeze(-1)
@@ -220,11 +220,9 @@ def get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=False):
     if single_view:
         prefix = f"single_view/{prefix}"
 
-    # ret = {
-    #     f'{prefix}_mse': get_valid_mse(pred, gt, valid_mask),
-    # }
-
     ret = dict()
+    if ret_mse:
+        ret[f'{prefix}_mse'] = get_valid_mse(pred, gt, valid_mask)
 
     if cfg.model.predict_depth:
         ret.update({
@@ -265,7 +263,7 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         pipeline_kwargs['concat_src_depth'] = xyz_latents[:xyz_latents.shape[0] // 2]
 
     if self.cfg.model.batched_denoise and self.cfg.model.num_training_views != batch.n:
-        pipeline_kwargs['batched_denoise'] = batch.n
+        pipeline_kwargs['batched_denoise'] = (batch.n, 5)
 
     pred_latents, cond = self.infer_batch(batch, concat_rgb=rgb_latents, num_images_per_prompt=1, output_type='latent', **pipeline_kwargs)
     pred_xyz = decode_xyz(self.cfg, pred_latents, self.vae, normalizer)
