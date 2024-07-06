@@ -45,3 +45,6 @@ import antigravity
   #   regression:
   #     after_step: 1000
   #     window: 100
+
+            # from einx import rearrange
+            # backbone_output.weights = rearrange('b f (h w) -> b f h w', F.softmax(rearrange('b f ... -> b f (...)', backbone_output.weights), dim=-1), h=h, w=w) * 2000

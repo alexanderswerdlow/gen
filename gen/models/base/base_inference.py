@@ -36,6 +36,18 @@ def infer_batch(
         cond.encoder_hidden_states = cond.encoder_hidden_states.repeat(_repeat_dim, 1, 1)
         cond.unet_kwargs["prompt_embeds"] = cond.encoder_hidden_states
 
+    cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].inference_views = batch.n
+    cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].training_views = self.cfg.model.num_cross_attn_views
+    
+    if self.cfg.model.shuffle_every_layer and self.cfg.model.num_cross_attn_views != batch.n:
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].joint_attention = batch.n
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].inference_shuffle_per_layer = True
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].fix_current_view_during_shuffle = self.cfg.model.fix_current_view_during_shuffle
+
+    elif self.cfg.model.shuffle_every_iteration and self.cfg.model.num_cross_attn_views != batch.n:
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].inference_shuffle_every_n_iterations = 1
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].inference_shuffle_up_to = 0.25
+
     if "guidance_scale" not in cond.unet_kwargs and "guidance_scale" not in kwargs:
         kwargs["guidance_scale"] = self.cfg.inference.guidance_scale
 
@@ -188,9 +200,9 @@ def align_depth_least_square(
     else:
         return aligned_pred
 
-def get_metrics(batch, cfg, prefix, pred, gt, valid_mask):
-    ret = get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=False)
-    ret.update(get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=True))
+def get_metrics(batch, cfg, prefix, pred, gt, valid_mask, **kwargs):
+    ret = get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=False, **kwargs)
+    ret.update(get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=True, **kwargs))
     return ret
 
 def get_metrics_(batch, cfg, prefix, pred, gt, valid_mask, single_view=False, ret_mse=False):
@@ -262,9 +274,6 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         assert self.cfg.model.n_view_pred is False
         pipeline_kwargs['concat_src_depth'] = xyz_latents[:xyz_latents.shape[0] // 2]
 
-    if self.cfg.model.batched_denoise and self.cfg.model.num_training_views != batch.n:
-        pipeline_kwargs['batched_denoise'] = (batch.n, 5)
-
     pred_latents, cond = self.infer_batch(batch, concat_rgb=rgb_latents, num_images_per_prompt=1, output_type='latent', **pipeline_kwargs)
     pred_xyz = decode_xyz(self.cfg, pred_latents, self.vae, normalizer)
 
@@ -327,6 +336,30 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
     marigold_depth_pred = rearrange('(n b) ... -> b n ...', marigold_depth_pred, n=batch.n) if marigold_depth_pred is not None else None
     xyz_valid = rearrange('(n b) ... -> b n ...', xyz_valid, n=batch.n)
 
+    if self.cfg.inference.viz_rerun:
+        # import rerun as rr
+        # import rerun.blueprint as rrb
+        
+        # blueprint = rrb.Horizontal(
+        #     rrb.Spatial3DView(name="3D", origin="world"),
+        #     rrb.Grid([
+        #         rrb.Spatial2DView(
+        #             name="rgb",
+        #             origin=f"world/camera/image/rgb",
+        #         ),
+        #         rrb.Spatial2DView(
+        #             name="depth",
+        #             origin=f"world/camera/image/depth",
+        #         )
+        #     ]),
+        # )
+
+        # rr.init("rerun_example_my_data", default_blueprint=blueprint)
+        # rr.serve(web_port=0, ws_port=0)
+        # rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
+        import pyviz3d.visualizer as viz
+        v = viz.Visualizer()
+
     for b in to_viz_indices:
         _gt_depth, _pred_depth = get_depth(self.cfg, batch.dec_depth, batch.xyz, pred_xyz, batch.intrinsics, batch.extrinsics, b)
         _autoencoded_depth = get_depth(self.cfg, batch.dec_depth, batch.xyz, autoencoded_xyz, batch.intrinsics, batch.extrinsics, b)[1]
@@ -372,6 +405,22 @@ def run_qualitative_inference(self: BaseMapper, batch: InputData, state: Trainin
         #         ),
         #     )
         # ) 
+
+        if self.cfg.inference.viz_rerun:
+            breakpoint()
+            rr.log("world/tracked_3d", rr.Points3D(trajs))
+            rr.log("world/camera/depth", rr.DepthImage(depth))
+            rr.log("world/camera/rgb", rr.Image(img))
+            # rr.log("world/camera", rr.Transform3D(rr.TranslationAndMat3x3(translation=cam_extrinsic[:3, 3], mat3x3=cam_extrinsic[:3, :3], from_parent=True)))
+            # rr.log(
+            #     "world/camera",
+            #     rr.Pinhole(
+            #         resolution=[w, h],
+            #         focal_length=[cam_intrinsic[0, 0], cam_intrinsic[1, 1]],
+            #         principal_point=[cam_intrinsic[0, 2], cam_intrinsic[1, 2]],
+            #     ),
+            #     static=True
+            # )
 
     ret['imgs'] = Im.concat_horizontal(*imgs)
     return ret

@@ -10,6 +10,7 @@ from gen.datasets.augmentation.kornia_augmentation import Augmentation
 from gen.datasets.dustr.co3d import Co3d
 from gen.datasets.hypersim.hypersim import Hypersim
 from gen.datasets.imagefolder.imagefolder import ImagefolderDataset
+from gen.datasets.imagefolder.videofolder import VideofolderDataset
 
 
 @dataclass
@@ -70,6 +71,19 @@ auto_store(DatasetConfig,
     ),
     name="imagefolder"
 )
+
+auto_store(DatasetConfig, 
+    train=get_dataset(
+        VideofolderDataset,
+        augmentation=get_default_augmentation(),
+    ),
+    val=get_dataset(
+        VideofolderDataset,
+        augmentation=get_default_augmentation(),
+    ),
+    name="videofolder"
+)
+
 
 auto_store(DatasetConfig, 
     train=get_dataset(

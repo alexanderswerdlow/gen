@@ -120,7 +120,7 @@ exp_store(
     trainer=dict(
         tracker_project_name="gen",
         num_train_epochs=10000,
-        max_train_steps=100000,
+        max_train_steps=1000000,
         eval_epochs=None,
         eval_steps=500,
         ckpt_steps=1000,

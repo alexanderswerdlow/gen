@@ -217,7 +217,7 @@ def get_experiments():
             only_noise_tgt=False,
             use_valid_xyz_loss_mask=False,
             dropout_src_depth=0.5,
-            num_training_views=2,
+            num_cross_attn_views=2,
         ),
         dataset=dict(
             train=dict(
@@ -319,9 +319,9 @@ def get_experiments():
         debug=True,
         model=dict(
             n_view_pred=True,
-            add_cross_attn_pos_emb="${model.num_training_views}",
-            batched_denoise=True,
-            num_training_views=4,
+            add_cross_attn_pos_emb="${model.num_cross_attn_views}",
+            shuffle_every_layer=True,
+            num_cross_attn_views=4,
         ),
         dataset=dict(
             train=dict(
@@ -399,4 +399,116 @@ def get_experiments():
         trainer=dict(
             gradient_accumulation_steps=8,
         ),
+    )
+
+    mode_store(
+        name="replica_dataset",
+        dataset=dict(
+            train=builds(
+                VideofolderDataset, 
+                populate_full_signature=True,
+                root=Path('/home/aswerdlo/repos/lib/SplaTAM/data/Replica'),
+                zen_partial=True,
+                camera_trajectory_window=100,
+                return_n_views="${model.num_input_views}",
+                load_depth=True,
+                augmentation=get_default_augmentation(**dict(
+                    src_resolution="${model.decoder_resolution}",
+                    tgt_resolution="${model.decoder_resolution}",
+                    src_transforms="${get_tgt_transform:model}", # This is intentional
+                    tgt_transforms="${get_tgt_transform:model}",
+                )),
+                random_subset=True,
+                postfix='results',
+                rgb_prefix='frame'
+            ),
+            val=builds(
+                VideofolderDataset, 
+                populate_full_signature=True,
+                root=Path('/home/aswerdlo/repos/lib/SplaTAM/data/Replica'),
+                zen_partial=True,
+                camera_trajectory_window=100,
+                return_n_views="${model.num_input_views}",
+                load_depth=True,
+                augmentation=get_default_augmentation(**dict(
+                    src_resolution="${model.decoder_resolution}",
+                    tgt_resolution="${model.decoder_resolution}",
+                    src_transforms="${get_tgt_transform:model}", # This is intentional
+                    tgt_transforms="${get_tgt_transform:model}",
+                )),
+                random_subset=False,
+                postfix='results',
+                rgb_prefix='frame'
+            ),
+            additional_val=dict(
+                replica_16_views=builds(
+                    VideofolderDataset, 
+                    populate_full_signature=True,
+                    root=Path('/home/aswerdlo/repos/lib/SplaTAM/data/Replica'),
+                    zen_partial=True,
+                    camera_trajectory_window=400,
+                    return_n_views="${eval:'${dataset.val.return_n_views} * 4'}",
+                    load_depth=True,
+                    augmentation=get_default_augmentation(**dict(
+                        src_resolution="${model.decoder_resolution}",
+                        tgt_resolution="${model.decoder_resolution}",
+                        src_transforms="${get_tgt_transform:model}", # This is intentional
+                        tgt_transforms="${get_tgt_transform:model}",
+                    )),
+                    batch_size="${eval:'${dataset.val.batch_size} // 6'}",
+                    random_subset=False,
+                    postfix='results',
+                    rgb_prefix='frame'
+                ),
+                sevenscenes=None,
+                sevenscenes_double_views=None,
+                hypersim_double_views=None,
+            ),
+        ),
+        hydra_defaults=["_self_", {"override /dataset": "videofolder"}],
+    )
+
+    mode_store(
+        name="exp_v1_2",
+        model=dict(
+            add_cross_attn_pos_emb=96,
+            shuffle_embedding_per_layer=True,
+        ),
+        hydra_defaults=["exp_v1_1_multiview"],
+    )
+
+    mode_store(
+        name="exp_v1_3",
+        model=dict(
+            unfreeze_last_n_unet_layer=2,
+            fill_invalid_with_max=True,
+            disable_quantile=True,
+        ),
+        hydra_defaults=["exp_v1_2"],
+    )
+
+    mode_store(
+        name="exp_v1_4",
+        model=dict(
+            unfreeze_last_n_unet_layer=1,
+            fill_invalid_with_max=True,
+            disable_quantile=True,
+            num_cross_attn_views=4,
+            num_input_views=32,
+            shuffle_every_layer=True,
+            xyz_min_max_quantile=0.0,
+            fix_current_view_during_shuffle=True
+        ),
+        dataset=dict(
+            train=dict(
+                batch_size=1,
+            ),
+            val=dict(
+                batch_size=1,
+            ),
+        ),
+        trainer=dict(
+            gradient_accumulation_steps=8,
+        ),
+        hydra_defaults=["exp_v1_3"],
     )

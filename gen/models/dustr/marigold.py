@@ -43,7 +43,7 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
         self._max = None
         self.num_views = num_views
 
-    def __call__(self, depth_linear, valid_mask=None, clip: bool = False, per_axis_quantile=False):
+    def __call__(self, depth_linear, valid_mask=None, clip: bool = False, per_axis_quantile: bool = False, disable_quantile: bool = False, fill_invalid_with_max: bool = False):
         clip = clip if clip is not None else self.clip
 
         shape = depth_linear.shape
@@ -59,11 +59,14 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
         # Take quantiles as min and max
         all_min, all_max = [], []
         for b in range(bs):
-            _min, _max = torch.quantile(
-                depth_linear[b][valid_mask[b]].float(),
-                torch.tensor([self.min_quantile, self.max_quantile]).to(depth_linear.device),
-                dim=(0 if per_axis_quantile else None),
-            )
+            if disable_quantile:
+                _min, _max = depth_linear[b][valid_mask[b]].min(), depth_linear[b][valid_mask[b]].max()
+            else:
+                _min, _max = torch.quantile(
+                    depth_linear[b][valid_mask[b]].float(),
+                    torch.tensor([self.min_quantile, self.max_quantile]).to(depth_linear.device),
+                    dim=(0 if per_axis_quantile else None),
+                )
             all_min.append(_min)
             all_max.append(_max)
 
@@ -71,13 +74,19 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
         self._max = torch.stack(all_max)[:, None]
 
         if per_axis_quantile is False:
-            self._min =  self._min[:, None]
-            self._max =  self._max[:, None]
-
+            self._min = self._min[:, None]
+            self._max = self._max[:, None]
 
         denom = torch.clamp(self._max - self._min, min=1e-8)
         depth_norm_linear = (depth_linear - self._min) / denom * self.norm_range + self.norm_min
         outside_range = ((depth_norm_linear < self.norm_min) | (depth_norm_linear > self.norm_max)).any(dim=-1)
+
+        if disable_quantile:
+            assert torch.allclose(~outside_range, valid_mask)
+            assert outside_range.sum().item() == (~valid_mask).sum()
+
+        if fill_invalid_with_max:
+            depth_norm_linear = torch.where(outside_range[..., None], self.norm_max, depth_norm_linear)
 
         if clip:
             depth_norm_linear = torch.clip(depth_norm_linear, self.norm_min, self.norm_max)
@@ -98,10 +107,18 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
             return_vae_valid_mask: bool = False,
             clip_outside_vae: bool = False,
             mask_outside_quantile: bool = False,
+            include_outside_points_in_norm: bool = False,
+            per_frame_norm: bool = False
         ):
         shape = depth_norm.shape
-        depth_norm = rearrange('(num_views b) xyz h w -> b (num_views h w) xyz', depth_norm, num_views=self.num_views)
-        depth_linear = (depth_norm / 2 + 0.5)
+        if per_frame_norm is False:
+            depth_norm = rearrange('(num_views b) xyz h w -> b (num_views h w) xyz', depth_norm, num_views=self.num_views)
+
+        if include_outside_points_in_norm:
+            depth_linear = (depth_norm - depth_norm.min()) / (depth_norm.max() - depth_norm.min())
+        else:
+            depth_linear = (depth_norm / 2 + 0.5)
+
         bs = depth_linear.shape[0]
 
         if warn and (depth_linear.min() <= (0 - 1e-8) or depth_linear.max() >= (1 + 1e-8)):
@@ -134,8 +151,12 @@ class NearFarMetricNormalizer(DepthNormalizerBase):
                 self._max - self._min
             ) + self._min
 
-        depth_linear = rearrange('b (num_views h w) xyz -> (num_views b) h w xyz', depth_linear, b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
-        outside_range = rearrange('b (num_views h w) -> (num_views b) h w', outside_range, b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
+        if per_frame_norm is False:
+            depth_linear = rearrange('b (num_views h w) xyz -> (num_views b) h w xyz', depth_linear, b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
+            outside_range = rearrange('b (num_views h w) -> (num_views b) h w', outside_range, b=bs, h=shape[2], w=shape[3], num_views=self.num_views)
+        else:
+            outside_range = torch.zeros_like(depth_linear)[:, 0].to(torch.bool)
+            depth_linear = depth_linear.squeeze(1)[..., None]
         
         if return_vae_valid_mask:
             return depth_linear, outside_range

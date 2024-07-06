@@ -85,10 +85,18 @@ class ModelConfig:
     dropout_src_depth: Optional[float] = None
     freeze_self_attn: bool = False
     n_view_pred: bool = False
-    num_training_views: Optional[int] = None
+    num_cross_attn_views: Optional[int] = None
     add_cross_attn_pos_emb: Optional[int] = None
-    batched_denoise: bool = False
-    
+    shuffle_every_layer: bool = False
+    shuffle_every_iteration: bool = False
+    fix_current_view_during_shuffle: bool = False
+    shuffle_embedding_per_layer: bool = False
+    freeze_joint_attention: bool = False
+    unfreeze_last_n_unet_layer: Optional[int] = None
+    disable_quantile: bool = False
+    fill_invalid_with_max: bool = False
+    train_shuffle_per_layer: bool = False
+    num_input_views: Optional[int] = None
 
 
 auto_store(

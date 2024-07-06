@@ -95,6 +95,7 @@ class TrainerConfig:
     ignore_clip_weights: bool = False
     set_even_batches_false: bool = False
     additional_val_datasets_seperate_inference: bool = False
+    ignore_pos_emb_weights: bool = False
 
     # Set in code
     num_gpus: Optional[int] = None

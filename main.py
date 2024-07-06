@@ -18,7 +18,7 @@ import torch.backends.cuda as cuda
 import torch.backends.cudnn as cudnn
 import torch.utils.checkpoint
 import transformers
-from accelerate import Accelerator, DistributedDataParallelKwargs, FullyShardedDataParallelPlugin
+from accelerate import Accelerator, DistributedDataParallelKwargs, FullyShardedDataParallelPlugin, DataLoaderConfiguration
 from accelerate.utils import GradientAccumulationPlugin, PrecisionType, ProjectConfiguration
 from hydra.utils import get_original_cwd
 from omegaconf import OmegaConf, open_dict
@@ -194,7 +194,7 @@ def main(cfg: BaseConfig):
         cfg.trainer.mixed_precision = PrecisionType.NO
 
     gpu_info = subprocess.check_output("nvidia-smi -L", shell=True).decode()
-    if cfg.trainer.mixed_precision == PrecisionType.BF16 and not any(x in gpu_info for x in ["A100", "A6000", "A5500"]):
+    if cfg.trainer.mixed_precision == PrecisionType.BF16 and not any(x in gpu_info for x in ["A100", "RTX 6000", "A5500"]):
         cfg.trainer.mixed_precision = PrecisionType.FP16
     
     accelerator = Accelerator(
@@ -202,7 +202,7 @@ def main(cfg: BaseConfig):
         log_with=cfg.trainer.log_with,
         project_config=accelerator_project_config,
         gradient_accumulation_plugin=gradient_accumulation_plugin,
-        
+        dataloader_config=DataLoaderConfiguration(dispatch_batches=False, non_blocking=True),
     )
     assert accelerator.num_processes == num_gpus, f"Expected {num_gpus} GPUs but got {accelerator.num_processes} processes."
     cfg.trainer.num_gpus = accelerator.num_processes
@@ -212,6 +212,9 @@ def main(cfg: BaseConfig):
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
+
+    if weight_dtype != torch.bfloat16:
+        log_warn(f"Weight dtype is: {weight_dtype}")
 
     cfg.trainer.dtype = str(weight_dtype)
     cfg.trainer.device = accelerator.device

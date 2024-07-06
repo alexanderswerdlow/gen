@@ -34,6 +34,9 @@ class AttentionMetadata:
     inference_shuffle_every_n_iterations: Optional[int] = None
     inference_shuffle_up_to: Optional[float] = None
     inference_views: Optional[int] = None
+    training_views: Optional[int] = None
+    shuffle_embedding_per_layer: bool = False
+    random_truncated_backprop: Optional[tuple[float, float]] = None
     
 
 class Dummy:

@@ -17,6 +17,8 @@ from torchvision.transforms.functional import InterpolationMode, resize
 from gen.models.dustr.depth_utils import xyz_to_depth
 from gen.utils.visualization_utils import get_dino_pca
 
+from image_utils import Im
+
 if TYPE_CHECKING:
     from gen.configs.base import BaseConfig
     from gen.utils.trainer_utils import TrainingState
@@ -82,9 +84,6 @@ def visualize_input_data(
         return_img: bool = False,
         cond: Optional[Any] = None,
     ):
-
-    from image_utils import Im
-
     if cfg is not None:
         rgb = rearrange('(b n) ... -> b n ...', undo_normalization_given_transforms(cfg.dataset.val.augmentation.src_transforms, rearrange('b n ... -> (b n) ...', batch.dec_rgb)), n=batch.n)
     else:

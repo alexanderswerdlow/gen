@@ -81,7 +81,7 @@ def depreciated_fill_invalid_regions(input_xyz, input_valid):
 
 @torch.no_grad()
 def encode_xyz(cfg: BaseConfig, gt_points, init_valid_mask, vae, dtype, num_views, kwargs = None):
-    _kwargs = dict(valid_mask=init_valid_mask, clip=True, per_axis_quantile=True)
+    _kwargs = dict(valid_mask=init_valid_mask, clip=True, per_axis_quantile=True, disable_quantile=cfg.model.disable_quantile, fill_invalid_with_max=cfg.model.fill_invalid_with_max)
     _kwargs.update(kwargs or {})
 
     normalizer = NearFarMetricNormalizer(min_max_quantile=cfg.model.xyz_min_max_quantile, num_views=num_views)
@@ -112,6 +112,7 @@ def decode_xyz(
         enable_checkpointing=False,
         force_mixed_precision=False,
         return_depth_std=False,
+        return_before_denorm=False,
         **kwargs
     ):
     with torch.set_grad_enabled(enable_grad):
@@ -125,7 +126,7 @@ def decode_xyz(
                 pred_latents = pred_latents.to(torch.float32)
             if enable_checkpointing:
                 import torch.utils.checkpoint as checkpoint
-                decoded_points = checkpoint.checkpoint(vae.decode, pred_latents, False, use_reentrant=False)[0]
+                decoded_points = checkpoint.checkpoint(vae.decode, pred_latents, False, use_reentrant=False, determinism_check='none')[0]
             else:
                 decoded_points = vae.decode(pred_latents.to(torch.float32), return_dict=False)[0]
 
@@ -136,6 +137,9 @@ def decode_xyz(
                 if return_depth_std:
                     std_dev = torch.std(decoded_points, dim=1)
                 decoded_points = mean('b [c] h w -> b 1 h w', decoded_points, dim=-1)
+
+            if return_before_denorm:
+                return decoded_points
 
             decoded_points = normalizer.denormalize(decoded_points, **kwargs)
 

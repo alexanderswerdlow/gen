@@ -143,10 +143,17 @@ class BaseMapper(Trainable):
         if len(cond.unet_kwargs) == 0:
             cond.unet_kwargs["cross_attention_kwargs"] = dict(attn_meta=AttentionMetadata())
 
-        if self.cfg.model.joint_attention:
-            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].joint_attention = self.cfg.model.num_training_views
-            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].training_views = self.cfg.model.num_training_views
+        if self.cfg.model.joint_attention:            
+            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].joint_attention = self.cfg.model.num_input_views if self.cfg.model.num_input_views is not None else  self.cfg.model.num_cross_attn_views
+            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].training_views = self.cfg.model.num_cross_attn_views
         
+        if self.cfg.model.add_cross_attn_pos_emb != self.cfg.model.num_cross_attn_views:
+            assert self.cfg.model.shuffle_embedding_per_layer
+
+        if self.cfg.model.shuffle_every_layer:
+            cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].inference_shuffle_per_layer = self.cfg.model.shuffle_every_layer
+
+        cond.unet_kwargs["cross_attention_kwargs"]["attn_meta"].shuffle_embedding_per_layer = self.cfg.model.shuffle_embedding_per_layer
         cond.encoder_hidden_states = self.uncond_hidden_states[None].repeat(batch.bs, 1, 1)
 
         return cond

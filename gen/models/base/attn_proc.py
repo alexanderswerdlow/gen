@@ -148,7 +148,8 @@ class XFormersAttnProcessor:
                     encoder_hidden_states = rearrange('vb ... -> repeat_vb vb ...', encoder_hidden_states, repeat_vb=encoder_hidden_states.shape[0])
 
                 if attn.cross_attn_pos_emb is not None:
-                    trained_views = attn.cross_attn_pos_emb.shape[0]
+                    trained_views = attn_meta.training_views
+                    total_num_embeds = attn.cross_attn_pos_emb.shape[0]
                     if attn_meta.training_views is not None: assert trained_views == attn_meta.training_views
                     if views != trained_views:
                         if attn_meta.inference_shuffle_per_layer:
@@ -159,8 +160,17 @@ class XFormersAttnProcessor:
                                 indices = torch.randint(0, encoder_hidden_states.size(1), (encoder_hidden_states.size(0), trained_views), device=encoder_hidden_states.device)
                             batch_indices = torch.arange(encoder_hidden_states.shape[0], device=indices.device).unsqueeze(-1)
                             encoder_hidden_states = encoder_hidden_states[batch_indices, indices]
-
-                    encoder_hidden_states = add('(repeat_views b) views tokens c, views c -> (repeat_views b) views tokens c', encoder_hidden_states, attn.cross_attn_pos_emb)
+                    
+                    if attn_meta.shuffle_embedding_per_layer:
+                        bs = encoder_hidden_states.shape[0]
+                        indices = torch.multinomial(
+                            torch.ones(bs, total_num_embeds, device=encoder_hidden_states.device), 
+                            trained_views,
+                            replacement=False,
+                        ).to(encoder_hidden_states.device)
+                        encoder_hidden_states = add('(repeat_views b) views tokens c, (repeat_views b) views c -> (repeat_views b) views tokens c', encoder_hidden_states, attn.cross_attn_pos_emb[indices])
+                    else:
+                        encoder_hidden_states = add('(repeat_views b) views tokens c, views c -> (repeat_views b) views tokens c', encoder_hidden_states, attn.cross_attn_pos_emb)
                 encoder_hidden_states = rearrange('(repeat_views b) views tokens c -> (repeat_views b) (views tokens) c', encoder_hidden_states)
 
             query = attn.to_q(hidden_states)

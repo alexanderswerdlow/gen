@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextlib import nullcontext
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Union
 
@@ -968,9 +969,17 @@ class StableDiffusionPipeline(
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
 
+        attn_meta = self.cross_attention_kwargs.get('attn_meta', None)
+        detach_timestep = None
+        if attn_meta is not None and attn_meta.random_truncated_backprop is not None:
+            import random
+            min_step, max_step = attn_meta.random_truncated_backprop
+            min_step, max_step = int(min_step * num_inference_steps), int(max_step * num_inference_steps)
+            detach_timestep = random.randint(min_step, max_step)
+
         enable_grad = kwargs.get("enable_grad", False)
-        _ = torch.set_grad_enabled(enable_grad)
-        if enable_grad:
+        if enable_grad and detach_timestep is None:
+            _ = torch.set_grad_enabled(True)
             latents = latents.requires_grad_(True)
 
         concat_rgb = kwargs.get("concat_rgb", None)
@@ -984,7 +993,6 @@ class StableDiffusionPipeline(
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                attn_meta = self.cross_attention_kwargs.get('attn_meta', None)
                 if attn_meta is not None and attn_meta.inference_shuffle_every_n_iterations is not None:
                     assert self.do_classifier_free_guidance is False
                     training_views = attn_meta.training_views
@@ -993,7 +1001,6 @@ class StableDiffusionPipeline(
                     inference_shuffle_up_to = attn_meta.inference_shuffle_up_to
                     bs = latent_model_input.shape[0] // inference_views
 
-                    assert inference_views == latent_model_input.shape[0]
                     assert concat_rgb is not None
 
                     simple_permute = True
@@ -1020,8 +1027,11 @@ class StableDiffusionPipeline(
 
 
                 if concat_rgb is not None:
+                    from einx import rearrange
                     assert self.do_classifier_free_guidance is False
-                    _concat_rgb = concat_rgb[orig_indices] if orig_indices is not None else concat_rgb
+                    _concat_rgb = rearrange('(n b) ... -> n b ...', concat_rgb, n=attn_meta.inference_views)
+                    _concat_rgb = _concat_rgb[orig_indices] if orig_indices is not None else _concat_rgb
+                    _concat_rgb = rearrange('n b ... -> (n b) ...', _concat_rgb)
                     latent_model_input = torch.cat([_concat_rgb, latent_model_input], dim=1) 
 
                 _timesteps = t
@@ -1036,30 +1046,37 @@ class StableDiffusionPipeline(
                     latent_model_input[:_bs, latent_model_input.shape[1] // 2:] = kwargs['concat_src_depth']
                     latents[:_bs] = kwargs['concat_src_depth']
 
+                if enable_grad and detach_timestep is not None and i <= detach_timestep:
+                    latent_model_input = latent_model_input.detach()
+                    print(f"Truncating backprop at step {i}/{num_inference_steps}. Detach at {detach_timestep} Enabling grad for future steps.")
+
                 # predict the noise residual
                 if enable_grad:
                     import torch.utils.checkpoint as checkpoint
-                    noise_pred = checkpoint.checkpoint(
-                        self.unet,
-                        latent_model_input,
-                        t,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep_cond=timestep_cond,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        added_cond_kwargs=added_cond_kwargs,
-                        return_dict=False,
-                        use_reentrant=False
-                    )[0]
+                    with nullcontext() if (detach_timestep is None) or (i >= detach_timestep) else torch.no_grad():
+                        noise_pred = checkpoint.checkpoint(
+                            self.unet,
+                            latent_model_input,
+                            t,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep_cond=timestep_cond,
+                            cross_attention_kwargs=self.cross_attention_kwargs,
+                            added_cond_kwargs=added_cond_kwargs,
+                            return_dict=False,
+                            use_reentrant=False,
+                            determinism_check='none',
+                        )[0]
                 else:
-                    noise_pred = self.unet(
-                        latent_model_input,
-                        t,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep_cond=timestep_cond,
-                        cross_attention_kwargs=self.cross_attention_kwargs,
-                        added_cond_kwargs=added_cond_kwargs,
-                        return_dict=False,
-                    )[0]
+                    with torch.no_grad():
+                        noise_pred = self.unet(
+                            latent_model_input,
+                            t,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep_cond=timestep_cond,
+                            cross_attention_kwargs=self.cross_attention_kwargs,
+                            added_cond_kwargs=added_cond_kwargs,
+                            return_dict=False,
+                        )[0]
 
                 # perform guidance
                 if self.do_classifier_free_guidance:
@@ -1090,11 +1107,13 @@ class StableDiffusionPipeline(
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, t, latents)
 
-
         if orig_indices is not None:
-            indices = torch.zeros(latent_model_input.shape[0], dtype=torch.long, device=latent_model_input.device)
-            indices[orig_indices] = torch.arange(latent_model_input.shape[0], device=latent_model_input.device)
+            from einx import rearrange
+            latents = rearrange('(n b) ... -> n b ...', latents, n=attn_meta.inference_views)
+            indices = torch.zeros(latents.shape[0], dtype=torch.long, device=latent_model_input.device)
+            indices[orig_indices] = torch.arange(latents.shape[0], device=latent_model_input.device)
             latents = latents[indices]
+            latents = rearrange('n b ... -> (n b) ...', latents, n=attn_meta.inference_views)
 
         if not output_type == "latent":
             image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False, generator=generator)[

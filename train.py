@@ -140,7 +140,7 @@ class Trainer:
 
         self.additional_val_datasets = None
         if exists(self.cfg.dataset.additional_val):
-            self.additional_val_datasets = {dataset_name: instantiate(dataset_cfg)(cfg=self.cfg, split=Split.VALIDATION, tokenizer=self.tokenizer) for dataset_name, dataset_cfg in self.cfg.dataset.additional_val.items()}
+            self.additional_val_datasets = {dataset_name: instantiate(dataset_cfg)(cfg=self.cfg, split=Split.VALIDATION, tokenizer=self.tokenizer) for dataset_name, dataset_cfg in self.cfg.dataset.additional_val.items() if dataset_cfg is not None}
 
         if self.cfg.dataset.overfit: self.val_dataset_holder.get_dataset = lambda: self.train_dataloader.dataset
 

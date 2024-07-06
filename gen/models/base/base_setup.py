@@ -272,6 +272,13 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
                     m.to(dtype=torch.float32)
                 m.train()
 
+        if md.unfreeze_last_n_unet_layer is not None:
+            for m in get_modules(other.unet, BasicTransformerBlock)[-md.unfreeze_last_n_unet_layer:]:
+                if set_grad:
+                    m.requires_grad_(True)
+                    m.to(dtype=torch.float32)
+                m.train()
+
         if md.duplicate_unet_input_channels and md.freeze_self_attn is False:
             modules_to_unfreeze = [other.unet.conv_in, other.unet.conv_out, other.unet.conv_norm_out]
             for m in modules_to_unfreeze:
@@ -280,7 +287,7 @@ def set_training_mode(cfg, _other, device, dtype, set_grad: bool = False):
                     m.to(dtype=torch.float32)
                 m.train()
 
-        if md.dual_attention or md.joint_attention:
+        if (md.dual_attention or md.joint_attention) and md.freeze_joint_attention is False:
             for m in get_modules(other.unet, BasicTransformerBlock):
                 if set_grad:
                     m.requires_grad_(True)

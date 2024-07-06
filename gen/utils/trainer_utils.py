@@ -62,6 +62,8 @@ def load_from_ckpt(cfg: BaseConfig, accelerator: Optional[Accelerator], model: n
             state_dict = torch.load(path, map_location='cpu')
             if cfg.trainer.ignore_clip_weights:
                 state_dict = {k:v for k,v in state_dict.items() if 'clip' not in k and 'mapper.position_embedding' not in k and 'up_proj' not in k}
+            if cfg.trainer.ignore_pos_emb_weights:
+                state_dict = {k:v for k,v in state_dict.items() if 'cross_attn_pos_emb' not in k}
             model.load_state_dict(state_dict, strict=cfg.trainer.strict_load)
         try:
             if path.is_file():
@@ -155,7 +157,7 @@ def check_every_n_steps(
         max_eval_interval = max_eval_interval or n * 2
         decrease_n_runs = decrease_n_runs or 5
         n = min(n * ((state.global_step // (decrease_n_runs * n)) + 1), max_eval_interval)
-    return ((state.global_step % n == 0 or (state.current_run_global_step is not None and state.current_run_global_step == 0)) and (run_first or state.global_step > 0)) and (is_main_process() or all_processes)
+    return ((state.global_step % n == 0 or (state.current_run_global_step is not None and state.current_run_global_step == 0)) and (run_first or (state.global_step > 0 and state.current_run_global_step > 0))) and (is_main_process() or all_processes)
 
 
 def check_every_n_epochs(state: TrainingState, n: Optional[int], run_first: bool = False, all_processes: bool = False):

@@ -27,7 +27,7 @@ class VideofolderDataset(AbstractDataset, IterableDataset):
     def __init__(
             self,
             *,
-            root: Path,
+            root: Optional[Path] = None,
             augmentation: Optional[Augmentation] = None,
             top_n_masks_only: int = 255,
             tokenizer = None,
@@ -35,8 +35,13 @@ class VideofolderDataset(AbstractDataset, IterableDataset):
             load_depth: bool = False,
             camera_trajectory_window: int = 4,
             legacy_format: bool = False,
+            postfix: Optional[str] = None,
+            rgb_prefix: str = "rgb",
+            depth_prefix: str = "depth",
             # TODO: All these params are not actually used but needed because of a quick with hydra_zen
-            **kwargs
+            return_different_views: bool = False,
+            uniform_sampler: bool = False,
+            **kwargs,
         ):
         self.top_n_masks_only = top_n_masks_only
         self.augmentation = augmentation
@@ -45,12 +50,17 @@ class VideofolderDataset(AbstractDataset, IterableDataset):
         self.return_n_views = return_n_views
         assert self.augmentation.reorder_segmentation is False
         self.pairs = [x.name for x in root.iterdir() if x.is_dir()]
+        if postfix is not None:
+            self.pairs = [x + "/" + postfix for x in self.pairs]
         self.saved_scene_frames = defaultdict(list)
         self.load_depth = load_depth
         self.legacy_format = legacy_format
         self.camera_trajectory_window = camera_trajectory_window
+        self.postfix = postfix
+        self.rgb_prefix = rgb_prefix
+        self.depth_prefix = depth_prefix
         for scene in self.pairs:
-            self.saved_scene_frames[scene] = sorted([x.name for x in (root / scene).iterdir() if 'depth' not in x.stem and x.suffix in ('.png', '.jpg')])
+            self.saved_scene_frames[scene] = sorted([x.name for x in (root / scene).iterdir() if self.rgb_prefix in x.stem and x.suffix in ('.png', '.jpg')])
     
     def collate_fn(self, batch):
         return super().collate_fn(batch)
@@ -81,7 +91,7 @@ class VideofolderDataset(AbstractDataset, IterableDataset):
         ret = {}
         def _process(_data):
             rgb = get_rgb_image(self.root / scene_name / _data)
-            seg = get_depth_image(self.root / scene_name / (_data.replace('_rgb', '_depth')))
+            seg = get_depth_image(self.root / scene_name / _data, rgb_prefix=self.rgb_prefix, depth_prefix=self.depth_prefix)
             if seg.max().item() < 0: raise Exception(f"Segmentation mask has only one unique value for index")
             return rgb, seg
         

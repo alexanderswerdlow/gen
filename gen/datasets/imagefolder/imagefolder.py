@@ -35,8 +35,11 @@ def get_rgb_image(image_path: Path):
         image = torch.from_numpy(image.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
         return image
 
-def get_depth_image(rgb_image_path: Path):
-    return torch.from_numpy(np.asarray(Image.open(str(rgb_image_path).replace('rgb', 'depth')))[None, None])
+def get_depth_image(rgb_image_path: Path, rgb_prefix: str = "rgb", depth_prefix: str = "depth"):
+    depth_image_path = rgb_image_path.with_name(rgb_image_path.name.replace(rgb_prefix, depth_prefix))
+    if not depth_image_path.exists():
+        depth_image_path = depth_image_path.with_suffix('.png')
+    return torch.from_numpy(np.asarray(Image.open(depth_image_path)).copy().astype(np.float32))[None, None]
 
 save_image_idx = 0
 def save_data(batch, save_image_path):

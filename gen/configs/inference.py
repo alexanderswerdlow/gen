@@ -34,6 +34,7 @@ class InferenceConfig:
     dataloader_only_func: Callable[..., None] = iterate_dataloader
     gather_results: bool = True
     tta: bool = False
+    viz_rerun: bool = False
 
 
 auto_store(InferenceConfig, name="basemapper")
