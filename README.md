@@ -1,4 +1,34 @@
+# Interpertable Image Editing
 
+This repo contains code for an interpertable image editing model. Specifically, we fine-tune a pre-trained text-to-image model to condition on a set of latent features instead of a text prompt. In this way, the diffusion U-Net acts as a decoder and, by training the decoder with augmented data, the latent bottleneck not only learns a useful representation, but allows for precise control over the image.
+
+This work was inspired by [SODA](https://arxiv.org/abs/2311.17901) which features a similar image encoder/diffusion decoder architecture, but lacks precise control over regions and only handles single objects for 3D editing. The aim of this project was to disentangle indiviudal objects and their attributes.
+
+This is similar to concurrent work, specifically [Neural Assets](https://arxiv.org/abs/2406.09292) which focuses on 3D control and [Editable Image Elements](https://arxiv.org/abs/2404.16029) which performs clustering to obtain a grid of image features to control.
+
+## Overview
+
+We show a high-level architecture below, but we note that this only covers a small set of experiments in this codebase.
+
+![High-Level Architecture](./docs/architecture.png)
+
+### Visualizations
+
+Below we take an initial frame (top-left) and pick a target object (e.g., the block). Then, we keep all latent features exactly the same, but manipulate the position of the block to demonstrate disentanglement.
+
+![Demo 1](./docs/demo_v0.png)
+
+Below we take two frames in a moving scene and interpolate the feature of the flying bowl to demonstrate that the latent space, even without training for specific positional control, is meaningful.
+
+![Demo 1](./docs/demo_v1.png)
+
+Below we demonstrate the ability to remove various objects/regions and have the decoder infill. We train the model with dropout in various regions so that the model does not require each region to be conditioned. In these scenes, the bottom is the original image and we highlight the regions removed in grey.
+
+<div style="display: flex; justify-content: space-between;">
+    <img src="./docs/demo_v2.png" width="32%" />
+    <img src="./docs/demo_v3.png" width="32%" />
+    <img src="./docs/demo_v4.png" width="32%" />
+</div>
 
 ## Install Instructions
 
